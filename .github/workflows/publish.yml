@@ -1,0 +1,99 @@
+name: Publish to PyPI
+
+# Publishes the `agentirc-cli` distribution to PyPI on push to main, and to
+# TestPyPI as `0.1.X.dev<run>` on PRs that touch the package.
+#
+# Trusted Publishing must be configured on PyPI/TestPyPI for this repo before
+# the first publish actually succeeds. Pre-bootstrap (no pyproject.toml), all
+# jobs are skipped.
+#
+# NOTE: Until culture's cutover lands (Track A in the bootstrap spec), culture
+# squat-publishes `agentirc-cli` and `agentirc` from its own publish.yml. This
+# workflow assumes culture has already removed the `agentirc-cli` alias before
+# we attempt our first 0.1.0 release; coordinate via the Track-A PR.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "agentirc/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+      - "agentirc/**"
+
+jobs:
+  test:
+    if: hashFiles('pyproject.toml') != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - run: uv python install 3.12
+
+      - run: uv sync
+
+      - run: uv run pytest -n auto -v
+
+  test-publish:
+    if: github.event_name == 'pull_request' && hashFiles('pyproject.toml') != ''
+    needs: test
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - run: uv python install 3.12
+
+      - run: uv sync
+
+      - name: Set dev version
+        run: |
+          BASE=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          DEV_VERSION="${BASE}.dev${{ github.run_number }}"
+          sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
+          echo "DEV_VERSION=${DEV_VERSION}" >> "$GITHUB_ENV"
+          echo "Publishing ${DEV_VERSION} to TestPyPI"
+
+      - name: Build and publish agentirc-cli to TestPyPI
+        run: |
+          uv build
+          uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always --check-url https://test.pypi.org/simple/
+
+      - name: Print install commands
+        if: always()
+        run: |
+          echo "::notice::Test with: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ agentirc-cli==${DEV_VERSION}"
+
+  publish:
+    if: github.event_name == 'push' && hashFiles('pyproject.toml') != ''
+    needs: test
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+
+      - run: uv python install 3.12
+
+      - run: uv sync
+
+      - name: Build and publish agentirc-cli to PyPI
+        run: |
+          uv build
+          uv publish --trusted-publishing always --check-url https://pypi.org/simple/

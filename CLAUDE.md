@@ -81,11 +81,25 @@ CLI verbs: `serve`, `start`, `stop`, `restart`, `status`, `link`, `logs`, `versi
 Copy these from culture rather than inventing fresh:
 
 - `.pre-commit-config.yaml`
-- GitHub Actions workflows
 - Dev-dep set: `pytest`, `pytest-asyncio`, `pytest-xdist`, `black`, `isort`, `flake8`, `pylint`, `bandit`
 - `/version-bump` workflow and `CHANGELOG.md` style. Start the changelog at `0.1.0`.
 
-Markdown linting follows the workspace global config (`~/.markdownlint-cli2.yaml`).
+GitHub Actions workflows are already in `.github/workflows/`:
+
+- `tests.yml` — pytest with coverage on `agentirc/`, plus a version-bump check that nags via PR comment if `pyproject.toml` matches main.
+- `publish.yml` — Trusted-Publishing release of `agentirc-cli` to TestPyPI on PRs (`0.1.X.dev<run>`) and to PyPI on push to main.
+
+Both jobs are gated on `hashFiles('pyproject.toml') != ''` so they no-op cleanly during the pre-bootstrap window.
+
+Markdown linting follows the user's global markdownlint config (no committed `.markdownlint-cli2.yaml` in this repo yet).
+
+## Skills (vendored from steward)
+
+Per `docs/steward/onboarding.md`, agent skills live under `.claude/skills/<name>/`, vendored cite-don't-import from `../steward/.claude/skills/<name>/`. Already vendored:
+
+- `pr-review` — branch / commit / push / PR / wait for Qodo+Copilot / triage / fix / reply / resolve. Includes a portability lint (run via `.claude/skills/pr-review/scripts/workflow.sh lint`) and an alignment-delta check for sibling-project drift.
+
+Per-machine paths for these skills go in `.claude/skills.local.yaml` (gitignored). The committed `.claude/skills.local.yaml.example` documents the schema. When upstream skills change, re-sync explicitly — there is no auto-sync.
 
 ## Coordination with culture
 

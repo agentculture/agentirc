@@ -1,3 +1,6 @@
+# Per-machine skill config (vendored skills). Commit `.example` only.
+.claude/skills.local.yaml
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
