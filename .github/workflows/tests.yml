@@ -3,8 +3,25 @@ name: Tests
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 jobs:
+  lint:
+    # Always runs. Currently exercises only the vendored portability lint;
+    # markdownlint and pre-commit hooks land alongside their config files
+    # during the bootstrap.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Portability lint (full tree)
+        run: bash .claude/skills/pr-review/scripts/portability-lint.sh --all
+
   test:
     # Skipped pre-bootstrap (no pyproject.toml). Runs once the bootstrap PR
     # lands the package skeleton.

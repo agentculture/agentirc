@@ -18,13 +18,33 @@ on:
     paths:
       - "pyproject.toml"
       - "agentirc/**"
+      - ".github/workflows/publish.yml"
   pull_request:
     branches: [main]
     paths:
       - "pyproject.toml"
       - "agentirc/**"
+      - ".github/workflows/publish.yml"
+  workflow_dispatch:
 
 jobs:
+  guard:
+    # Always passes; reports whether the package skeleton exists yet so the
+    # workflow shows a green check pre-bootstrap instead of "no jobs ran".
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Bootstrap status
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo "::notice::pyproject.toml present — publish jobs will run."
+          else
+            echo "::notice::Pre-bootstrap (no pyproject.toml) — publish jobs intentionally skipped."
+          fi
+
   test:
     if: hashFiles('pyproject.toml') != ''
     runs-on: ubuntu-latest
