@@ -1,52 +1,47 @@
 name: Publish to PyPI
 
-# Publishes the `agentirc-cli` distribution to PyPI on push to main, and to
-# TestPyPI as `0.1.X.dev<run>` on PRs that touch the package.
+# Trusted Publishing release of `agentirc-cli`. Pre-bootstrap, the publish
+# steps are no-ops; once the bootstrap PR adds pyproject.toml, they activate.
 #
 # Trusted Publishing must be configured on PyPI/TestPyPI for this repo before
-# the first publish actually succeeds. Pre-bootstrap (no pyproject.toml), all
-# jobs are skipped.
+# the first real publish.
 #
 # NOTE: Until culture's cutover lands (Track A in the bootstrap spec), culture
-# squat-publishes `agentirc-cli` and `agentirc` from its own publish.yml. This
-# workflow assumes culture has already removed the `agentirc-cli` alias before
-# we attempt our first 0.1.0 release; coordinate via the Track-A PR.
+# squat-publishes `agentirc-cli` from its own publish.yml. This workflow
+# assumes culture has already removed the `agentirc-cli` alias before we
+# attempt our first 0.1.0 release.
 
 on:
   push:
     branches: [main]
-    paths:
-      - "pyproject.toml"
-      - "agentirc/**"
-      - ".github/workflows/publish.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "pyproject.toml"
-      - "agentirc/**"
-      - ".github/workflows/publish.yml"
   workflow_dispatch:
 
 jobs:
   guard:
-    # Always passes; reports whether the package skeleton exists yet so the
-    # workflow shows a green check pre-bootstrap instead of "no jobs ran".
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    outputs:
+      ready: ${{ steps.bootstrap.outputs.ready }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Bootstrap status
+        id: bootstrap
         run: |
           if [ -f pyproject.toml ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
             echo "::notice::pyproject.toml present — publish jobs will run."
           else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Pre-bootstrap (no pyproject.toml) — publish jobs intentionally skipped."
           fi
 
   test:
-    if: hashFiles('pyproject.toml') != ''
+    needs: guard
+    if: needs.guard.outputs.ready == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -62,8 +57,8 @@ jobs:
       - run: uv run pytest -n auto -v
 
   test-publish:
-    if: github.event_name == 'pull_request' && hashFiles('pyproject.toml') != ''
-    needs: test
+    needs: [guard, test]
+    if: github.event_name == 'pull_request' && needs.guard.outputs.ready == 'true'
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
@@ -84,21 +79,20 @@ jobs:
           DEV_VERSION="${BASE}.dev${{ github.run_number }}"
           sed -i "s/^version = .*/version = \"${DEV_VERSION}\"/" pyproject.toml
           echo "DEV_VERSION=${DEV_VERSION}" >> "$GITHUB_ENV"
-          echo "Publishing ${DEV_VERSION} to TestPyPI"
 
       - name: Build and publish agentirc-cli to TestPyPI
         run: |
           uv build
           uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always --check-url https://test.pypi.org/simple/
 
-      - name: Print install commands
+      - name: Print install command
         if: always()
         run: |
           echo "::notice::Test with: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ agentirc-cli==${DEV_VERSION}"
 
   publish:
-    if: github.event_name == 'push' && hashFiles('pyproject.toml') != ''
-    needs: test
+    needs: [guard, test]
+    if: github.event_name == 'push' && needs.guard.outputs.ready == 'true'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
