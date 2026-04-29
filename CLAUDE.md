@@ -74,7 +74,7 @@ agentirc serve --config ~/.culture/server.yaml
 python -m agentirc serve   # equivalent
 ```
 
-CLI verbs (1:1 with today's `culture server …`): `serve`, `start`, `stop`, `restart`, `status`, `link`, `logs`, `version`.
+CLI verbs: `serve`, `start`, `stop`, `restart`, `status`, `link`, `logs`, `version`. Of these, only `start`, `stop`, `status` have a `culture server …` analogue today; the rest are agentirc-only additions. Culture's pure-passthrough shim only ever emits its existing verbs, so the additions don't break it.
 
 ## Tooling conventions (mirror culture)
 

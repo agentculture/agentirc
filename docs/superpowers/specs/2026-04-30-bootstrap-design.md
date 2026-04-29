@@ -3,7 +3,7 @@
 **Status:** Proposed
 **Date:** 2026-04-30
 **Owner:** Ori Nachum
-**Receiving agent:** the agent working in this repo (`../agentirc`)
+**Receiving agent:** the agent working in this repo
 
 ## Summary
 
@@ -114,20 +114,22 @@ agentirc/                          (repo root)
 - `main()` — entrypoint for the `agentirc` console script.
 - `dispatch(argv: list[str]) -> int` — the exact function culture's shim will call. Same flag set, same exit codes, same output as the binary. (Culture's `culture server <verb> <args>` becomes `dispatch([<verb>, *<args>])`. It is a pure passthrough; culture does not parse, validate, or rename any flag.)
 
-Subcommands (1:1 with `culture server …` today):
+Subcommands cover the full server lifecycle agentirc exposes. Some verbs match `culture server …` today (`start`, `stop`, `status`); the rest are agentirc-only additions. Culture's pure-passthrough shim only ever emits the verbs culture itself uses, so adding new verbs here doesn't break it — culture sees its existing verbs forwarded unchanged, while standalone agentirc users get the broader surface.
 
-| Verb | Behavior | Notes |
+| Verb | Behavior | Culture analogue |
 |---|---|---|
-| `agentirc serve [--config PATH]` | Starts the IRCd in foreground. | `--config` defaults to `~/.culture/server.yaml`. |
-| `agentirc start [--name NAME]` | Starts as a managed background service (systemd / supervisor handoff). | |
-| `agentirc stop [--name NAME]` | Stops the managed service. | |
-| `agentirc restart [--name NAME]` | Restart shortcut. | |
-| `agentirc status [--name NAME]` | Reports running state. | |
-| `agentirc link <peer> [...]` | Registers a mesh server-to-server link. | |
-| `agentirc logs [--name NAME] [-f]` | Tails service logs. | |
-| `agentirc version` | Prints agentirc version. | New verb — no culture analogue. |
+| `agentirc serve [--config PATH]` | Starts the IRCd in foreground. `--config` defaults to `~/.culture/server.yaml`. | None — agentirc-only. |
+| `agentirc start [--name NAME]` | Starts as a managed background service (systemd / supervisor handoff). | `culture server start`. |
+| `agentirc stop [--name NAME]` | Stops the managed service. | `culture server stop`. |
+| `agentirc restart [--name NAME]` | Restart shortcut. | None — agentirc-only. |
+| `agentirc status [--name NAME]` | Reports running state. | `culture server status`. |
+| `agentirc link <peer> [...]` | Registers a mesh server-to-server link. | None — culture exposes linking as flags on `start` (`--link`, `--mesh-links`). |
+| `agentirc logs [--name NAME] [-f]` | Tails service logs. | None — agentirc-only. |
+| `agentirc version` | Prints agentirc version. | None — agentirc-only. |
 
-Implementation source: extract from `../culture/culture/cli/server.py`. The verbs above are exactly the verbs `culture server` exposes today; copy the dispatch logic and the per-verb handlers, rewriting any `from culture.agentirc.X` imports to `from agentirc.X`. The original file may have culture-specific glue (e.g., reading `~/.culture/server.yaml`) — keep that glue; it's part of the transparency contract.
+Implementation source: extract from `../culture/culture/cli/server.py`. For verbs with a culture analogue, copy the dispatch logic and per-verb handlers verbatim (rewriting `from culture.agentirc.X` imports to `from agentirc.X`); preserve flags, defaults, exit codes, and output. For agentirc-only verbs, build minimal handlers consistent with the existing patterns in that file. The original file may have culture-specific glue (e.g., reading `~/.culture/server.yaml`) — keep that glue; it's part of the transparency contract.
+
+Culture-side server-management verbs that exist today but are *not* migrated here (`default`, `rename`, `archive`, `unarchive`) stay in culture's own CLI; they manage culture's per-machine server registry, which is a culture concern and not part of the IRCd extraction.
 
 ### Default behaviors that preserve transparency
 
@@ -168,7 +170,7 @@ Update `agentirc/ircd.py` and any other server file to import from `agentirc.pro
 2. **Copy server-core files** per the Inputs table. Do not modify the contents yet.
 3. **Copy `protocol/extensions/`** wholesale.
 4. **Rewrite imports** inside the new tree: `from culture.agentirc.X` → `from agentirc.X`. Run `git grep -E '^(from|import) culture' agentirc/ tests/` and confirm no matches before proceeding.
-5. **Create `agentirc/cli.py`** by extracting server-lifecycle dispatch from `../culture/culture/cli/server.py`. Expose `main()` and `dispatch(argv) -> int`. Preserve verb names, flags, defaults, exit codes, output. The default `--config` path is `~/.culture/server.yaml`.
+5. **Create `agentirc/cli.py`** by extracting server-lifecycle dispatch from `../culture/culture/cli/server.py`. Expose `main()` and `dispatch(argv) -> int`. For verbs with a culture analogue (`start`, `stop`, `status`), preserve the existing verb name, flags, defaults, exit codes, and output exactly. For agentirc-only verbs (`serve`, `restart`, `link`, `logs`, `version`), add minimal handlers in the same style. The default `--config` path is `~/.culture/server.yaml`.
 6. **Create `agentirc/__main__.py`** so `python -m agentirc` works (delegates to `agentirc.cli:main`).
 7. **Create `agentirc/protocol.py`** per "What to extract" above. Update `ircd.py` and other server files to import from it.
 8. **Sort the migrated tests** per "Test-suite migration" below. Drop tests that genuinely belong in culture (transport-focused).
@@ -183,7 +185,7 @@ Update `agentirc/ircd.py` and any other server file to import from `agentirc.pro
 14. **Verify acceptance criteria** (see below).
 15. **First commit.** Single synthetic commit, message: `Initial import from culture@<SHA>` (where `<SHA>` is the source culture commit ID provided by the caller).
 16. **Tag `v0.1.0`** and push.
-17. **Publish to PyPI as `agentirc-cli`.** (PyPI publishing is already set up in this repo's CI.)
+17. **Publish to PyPI as `agentirc-cli`.** Uses the publish workflow created in Task 10 (mirrored from culture's Trusted-Publishing setup); no additional PyPI configuration in this repo before that task.
 18. **Report back** the published version and source SHA so the culture-side cutover PR can pin against it.
 
 ## Test-suite migration
@@ -199,7 +201,8 @@ When in doubt, prefer moving tests *here* over leaving them in culture: this rep
 ## Acceptance criteria
 
 - `pip install agentirc-cli==0.1.0` from PyPI produces a working `agentirc` binary on a clean venv.
-- `agentirc serve --config ~/.culture/server.yaml` starts an IRCd that behaves indistinguishably from today's `culture server start` (same accepting socket, same log output, same systemd integration).
+- `agentirc start --config ~/.culture/server.yaml` behaves indistinguishably from today's `culture server start` (same accepting socket, same log output, same systemd integration).
+- `agentirc serve --config ~/.culture/server.yaml` runs the same IRCd in the foreground (no daemonization). No culture analogue — this is the new standalone-friendly entry point.
 - `agentirc.config.LinkConfig`, `agentirc.config.PeerSpec`, `agentirc.cli.dispatch`, and `agentirc.protocol.*` are importable from a clean Python session.
 - All tests in `tests/` pass under `pytest -n auto`.
 - `git grep -E '^(from|import) culture' agentirc/ tests/` returns nothing.
