@@ -52,7 +52,7 @@ jobs:
 
       - run: uv python install 3.12
 
-      - run: uv sync
+      - run: uv sync --extra dev
 
       - run: uv run pytest -n auto -v
 
