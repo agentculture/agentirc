@@ -1,0 +1,12 @@
+# Per-machine config for vendored skills. Copy to skills.local.yaml (gitignored)
+# and adjust paths to match your local checkout layout.
+#
+# Used by .claude/skills/pr-review/scripts/workflow.sh delta to dump each
+# sibling project's CLAUDE.md / culture.yaml when this PR touches
+# alignment-relevant files (CLAUDE.md, .claude/skills/).
+
+# Paths are resolved relative to this repo's root. Use ../<sibling> when the
+# sibling is a peer directory; absolute paths work but break portability.
+sibling_projects:
+  - ../culture
+  - ../steward
