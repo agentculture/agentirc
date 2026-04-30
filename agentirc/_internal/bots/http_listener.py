@@ -21,8 +21,8 @@ class HttpListener:
         self.host = host
         self.port = port
 
-    async def start(self) -> None:
+    async def start(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         return None
 
-    async def stop(self) -> None:
+    async def stop(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         return None

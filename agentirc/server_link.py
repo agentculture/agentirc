@@ -470,7 +470,7 @@ class ServerLink:
 
         if self._authenticated:
             join_msg = Message(prefix=rc.prefix, command="JOIN", params=[channel_name])
-            for member in list(channel.members):
+            for member in [*channel.members]:
                 if not isinstance(member, RemoteClient):
                     await member.send(join_msg)
 
@@ -518,7 +518,7 @@ class ServerLink:
         notify_mentions: bool = False,
     ) -> None:
         """Deliver a relayed peer message to local channel members and emit events."""
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if not isinstance(member, RemoteClient):
                 await member.send(relay)
         await self.server.emit_event(
@@ -646,7 +646,7 @@ class ServerLink:
         # Notify local members
         part_params = [channel_name, reason] if reason else [channel_name]
         part_msg = Message(prefix=rc.prefix, command="PART", params=part_params)
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if not isinstance(member, RemoteClient):
                 await member.send(part_msg)
 
@@ -659,8 +659,8 @@ class ServerLink:
     async def _cleanup_remote_client_channels(self, rc, quit_msg: Message) -> None:
         """Notify local members of rc's quit and remove rc from channels."""
         notified: set = set()
-        for channel in list(rc.channels):
-            for member in list(channel.members):
+        for channel in [*rc.channels]:
+            for member in [*channel.members]:
                 if not isinstance(member, RemoteClient) and member not in notified:
                     await member.send(quit_msg)
                     notified.add(member)
@@ -684,7 +684,7 @@ class ServerLink:
         await self._cleanup_remote_client_channels(rc, quit_msg)
         del self.server.remote_clients[nick]
 
-    def _handle_squit(self, msg: Message) -> None:
+    def _handle_squit(self, _msg: Message) -> None:
         """Handle peer announcing it's delinking."""
         self._squit_received = True
         raise ConnectionError("Peer sent SQUIT")
@@ -710,7 +710,7 @@ class ServerLink:
 
         try:
             meta = json.loads(meta_json)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:  # json.JSONDecodeError is a subclass of ValueError
             return
 
         channel = self.server.get_or_create_channel(channel_name)
@@ -754,7 +754,7 @@ class ServerLink:
             command="NOTICE",
             params=["*", f"Room {channel_name} has been archived"],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if not isinstance(member, RemoteClient):
                 await member.send(notice)
                 part_msg = Message(
@@ -814,7 +814,7 @@ class ServerLink:
             command="PRIVMSG",
             params=[channel_name, text],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if not isinstance(member, RemoteClient):
                 await member.send(relay)
 
@@ -851,7 +851,7 @@ class ServerLink:
             command="NOTICE",
             params=[channel_name, f"[Thread {thread_name} closed] {close_data}"],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if not isinstance(member, RemoteClient):
                 await member.send(notice)
 
@@ -968,7 +968,7 @@ class ServerLink:
             except ValueError:
                 pass
 
-    async def _replay_event(self, seq: int, event: Event) -> None:
+    async def _replay_event(self, _seq: int, event: Event) -> None:
         """Replay a single event to the peer as S2S wire format."""
         origin = self.server.config.name
         # Federated events arrive with event.type as either an EventType enum

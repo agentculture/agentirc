@@ -314,7 +314,7 @@ class ThreadsSkill(Skill):
             command="PRIVMSG",
             params=[channel.name, prefixed],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if member is not sender and not isinstance(member, RemoteClient):
                 await member.send(relay)
 
@@ -424,7 +424,7 @@ class ThreadsSkill(Skill):
             command="NOTICE",
             params=[channel_name, summary_text],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if not isinstance(member, RemoteClient):
                 await member.send(notice)
 
@@ -486,7 +486,7 @@ class ThreadsSkill(Skill):
         client: Client,
         channel_name: str,
         thread_name: str,
-        operation_label: str,
+        _operation_label: str,
     ):
         """Validate channel membership, thread existence, and thread not archived.
 
@@ -562,7 +562,7 @@ class ThreadsSkill(Skill):
             command="NOTICE",
             params=[channel_name, f"[thread:{thread_name}] promoted to {breakout_name}"],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if not isinstance(member, RemoteClient):
                 await member.send(notice)
 
@@ -625,8 +625,8 @@ class ThreadsSkill(Skill):
     async def _create_breakout_channel(
         self,
         client: Client,
-        channel: Channel,
-        thread: Thread,
+        _channel: Channel,
+        _thread: Thread,
         channel_name: str,
         thread_name: str,
         breakout_name: str,
@@ -637,19 +637,18 @@ class ThreadsSkill(Skill):
         or sends an error and returns None.
         """
         existing = self.server.channels.get(breakout_name)
-        if existing is not None:
-            if (
-                existing.extra_meta.get("thread_parent") != channel_name
-                or existing.extra_meta.get("thread_name") != thread_name
-            ):
-                await client.send(
-                    Message(
-                        prefix=self.server.config.name,
-                        command="400",
-                        params=[client.nick or "*", breakout_name, "Channel already exists"],
-                    )
+        if existing is not None and (
+            existing.extra_meta.get("thread_parent") != channel_name
+            or existing.extra_meta.get("thread_name") != thread_name
+        ):
+            await client.send(
+                Message(
+                    prefix=self.server.config.name,
+                    command="400",
+                    params=[client.nick or "*", breakout_name, "Channel already exists"],
                 )
-                return None
+            )
+            return None
 
         breakout = self.server.get_or_create_channel(breakout_name)
         breakout.topic = f"Promoted from thread '{thread_name}' in {channel_name}"
@@ -677,7 +676,7 @@ class ThreadsSkill(Skill):
         # Send JOIN messages to all breakout members
         for member in participants:
             join_msg = Message(prefix=member.prefix, command="JOIN", params=[breakout_name])
-            for other in list(breakout.members):
+            for other in [*breakout.members]:
                 if not isinstance(other, RemoteClient):
                     await other.send(join_msg)
 
@@ -694,7 +693,7 @@ class ThreadsSkill(Skill):
                 command="NOTICE",
                 params=[breakout_name, f"[history] <{tmsg.nick}> {tmsg.text}"],
             )
-            for member in list(breakout.members):
+            for member in [*breakout.members]:
                 if not isinstance(member, RemoteClient):
                     await member.send(replay)
 

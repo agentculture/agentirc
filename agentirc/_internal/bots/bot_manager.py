@@ -22,17 +22,17 @@ class BotManager:
     def __init__(self, server: "IRCd") -> None:
         self.server = server
 
-    async def load_bots(self) -> None:
+    async def load_bots(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         return None
 
     def load_system_bots(self) -> None:
         return None
 
-    def get_bot(self, nick: str):
+    def get_bot(self, _nick: str):
         return None
 
-    async def on_event(self, event: "Event") -> None:
+    async def on_event(self, _event: "Event") -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         return None
 
-    async def stop_all(self) -> None:
+    async def stop_all(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         return None

@@ -48,14 +48,14 @@ class Skill:
     name: str = ""
     commands: set[str] = set()
 
-    async def start(self, server: IRCd) -> None:
+    async def start(self, server: IRCd) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         self.server = server
 
-    async def stop(self) -> None:
+    async def stop(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         """Stop the skill. Subclasses override to release resources."""
 
-    async def on_event(self, event: Event) -> None:
+    async def on_event(self, event: Event) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         """Handle an IRC event. Subclasses override to react to events."""
 
-    async def on_command(self, client: Client, msg: Message) -> None:
+    async def on_command(self, client: Client, msg: Message) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
         """Handle an IRC command. Subclasses override to process commands."""

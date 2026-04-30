@@ -351,7 +351,7 @@ class RoomsSkill(Skill):
         from agentirc.remote_client import RemoteClient
         from agentirc._internal.virtual_client import VirtualClient
 
-        for client in list(self.server.clients.values()):
+        for client in [*self.server.clients.values()]:
             if isinstance(client, (RemoteClient, VirtualClient)):
                 continue
             client_tags = set(client.tags)
@@ -362,7 +362,7 @@ class RoomsSkill(Skill):
         """Notify local members whose tags match removed room tags."""
         from agentirc.remote_client import RemoteClient
 
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if isinstance(member, RemoteClient):
                 continue
             member_tags = set(member.tags)
@@ -478,7 +478,7 @@ class RoomsSkill(Skill):
         added = new_tags - old_tags
         removed = old_tags - new_tags
 
-        for channel in list(self.server.channels.values()):
+        for channel in [*self.server.channels.values()]:
             if not channel.is_managed:
                 continue
             channel_tags = set(channel.tags)
@@ -637,7 +637,7 @@ class RoomsSkill(Skill):
             command="PART",
             params=[channel_name, f"Kicked by {client.nick}"],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             await member.send(part_msg)
 
         channel.remove(target)
@@ -669,7 +669,7 @@ class RoomsSkill(Skill):
             command="NOTICE",
             params=[channel_name, f"{channel_name} is being archived as {archive_name}"],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             await member.send(notice_msg)
 
         part_msg = Message(
@@ -677,7 +677,7 @@ class RoomsSkill(Skill):
             command="PART",
             params=[channel_name, f"Room archived as {archive_name}"],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             await member.send(part_msg)
             member.channels.discard(channel)
 

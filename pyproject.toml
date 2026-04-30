@@ -153,7 +153,7 @@ notes = "Vendored verbatim with imports rewritten: from culture.agentirc.skill t
 
 [tool.citation.packages.culture-virtual-client.files."virtual_client.py"]
 status = "paraphrase"
-sha256 = "aab2f852977f39cc1f4686fba3954786abea0e96d7e2a4c86131bb3304989189"
+sha256 = "5e90a9e0ba5cd95651167b71f4cf3d2b5c4f18f809cb061f345ff3a81cf66969"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2
@@ -169,11 +169,11 @@ sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 [tool.citation.packages.culture-bots-stubs.files."bot_manager.py"]
 status = "synthesize"
-sha256 = "a9c378704ca9b01ebca88e2e0c2dd2ff9092a8fb7b492f8fd27a936bd9faf7ea"
+sha256 = "2632914c22e7e4e7d292447a4b78972349f878ae75ae2ed1210118b18553ef32"
 
 [tool.citation.packages.culture-bots-stubs.files."http_listener.py"]
 status = "synthesize"
-sha256 = "325c17db1b5f002c4122faebe20457810c19bd1804bbfe62357a12fb4fcd5af3"
+sha256 = "6c9e188b865256024999143a6330af4571b09e10220caff570c4bebbe93148fb"
 
 [tool.citation.packages.culture-agentirc-server-core]
 schema = 2
@@ -185,11 +185,11 @@ notes = "Server-core package vendored from culture/agentirc/. Imports rewritten 
 
 [tool.citation.packages.culture-agentirc-server-core.files."ircd.py"]
 status = "paraphrase"
-sha256 = "a4a6b6843f6b749b346642e13dcc42fb0b3b10bdb2219ab6b6ba7470ac2b39a4"
+sha256 = "3a0b958c9156c112543e2d37a60ec0ffa6808e1a0259c8198a700bb789131ab7"
 
 [tool.citation.packages.culture-agentirc-server-core.files."server_link.py"]
 status = "paraphrase"
-sha256 = "9b8f6122ec67f0b1505e2595a6352cf51c7fcd118ac369743360470389c0831b"
+sha256 = "709a8a7d2f7836b9bf382f7fb4d5046a61f8eac06e27323d87835615314d6bbe"
 
 [tool.citation.packages.culture-agentirc-server-core.files."channel.py"]
 status = "paraphrase"
@@ -221,7 +221,7 @@ sha256 = "e65d013325bb413f442224b7a76a4285ab5d31485e9e18d3a38913bd8eed341f"
 
 [tool.citation.packages.culture-agentirc-server-core.files."skill.py"]
 status = "paraphrase"
-sha256 = "ac4dbd1a0eda05cbae8dde9570b3f0f375cde365d8a5a0b1eaaa8acd2da2a789"
+sha256 = "5c9411f169227ca6ec7bcc81b4332f6a9ac80d9b774d4c62c65eae0051ac0834"
 
 [tool.citation.packages.culture-agentirc-server-core.files."remote_client.py"]
 status = "paraphrase"
@@ -233,11 +233,11 @@ sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 [tool.citation.packages.culture-agentirc-server-core.files."skills/rooms.py"]
 status = "paraphrase"
-sha256 = "05c7fa1ee5ba7e629b674d9c84e72b930994f4ed396350b6870af0407cf501eb"
+sha256 = "dd50bf93b348ba07cabb8aecc812de1dacaa5949b24dce1200da4d87bc8f0d29"
 
 [tool.citation.packages.culture-agentirc-server-core.files."skills/threads.py"]
 status = "paraphrase"
-sha256 = "3a7150300bc081a29d8da88c0476cd83b7efb308ce3123094112722d94c80b1c"
+sha256 = "2cec0a5801935bf5e897cf1fa7e2e446a2d63f890153e8158cf620dae64686e9"
 
 [tool.citation.packages.culture-agentirc-server-core.files."skills/history.py"]
 status = "paraphrase"

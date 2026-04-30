@@ -205,7 +205,7 @@ class IRCd:
                 logger.exception("Skill %s failed on event %s", skill.name, event.type)
 
     async def _relay_to_peers(self, event: Event) -> None:
-        for peer_name, link in list(self.links.items()):
+        for peer_name, link in [*self.links.items()]:
             try:
                 await link.relay_event(event)
             except Exception:
@@ -415,13 +415,13 @@ class IRCd:
             for skill in self.skills:
                 await skill.stop()
             # Cancel all pending retry tasks
-            for peer_name in list(self._link_retry_state):
+            for peer_name in [*self._link_retry_state]:
                 self.cancel_link_retry(peer_name)
             # Close all S2S links
-            for link in list(self.links.values()):
+            for link in [*self.links.values()]:
                 try:
                     link.writer.close()
-                except Exception:
+                except (ConnectionError, OSError, asyncio.CancelledError):
                     pass
             self.links.clear()
             if self._server:
@@ -547,7 +547,7 @@ class IRCd:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         initial_text: str,
-        msg,
+        _msg,
     ) -> None:
         """Handle an inbound S2S (server-to-server) connection."""
         from agentirc.server_link import ServerLink
@@ -574,7 +574,7 @@ class IRCd:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         initial_text: str,
-        msg,
+        _msg,
     ) -> None:
         """Handle an inbound C2S (client-to-server) connection."""
         from agentirc.client import Client
@@ -623,7 +623,7 @@ class IRCd:
     async def _remove_client(self, client: Client) -> None:
         if client.nick and client.nick in self.clients:
             del self.clients[client.nick]
-        for channel in list(client.channels):
+        for channel in [*client.channels]:
             channel.remove(client)
             if not channel.members and not channel.persistent:
                 del self.channels[channel.name]
@@ -635,17 +635,16 @@ class IRCd:
         """Notify local members of a remote client quit and clean up channels."""
         from agentirc.remote_client import RemoteClient
 
-        for channel in list(rc.channels):
-            for member in list(channel.members):
+        for channel in [*rc.channels]:
+            for member in [*channel.members]:
                 if not isinstance(member, RemoteClient) and member not in notified:
                     task = asyncio.create_task(member.send(quit_msg))
                     self._background_tasks.add(task)
                     task.add_done_callback(self._background_tasks.discard)
                     notified.add(member)
             channel.members.discard(rc)
-            if not channel.members:
-                if channel.name in self.channels:
-                    del self.channels[channel.name]
+            if not channel.members and channel.name in self.channels:
+                del self.channels[channel.name]
         rc.channels.clear()
 
     def _disconnect_remote_clients(self, link: ServerLink) -> None:

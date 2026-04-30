@@ -41,7 +41,7 @@ class VirtualClient:
     def prefix(self) -> str:
         return f"{self.nick}!{self.user}@{self.host}"
 
-    async def send(self, message: Message) -> None:
+    async def send(self, _message: Message) -> None:
         """No-op — bots don't receive messages from others."""
 
     async def join_channel(self, channel_name: str, *, emit_event: bool = True) -> None:
@@ -68,7 +68,7 @@ class VirtualClient:
             command="JOIN",
             params=[channel_name],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if member is not self:
                 await member.send(join_msg)
 
@@ -88,7 +88,7 @@ class VirtualClient:
             command="PART",
             params=[channel_name],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if member is not self:
                 await member.send(part_msg)
 
@@ -151,7 +151,7 @@ class VirtualClient:
             command="PRIVMSG",
             params=[channel_name, text],
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             if member is not self:
                 await member.send(relay)
 
