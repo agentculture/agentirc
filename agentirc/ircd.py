@@ -90,8 +90,8 @@ class IRCd:
         logger.info("Server awake on %s", self.config.name)
 
         # Initialize bot manager and webhook HTTP listener
-        from culture.bots.bot_manager import BotManager
-        from culture.bots.http_listener import HttpListener
+        from agentirc._internal.bots.bot_manager import BotManager
+        from agentirc._internal.bots.http_listener import HttpListener
 
         logger.info("Loading bots...")
         self.bot_manager = BotManager(self)
