@@ -185,7 +185,7 @@ notes = "Server-core package vendored from culture/agentirc/. Imports rewritten 
 
 [tool.citation.packages.culture-agentirc-server-core.files."ircd.py"]
 status = "paraphrase"
-sha256 = "3a0b958c9156c112543e2d37a60ec0ffa6808e1a0259c8198a700bb789131ab7"
+sha256 = "477760b85e4acf861a92aaf0ea73550c07267e3c33740a412a3075598bfb68aa"
 
 [tool.citation.packages.culture-agentirc-server-core.files."server_link.py"]
 status = "paraphrase"

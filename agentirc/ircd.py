@@ -421,7 +421,7 @@ class IRCd:
             for link in [*self.links.values()]:
                 try:
                     link.writer.close()
-                except (ConnectionError, OSError, asyncio.CancelledError):
+                except OSError:
                     pass
             self.links.clear()
             if self._server:
@@ -478,9 +478,9 @@ class IRCd:
                     break
 
                 state["delay"] = min(state["delay"] * 2, 120)
-        except asyncio.CancelledError:
-            raise
         finally:
+            # finally ensures cleanup runs on CancelledError too — no explicit
+            # except needed for the cancel path.
             self._link_retry_state.pop(peer_name, None)
 
     async def _attempt_single_reconnect(self, peer_name: str, link_config, logger) -> bool:
