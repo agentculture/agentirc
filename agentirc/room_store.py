@@ -39,9 +39,9 @@ class RoomStore:
         }
         path = self._rooms_dir / f"{safe_id}.json"
         tmp = path.with_suffix(".tmp")
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        tmp.rename(path)
+        tmp.replace(path)
 
     def delete(self, room_id: str) -> None:
         """Remove a room's persisted data."""
@@ -59,6 +59,13 @@ class RoomStore:
         if not self._rooms_dir.exists():
             return rooms
         for path in sorted(self._rooms_dir.glob("*.json")):
-            with open(path) as f:
-                rooms.append(json.load(f))
+            try:
+                with open(path, encoding="utf-8") as f:
+                    rooms.append(json.load(f))
+            except (json.JSONDecodeError, OSError) as exc:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Skipping corrupt room file %s: %s", path, exc
+                )
         return rooms

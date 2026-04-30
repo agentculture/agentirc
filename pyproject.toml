@@ -129,7 +129,7 @@ sha256 = "604644ef14a66601fa5c7a8b7e2c2ab7901f39c2a679bbf1d62661c8a9d8ecc1"
 
 [tool.citation.packages.culture-telemetry.files."audit.py"]
 status = "paraphrase"
-sha256 = "4c6d868d343dcda91de3bef9ba7ccab60c5b93709be6e7ae3dfbb0f1f3fb0079"
+sha256 = "0aa7d19f97b7421dffc22cde64448aa654bc90c25b989fd85e775e4e51a0b336"
 
 [tool.citation.packages.culture-telemetry.files."context.py"]
 status = "paraphrase"
@@ -204,12 +204,12 @@ status = "paraphrase"
 sha256 = "ef7e226906f2d44c35f82d7485a9338a8c532b91f511cd30c0a2a34987e039cc"
 
 [tool.citation.packages.culture-agentirc-server-core.files."room_store.py"]
-status = "quote"
-sha256 = "f265ae64ff8b398fc17b2f5f12aaefd01c9b099c775272e68e340538fb62ada3"
+status = "paraphrase"
+sha256 = "a2204ab71ff5ef2f6e84f79c1e22b59b6d4caaff0e7c05a9b75330cc995afa2b"
 
 [tool.citation.packages.culture-agentirc-server-core.files."thread_store.py"]
-status = "quote"
-sha256 = "135bbb7b2696e03bb1f69cd5ae659455600a06c8e38b3df25add274380b5c90b"
+status = "paraphrase"
+sha256 = "5d1dfe2a22c3f6c60adb1986dd36841eca8c13e0235fdd07b1784b54f6326ecc"
 
 [tool.citation.packages.culture-agentirc-server-core.files."history_store.py"]
 status = "quote"

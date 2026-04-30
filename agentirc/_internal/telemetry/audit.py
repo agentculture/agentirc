@@ -114,7 +114,21 @@ class AuditSink:
             return
         if self._writer_task is not None:
             return
-        await asyncio.to_thread(self.audit_dir.mkdir, parents=True, exist_ok=True, mode=0o700)
+        try:
+            await asyncio.to_thread(
+                self.audit_dir.mkdir, parents=True, exist_ok=True, mode=0o700
+            )
+        except OSError as exc:
+            # Restricted/containerized environments may forbid mkdir on the
+            # configured audit path. Log and disable audit rather than crashing
+            # IRCd.start(); the rest of the IRCd is unaffected.
+            logger.warning(
+                "disabling audit: cannot create audit directory %s (%s)",
+                self.audit_dir,
+                exc,
+            )
+            self.enabled = False
+            return
         self.queue = asyncio.Queue(maxsize=self.queue_depth)
         self._writer_task = asyncio.create_task(self._writer_loop(), name="audit-writer")
 

@@ -23,9 +23,9 @@ class ThreadStore:
         key = self._safe_key(thread_data["channel"], thread_data["name"])
         path = self._threads_dir / f"{key}.json"
         tmp = path.with_suffix(".tmp")
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(thread_data, f, indent=2)
-        tmp.rename(path)
+        tmp.replace(path)
 
     def delete(self, channel: str, name: str) -> None:
         """Remove a thread's persisted data."""
