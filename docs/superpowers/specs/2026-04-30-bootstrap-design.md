@@ -170,7 +170,24 @@ Update `agentirc/ircd.py` and any other server file to import from `agentirc.pro
 
 ## Tasks (ordered)
 
-> **Status note (2026-04-30):** Tasks 1, 6, and a stub form of 9 (skeleton-only `pyproject.toml` + dual-script `cli.py` shim) have landed in the package-skeleton PR. The remaining tasks (server-core copy, real `cli.py` from `culture/cli/server.py`, `protocol.py` extraction, tests, CHANGELOG/pre-commit, docs) are the IRCd-extraction PR.
+> **Status note (2026-04-30):**
+>
+> - **Shape A — package skeleton** (PR #2, `9.0.0`): Tasks 1, 6, and a stub form of 9 (skeleton `pyproject.toml` + dual-script `cli.py` shim).
+> - **Shape B-1 — server-core extraction** (this PR, `9.1.0`): Tasks 2, 4, 9 (runtime deps), and a partial 10 (CHANGELOG only — no pre-commit / CI yet). See the "Cite-don't-copy" subsection below for how the no-culture-imports invariant was satisfied.
+> - **Shape B-2 — real CLI + `protocol.py`** (next PR): Tasks 5, 7. Will also vendor `culture.pidfile` and culture-cli-shared helpers into `agentirc/_internal/`.
+> - **Shape B-3 — test suite migration** (PR after that): Task 8.
+> - **Remaining**: 10 (pre-commit + CI), 11–12 (docs), 13–18 (test run, acceptance, tag, publish, report-back).
+>
+> Task 3 (`Copy protocol/extensions/ wholesale`) is dropped: that path doesn't exist in culture. Re-add only if/when culture creates it.
+
+### Cite-don't-copy
+
+The "no `culture` imports remain" invariant and the "files copy as-is, only import-path rewrites" rule were originally stated as if both could hold simultaneously. They cannot — `ircd.py`, `server_link.py`, `events.py`, and the skills also import from `culture.aio`, `culture.constants`, `culture.protocol`, `culture.telemetry`, and (lazily, inside `IRCd.start()`) from `culture.bots.{bot_manager, http_listener}`. Shape B-1 resolves this with the workspace's [`citation-cli`](https://github.com/OriNachum/citation-cli) tool:
+
+- Each vendored culture file is copied into `agentirc/_internal/` (private namespace) or `agentirc/` (public, server-core), with `culture.X` import paths rewritten to the corresponding `agentirc._internal.X` or `agentirc.X`.
+- Each file gets a `[tool.citation.packages.<name>.files."<path>"]` entry in `pyproject.toml` recording its source URL, sha256, and a `quote` / `paraphrase` / `synthesize` status reflecting how much it diverges from the original.
+- `culture.bots.{bot_manager, http_listener}` are too coupled to backend SDKs to vendor as-is (would violate the dependency-boundary rule). They are `synthesize`-status: API-compatible no-op stubs in `agentirc/_internal/bots/` that culture replaces at runtime when wrapping an `IRCd`.
+- `cite check` validates the manifest in CI.
 
 1. **Create the package skeleton.** Add `agentirc/__init__.py`, `agentirc/__main__.py`, empty `agentirc/skills/__init__.py`, the `tests/` directory, the `docs/` directory.
 2. **Copy server-core files** per the Inputs table. Do not modify the contents yet.
