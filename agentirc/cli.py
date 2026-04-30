@@ -1,12 +1,12 @@
 """agentirc CLI entry point.
 
-This is the 9.0.0 skeleton — the major version starts at 9 to leapfrog
-culture's earlier squat-publish of `agentirc-cli==8.7.x.devN` on TestPyPI
-so future dev releases sort as the actual "latest". Only `version` is
-wired up; the IRCd lifecycle verbs (`serve`, `start`, `stop`, `restart`,
-`status`, `link`, `logs`) are stubs that exit non-zero with a clear
-"not yet implemented" message. The real dispatch logic lands when the
-server core is copied from culture in the IRCd extraction PR.
+The major version started at 9 to leapfrog culture's earlier squat-publish
+of `agentirc-cli==8.7.x.devN` on TestPyPI so future dev releases sort as
+the actual "latest". Only `version` is wired up; the IRCd lifecycle verbs
+(`serve`, `start`, `stop`, `restart`, `status`, `link`, `logs`) are stubs
+that exit non-zero with a clear "not yet implemented" message. The real
+dispatch logic lands in PR-B2, extracted from `../culture/culture/cli/
+server.py`.
 
 Public surface (semver-tracked, see docs/api-stability.md once written):
 - `main()` — console-script entry point.

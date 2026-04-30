@@ -86,7 +86,7 @@ agentirc/                          (repo root)
 │   ├── __main__.py                # python -m agentirc → agentirc.cli:main
 │   ├── cli.py                     # main(), dispatch(argv) — NEW
 │   ├── protocol.py                # verb names, numerics, extension tags — NEW
-│   ├── config.py                  # ServerConfig, LinkConfig, PeerSpec (public)
+│   ├── config.py                  # ServerConfig, LinkConfig, TelemetryConfig (public)
 │   ├── ircd.py
 │   ├── server_link.py
 │   ├── channel.py
@@ -147,7 +147,7 @@ The **only** modules culture (and any third-party consumer) is allowed to import
 
 | Module | Members | Stability |
 |---|---|---|
-| `agentirc.config` | `ServerConfig`, `LinkConfig`, `PeerSpec`, plus dataclass fields | Public, semver-tracked. Breaking changes require a major bump. |
+| `agentirc.config` | `ServerConfig`, `LinkConfig`, `TelemetryConfig`, plus dataclass fields | Public, semver-tracked. Breaking changes require a major bump. |
 | `agentirc.cli` | `main()`, `dispatch(argv) -> int` | Public, semver-tracked. |
 | `agentirc.protocol` | Verb name constants, numeric reply codes, extension tag names | Public, semver-tracked. |
 
@@ -170,7 +170,24 @@ Update `agentirc/ircd.py` and any other server file to import from `agentirc.pro
 
 ## Tasks (ordered)
 
-> **Status note (2026-04-30):** Tasks 1, 6, and a stub form of 9 (skeleton-only `pyproject.toml` + dual-script `cli.py` shim) have landed in the package-skeleton PR. The remaining tasks (server-core copy, real `cli.py` from `culture/cli/server.py`, `protocol.py` extraction, tests, CHANGELOG/pre-commit, docs) are the IRCd-extraction PR.
+> **Status note (2026-04-30):**
+>
+> - **Shape A — package skeleton** (PR #2, `9.0.0`): Tasks 1, 6, and a stub form of 9 (skeleton `pyproject.toml` + dual-script `cli.py` shim).
+> - **Shape B-1 — server-core extraction** (this PR, `9.1.0`): Tasks 2, 4, 9 (runtime deps), and a partial 10 (CHANGELOG only — no pre-commit / CI yet). See the "Cite-don't-copy" subsection below for how the no-culture-imports invariant was satisfied.
+> - **Shape B-2 — real CLI + `protocol.py`** (next PR): Tasks 5, 7. Will also vendor `culture.pidfile` and culture-cli-shared helpers into `agentirc/_internal/`.
+> - **Shape B-3 — test suite migration** (PR after that): Task 8.
+> - **Remaining**: 10 (pre-commit + CI), 11–12 (docs), 13–18 (test run, acceptance, tag, publish, report-back).
+>
+> Task 3 (`Copy protocol/extensions/ wholesale`) is dropped: that path doesn't exist in culture. Re-add only if/when culture creates it.
+
+### Cite-don't-copy
+
+The "no `culture` imports remain" invariant and the "files copy as-is, only import-path rewrites" rule were originally stated as if both could hold simultaneously. They cannot — `ircd.py`, `server_link.py`, `events.py`, and the skills also import from `culture.aio`, `culture.constants`, `culture.protocol`, `culture.telemetry`, and (lazily, inside `IRCd.start()`) from `culture.bots.{bot_manager, http_listener}`. Shape B-1 resolves this with the workspace's [`citation-cli`](https://github.com/OriNachum/citation-cli) tool:
+
+- Each vendored culture file is copied into `agentirc/_internal/` (private namespace) or `agentirc/` (public, server-core), with `culture.X` import paths rewritten to the corresponding `agentirc._internal.X` or `agentirc.X`.
+- Each file gets a `[tool.citation.packages.<name>.files."<path>"]` entry in `pyproject.toml` recording its source URL, sha256, and a `quote` / `paraphrase` / `synthesize` status reflecting how much it diverges from the original.
+- `culture.bots.{bot_manager, http_listener}` are too coupled to backend SDKs to vendor as-is (would violate the dependency-boundary rule). They are `synthesize`-status: API-compatible no-op stubs in `agentirc/_internal/bots/` that culture replaces at runtime when wrapping an `IRCd`.
+- `cite check` validates the manifest in CI.
 
 1. **Create the package skeleton.** Add `agentirc/__init__.py`, `agentirc/__main__.py`, empty `agentirc/skills/__init__.py`, the `tests/` directory, the `docs/` directory.
 2. **Copy server-core files** per the Inputs table. Do not modify the contents yet.
@@ -212,7 +229,7 @@ When in doubt, prefer moving tests *here* over leaving them in culture: this rep
 - The installed package has no runtime dependency on `claude-agent-sdk`, `anthropic`, or any backend SDK, and does not install a `culture` console script.
 - `agentirc start --config ~/.culture/server.yaml` behaves indistinguishably from today's `culture server start` (same accepting socket, same log output, same systemd integration).
 - `agentirc serve --config ~/.culture/server.yaml` runs the same IRCd in the foreground (no daemonization). No culture analogue — this is the new standalone-friendly entry point.
-- `agentirc.config.LinkConfig`, `agentirc.config.PeerSpec`, `agentirc.cli.dispatch`, and `agentirc.protocol.*` are importable from a clean Python session.
+- `agentirc.config.LinkConfig`, `agentirc.config.TelemetryConfig`, `agentirc.cli.dispatch`, and `agentirc.protocol.*` are importable from a clean Python session.
 - All tests in `tests/` pass under `pytest -n auto`.
 - `git grep -E '^(from|import) culture' agentirc/ tests/` returns nothing.
 - `agentirc --help` lists every verb in the CLI surface table above.

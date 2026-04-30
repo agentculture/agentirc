@@ -2,11 +2,20 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current state: skeleton package, pre-extraction
+## Current state: server-core landed (9.1.0), CLI stubbed (PR-B2 next)
 
-This repo is being bootstrapped from a server-core extraction out of the sibling project [`culture`](https://github.com/OriNachum/culture). The package skeleton is in place — `pyproject.toml`, `agentirc/__init__.py`, `agentirc/__main__.py`, `agentirc/cli.py` (stub) — and `pip install -e .` produces working `agentirc` and `agentirc-cli` console scripts. The IRCd server core has **not** been copied from culture yet; all lifecycle verbs (`serve`, `start`, `stop`, `restart`, `status`, `link`, `logs`) currently exit non-zero with a "not yet implemented" message. **Read the bootstrap spec before doing anything else**; it is the operative source of truth and is intentionally self-contained.
+This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/OriNachum/culture). As of 9.1.0, the IRCd server core is in place — `agentirc/{ircd,server_link,channel,events,skill,remote_client,…}.py` and `agentirc/skills/{rooms,threads,history,icon}.py` are all present, copied from `culture@df50942` via the `cite-don't-copy` pattern (see `[tool.citation]` in `pyproject.toml`). Internal vendored support modules live under `agentirc/_internal/` (`aio`, `constants`, `protocol/`, `telemetry/`, `virtual_client`, `bots/` stubs).
 
-The culture-side counterpart spec is at `../culture/docs/superpowers/specs/2026-04-30-agentirc-extraction-design.md`. You should not need to open it to act, but it explains the *why* if a decision in the agentirc spec looks arbitrary.
+What is **not** done yet:
+- **`agentirc/cli.py`** is still the Shape A stub. All lifecycle verbs (`serve`, `start`, `stop`, `restart`, `status`, `link`, `logs`) print "not yet implemented" and exit 1. The real CLI lands in PR-B2 (extracted from `../culture/culture/cli/server.py`).
+- **`agentirc/protocol.py`** does not exist yet (PR-B2 also).
+- **Test suite migration** is PR-B3.
+
+Read the bootstrap spec at `docs/superpowers/specs/2026-04-30-bootstrap-design.md` for the full plan; it is the operative source of truth and is intentionally self-contained. The culture-side counterpart spec is at `../culture/docs/superpowers/specs/2026-04-30-agentirc-extraction-design.md` — not normally needed, but explains *why* if a decision looks arbitrary.
+
+### Cite-don't-copy
+
+Vendored culture code is tracked under `[tool.citation]` in `pyproject.toml` using the workspace's [`citation-cli`](https://github.com/OriNachum/citation-cli) tool. Each vendored file has a `quote` (verbatim copy), `paraphrase` (copied with import rewrites), or `synthesize` (rewritten as agentirc-native) status. Run `cite check` to verify integrity. When pulling new culture changes, update the citation entries' source URLs and sha256s — the manifest is the provenance ledger.
 
 ## Three names, one project
 
@@ -22,9 +31,9 @@ There are three different names in play. Don't conflate them:
 
 ## What lives here vs. in culture
 
-- **Server-core (here):** `ircd.py`, `server_link.py`, `channel.py`, `config.py`, `events.py`, the stores (`room_store`, `thread_store`, `history_store`), `rooms_util.py`, `skill.py`, and the `skills/` directory (`rooms`, `threads`, `history`, `icon`).
-- **Stays in culture:** `client.py`, `remote_client.py`, and any test that exercises the IRC *client transport* rather than the server.
-- **Newly created here:** `agentirc/cli.py` (extracted from `../culture/culture/cli/server.py`), `agentirc/__main__.py`, and `agentirc/protocol.py` (consolidates verb names, numerics, and extension tag names that today are inlined as string literals in `ircd.py` / `client.py`).
+- **Server-core (here):** `ircd.py`, `server_link.py`, `channel.py`, `config.py`, `events.py`, the stores (`room_store`, `thread_store`, `history_store`), `rooms_util.py`, `skill.py`, `remote_client.py`, and the `skills/` directory (`rooms`, `threads`, `history`, `icon`). Vendored support under `agentirc/_internal/` (`aio`, `constants`, `protocol/`, `telemetry/`, `virtual_client`, `bots/` stubs).
+- **Stays in culture:** `client.py` (full IRC client transport, used by bots) and any test that exercises the IRC *client transport* rather than the server. Note: the bootstrap spec originally also listed `remote_client.py` as "stays in culture", but it turned out to be a 43-line server-side ghost-client stub used by `server_link.py`; it's vendored here. See PR-B1 commit history.
+- **Newly created here:** `agentirc/cli.py` (today: skeleton stub from PR Shape A; PR-B2 extracts the real one from `../culture/culture/cli/server.py`), `agentirc/__main__.py`. **Coming in PR-B2:** `agentirc/protocol.py` (consolidates verb names, numerics, and extension tag names currently inlined as string literals in `ircd.py` / `client.py`).
 
 When migrating tests, the rule is: pure server tests come here, transport tests stay in culture, mixed tests stay in culture and get rewritten to drive `agentirc serve` as a subprocess fixture rather than importing `IRCd` directly. When unsure, **prefer copying the test here** — this repo owns the IRCd.
 
@@ -34,7 +43,7 @@ Only three modules are public. Everything else is internal and may be refactored
 
 | Module | Members |
 |---|---|
-| `agentirc.config` | `ServerConfig`, `LinkConfig`, `PeerSpec` |
+| `agentirc.config` | `ServerConfig`, `LinkConfig`, `TelemetryConfig` |
 | `agentirc.cli` | `main()`, `dispatch(argv) -> int` |
 | `agentirc.protocol` | verb name constants, numeric reply codes, extension tag names |
 
@@ -51,7 +60,7 @@ Do not rename on-disk artifacts during the bootstrap. That is explicitly out of 
 ## Hard invariants
 
 - **No imports back into culture.** After the bootstrap, `git grep -E '^(from|import) culture' agentirc/ tests/` must return nothing. CI should enforce this.
-- **No file rewrites in the bootstrap.** Files copy from `../culture/culture/agentirc/` as-is, with import paths rewritten (`from culture.agentirc.X` → `from agentirc.X`) and nothing else. Improvements ship in follow-up PRs.
+- **Cite-don't-copy adaptation only.** Files copy from `../culture/` with import paths rewritten and minimal adaptation where the dependency boundary forces it (e.g. `culture.bots.{bot_manager,http_listener}` are stubbed to no-ops in `agentirc/_internal/bots/`). All adaptations are recorded in `[tool.citation]` with status `paraphrase` or `synthesize`. Improvements beyond what's needed for the dependency boundary ship in follow-up PRs.
 - **Single synthetic first commit.** Message format: `Initial import from culture@<SHA>` where `<SHA>` is the culture commit ID the caller provides. No cherry-picked history.
 - **No backend SDKs, no `culture` console script.** agentirc must not depend on `claude-agent-sdk`, `anthropic`, `agex-cli`, `afi-cli`, `github-copilot-sdk`, or any other agent/backend SDK, and must not declare a `culture` console script. Those are culture concerns — agent backends and the `culture` command live in `../culture` and stay there.
 
