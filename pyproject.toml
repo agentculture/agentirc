@@ -24,7 +24,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Communications :: Chat :: Internet Relay Chat",
 ]
-dependencies = []
+dependencies = [
+    "opentelemetry-api>=1.22",
+    "opentelemetry-sdk>=1.22",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.22",
+]
 
 [project.license]
 file = "LICENSE"
@@ -39,6 +43,7 @@ dev = [
     "flake8",
     "pylint",
     "bandit",
+    "citation-cli",
 ]
 
 [project.scripts]
@@ -76,3 +81,168 @@ cited = "2026-04-30"
 [tool.citation.packages.culture-aio.files."aio.py"]
 status = "quote"
 sha256 = "70ea1f2ca51d33d9e81c80926efe57a7e3d03a2b80605e09cb90ac91e7d12a92"
+
+[tool.citation.packages.culture-constants]
+schema = 2
+source = "https://github.com/OriNachum/culture/blob/df50942/culture/constants.py"
+version = "df50942"
+target = "agentirc/_internal/constants.py"
+cited = "2026-04-30"
+
+[tool.citation.packages.culture-constants.files."constants.py"]
+status = "quote"
+sha256 = "681e070655204d0412bcaadf633408d23caf72e13f6b17039ee8487e74f7d7dd"
+
+[tool.citation.packages.culture-protocol-message]
+schema = 2
+source = "https://github.com/OriNachum/culture/blob/df50942/culture/protocol/message.py"
+version = "df50942"
+target = "agentirc/_internal/protocol/message.py"
+cited = "2026-04-30"
+
+[tool.citation.packages.culture-protocol-message.files."message.py"]
+status = "quote"
+sha256 = "e2817ce3de414a4890b9eb2824e151461ee4de5a442fd34cfefaac5840b0bdac"
+
+[tool.citation.packages.culture-protocol-replies]
+schema = 2
+source = "https://github.com/OriNachum/culture/blob/df50942/culture/protocol/replies.py"
+version = "df50942"
+target = "agentirc/_internal/protocol/replies.py"
+cited = "2026-04-30"
+
+[tool.citation.packages.culture-protocol-replies.files."replies.py"]
+status = "quote"
+sha256 = "53b7a94f76a6853217c905d4e13cc898c181fc2e9201738bb2c18f5e719a9e8f"
+
+[tool.citation.packages.culture-telemetry]
+schema = 2
+source = "https://github.com/OriNachum/culture/tree/df50942/culture/telemetry"
+version = "df50942"
+target = "agentirc/_internal/telemetry/"
+cited = "2026-04-30"
+notes = "Whole package vendored verbatim with import-path rewrites: from culture.telemetry.X to from agentirc._internal.telemetry.X, from culture.protocol.message to from agentirc._internal.protocol.message, from culture.agentirc.config to from agentirc.config, from culture.agentirc.skill (TYPE_CHECKING) to from agentirc.skill."
+
+[tool.citation.packages.culture-telemetry.files."__init__.py"]
+status = "paraphrase"
+sha256 = "604644ef14a66601fa5c7a8b7e2c2ab7901f39c2a679bbf1d62661c8a9d8ecc1"
+
+[tool.citation.packages.culture-telemetry.files."audit.py"]
+status = "paraphrase"
+sha256 = "4c6d868d343dcda91de3bef9ba7ccab60c5b93709be6e7ae3dfbb0f1f3fb0079"
+
+[tool.citation.packages.culture-telemetry.files."context.py"]
+status = "paraphrase"
+sha256 = "4c887a600dd5572da12830247781f053d0aee67ac11e9dc9b4ce099091ee2505"
+
+[tool.citation.packages.culture-telemetry.files."metrics.py"]
+status = "paraphrase"
+sha256 = "fc34b24e36b5059f2de21cdf913dc3b640beab560fe827d247ff0100f044ce1e"
+
+[tool.citation.packages.culture-telemetry.files."tracing.py"]
+status = "paraphrase"
+sha256 = "17262e10e4cb1d3fa1db56c7b966e33757d4581fe961789d8f1f7197f3328c02"
+
+[tool.citation.packages.culture-virtual-client]
+schema = 2
+source = "https://github.com/OriNachum/culture/blob/df50942/culture/bots/virtual_client.py"
+version = "df50942"
+target = "agentirc/_internal/virtual_client.py"
+cited = "2026-04-30"
+notes = "Vendored verbatim with imports rewritten: from culture.agentirc.skill to from agentirc.skill, from culture.protocol.message to from agentirc._internal.protocol.message, from culture.agentirc.remote_client (lazy) to from agentirc.remote_client."
+
+[tool.citation.packages.culture-virtual-client.files."virtual_client.py"]
+status = "paraphrase"
+sha256 = "e8cb5155d7cf950521b0a55eafcaf4936356579706255ebf1c5adc418a68cdb6"
+
+[tool.citation.packages.culture-bots-stubs]
+schema = 2
+source = "https://github.com/OriNachum/culture/tree/df50942/culture/bots"
+version = "df50942"
+target = "agentirc/_internal/bots/"
+cited = "2026-04-30"
+notes = "API-compatible no-op stubs of culture.bots.bot_manager.BotManager and culture.bots.http_listener.HttpListener. Original culture implementations depend on backend SDKs (claude-agent-sdk, anthropic, etc.) which agentirc's dependency boundary forbids. Culture replaces these stubs at runtime when wrapping an IRCd."
+
+[tool.citation.packages.culture-bots-stubs.files."__init__.py"]
+status = "synthesize"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+[tool.citation.packages.culture-bots-stubs.files."bot_manager.py"]
+status = "synthesize"
+sha256 = "a9c378704ca9b01ebca88e2e0c2dd2ff9092a8fb7b492f8fd27a936bd9faf7ea"
+
+[tool.citation.packages.culture-bots-stubs.files."http_listener.py"]
+status = "synthesize"
+sha256 = "325c17db1b5f002c4122faebe20457810c19bd1804bbfe62357a12fb4fcd5af3"
+
+[tool.citation.packages.culture-agentirc-server-core]
+schema = 2
+source = "https://github.com/OriNachum/culture/tree/df50942/culture/agentirc"
+version = "df50942"
+target = "agentirc/"
+cited = "2026-04-30"
+notes = "Server-core package vendored from culture/agentirc/. Imports rewritten from culture.agentirc.X to agentirc.X, from culture.aio/constants/protocol/telemetry/bots.virtual_client to agentirc._internal.X, and from culture.bots.{bot_manager,http_listener} to agentirc._internal.bots.X (stubs). DOES NOT include client.py (transport, stays in culture). Includes remote_client.py (43-line server-side stub that the bootstrap spec misclassified as transport — see commit 8b4a6d8 for rationale)."
+
+[tool.citation.packages.culture-agentirc-server-core.files."ircd.py"]
+status = "paraphrase"
+sha256 = "a4a6b6843f6b749b346642e13dcc42fb0b3b10bdb2219ab6b6ba7470ac2b39a4"
+
+[tool.citation.packages.culture-agentirc-server-core.files."server_link.py"]
+status = "paraphrase"
+sha256 = "9b8f6122ec67f0b1505e2595a6352cf51c7fcd118ac369743360470389c0831b"
+
+[tool.citation.packages.culture-agentirc-server-core.files."channel.py"]
+status = "paraphrase"
+sha256 = "4dfa6c216d92ff15699c748aede3d3271af1413fc8b70bfc0d9ad04c9f85e172"
+
+[tool.citation.packages.culture-agentirc-server-core.files."config.py"]
+status = "quote"
+sha256 = "e44ca2a7ee38e8a575275ad6a2109f2711d79e458568ac15b95741a1e459f301"
+
+[tool.citation.packages.culture-agentirc-server-core.files."events.py"]
+status = "paraphrase"
+sha256 = "ef7e226906f2d44c35f82d7485a9338a8c532b91f511cd30c0a2a34987e039cc"
+
+[tool.citation.packages.culture-agentirc-server-core.files."room_store.py"]
+status = "quote"
+sha256 = "f265ae64ff8b398fc17b2f5f12aaefd01c9b099c775272e68e340538fb62ada3"
+
+[tool.citation.packages.culture-agentirc-server-core.files."thread_store.py"]
+status = "quote"
+sha256 = "135bbb7b2696e03bb1f69cd5ae659455600a06c8e38b3df25add274380b5c90b"
+
+[tool.citation.packages.culture-agentirc-server-core.files."history_store.py"]
+status = "quote"
+sha256 = "f0d63ae8ad665c9ac490ef5c5785a274d0a5e1efb2685c629041d1fff3f112cf"
+
+[tool.citation.packages.culture-agentirc-server-core.files."rooms_util.py"]
+status = "quote"
+sha256 = "e65d013325bb413f442224b7a76a4285ab5d31485e9e18d3a38913bd8eed341f"
+
+[tool.citation.packages.culture-agentirc-server-core.files."skill.py"]
+status = "paraphrase"
+sha256 = "ac4dbd1a0eda05cbae8dde9570b3f0f375cde365d8a5a0b1eaaa8acd2da2a789"
+
+[tool.citation.packages.culture-agentirc-server-core.files."remote_client.py"]
+status = "paraphrase"
+sha256 = "afdfa04d39a46f1d798a020c2f929f816417cb0a4d13575cffbcc02726345df0"
+
+[tool.citation.packages.culture-agentirc-server-core.files."skills/__init__.py"]
+status = "quote"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+[tool.citation.packages.culture-agentirc-server-core.files."skills/rooms.py"]
+status = "paraphrase"
+sha256 = "05c7fa1ee5ba7e629b674d9c84e72b930994f4ed396350b6870af0407cf501eb"
+
+[tool.citation.packages.culture-agentirc-server-core.files."skills/threads.py"]
+status = "paraphrase"
+sha256 = "3a7150300bc081a29d8da88c0476cd83b7efb308ce3123094112722d94c80b1c"
+
+[tool.citation.packages.culture-agentirc-server-core.files."skills/history.py"]
+status = "paraphrase"
+sha256 = "574682bfc9f042e8c1a304db17cfb4b1e1034f384241b83aaaecfb64decb2271"
+
+[tool.citation.packages.culture-agentirc-server-core.files."skills/icon.py"]
+status = "paraphrase"
+sha256 = "5ef97657599a37476b96aa59968373aed8c82024027297f8300be9886dc18d4a"
