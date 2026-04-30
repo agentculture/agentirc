@@ -1,10 +1,12 @@
 """IRC client connection state and command handling.
 
-Vendored from culture@df50942 (`culture/agentirc/client.py`) with import
-paths rewritten only — body unchanged. Originally this module was meant
-to "stay in culture", but its only culture imports are support modules
-already vendored in agentirc (`aio`, `constants`, `protocol`,
-`telemetry`) and server-core peers (`channel`, `skill`). Without it,
+Vendored from culture@df50942 (`culture/agentirc/client.py`) with
+import paths rewritten and this vendoring-context docstring added;
+the ``Client`` class body is unchanged. Originally the bootstrap
+spec said this module would "stay in culture", but its only culture
+imports are support modules already vendored in agentirc (`aio`,
+`constants`, `protocol`, `telemetry`) and server-core peers
+(`channel`, `skill`). Without it,
 `agentirc/ircd.py:_accept_c2s_connection` cannot accept a TCP IRC
 client.
 """

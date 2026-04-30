@@ -197,7 +197,7 @@ notes = "Vendored from culture/agentirc/client.py with import paths rewritten on
 
 [tool.citation.packages.culture-client.files."client.py"]
 status = "paraphrase"
-sha256 = "b7d57749b9c7c310331a671ff59d4b8059ebe30c975234711eb5a23ab0ddd050"
+sha256 = "37ab9ffc98bbbf618a1a84fe046f0db3980ae29de8e7c687e0364afc82c5ff4b"
 
 [tool.citation.packages.culture-cli-server]
 schema = 2
@@ -209,7 +209,7 @@ notes = "Real lifecycle CLI extracted from culture/cli/server.py and reshaped as
 
 [tool.citation.packages.culture-cli-server.files."cli.py"]
 status = "paraphrase"
-sha256 = "5ec414b73d48b53d67f3dc3fea8af47c2f23b14eb6246b84139fd4ffa584751c"
+sha256 = "32022b472b5bb13627893a37383ef05af3d91deb1a833ac4109dc3b84b5c628a"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2

@@ -100,7 +100,10 @@ def _add_start_flags(parser: argparse.ArgumentParser) -> None:
         "--webhook-port",
         type=int,
         default=7680,
-        help="HTTP port for bot webhooks (default: 7680)",
+        help=(
+            "HTTP port for bot webhooks (default: 7680; "
+            "inert in agentirc until a bot harness is wired in)"
+        ),
     )
     parser.add_argument(
         "--data-dir",

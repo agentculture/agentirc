@@ -56,6 +56,11 @@ Only three modules are public. Everything else is internal and may be refactored
 
 `agentirc.cli.dispatch(argv)` is the function `culture`'s `culture server` shim calls — it must accept the exact same flag set, exit codes, and stderr formatting that `culture server` produces today. Do not "improve" CLI ergonomics during the bootstrap; that breaks the transparency contract culture relies on. `dispatch()` returns `int` on successful command dispatch and lets argparse's `SystemExit` propagate on `--help`/`--version`/parse-errors per Python convention; in-process callers (i.e. culture's shim) must catch `SystemExit` themselves or use `subprocess`.
 
+Two intentional, additive deltas vs. culture's CLI:
+
+- `agentirc status` prints `Server 'X': running (PID N, port P)` when a port file is present — culture only prints `(PID N)`. Strictly a superset; culture's shim relies on exit codes, not output parsing.
+- `agentirc start` no longer accepts `--mesh-config` (depends on `culture.credentials` and `culture.mesh_config`, out of agentirc's scope). Use `--link name:host:port:password[:trust]` flags instead.
+
 ## Defaults preserve culture continuity
 
 - Default `--config` path: `~/.culture/server.yaml` (yes, `.culture/`, not `.agentirc/`).
