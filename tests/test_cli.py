@@ -1,8 +1,9 @@
 """Smoke tests for the agentirc CLI skeleton.
 
-These exist to exercise the public `dispatch()` contract — culture's shim
-calls it in-process and depends on it returning an `int` rather than
-raising `SystemExit`. They also lock in the dual-script + version-source
+These exercise the public `dispatch()` contract — it returns an `int`
+exit code on successful command dispatch, and lets argparse's
+`SystemExit` propagate on `--help`/`--version`/parse-errors per Python
+convention. They also lock in the dual-script + version-source
 invariants from CLAUDE.md.
 """
 
@@ -25,24 +26,24 @@ def test_version_subcommand_returns_zero(capsys):
     assert out == f"agentirc {__version__}"
 
 
-def test_help_returns_int_not_systemexit(capsys):
-    """argparse raises SystemExit on --help; dispatch must catch and return."""
-    rc = dispatch(["--help"])
-    assert isinstance(rc, int)
-    assert rc == 0
+def test_help_raises_systemexit_zero(capsys):
+    """argparse raises SystemExit(0) on --help; dispatch lets it propagate."""
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch(["--help"])
+    assert exc_info.value.code == 0
 
 
-def test_version_flag_returns_int_not_systemexit(capsys):
-    rc = dispatch(["--version"])
-    assert isinstance(rc, int)
-    assert rc == 0
+def test_version_flag_raises_systemexit_zero(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch(["--version"])
+    assert exc_info.value.code == 0
 
 
-def test_unknown_verb_returns_int_not_systemexit():
-    """Parse errors (unknown subcommand) must come back as a non-zero int."""
-    rc = dispatch(["nonsense-verb"])
-    assert isinstance(rc, int)
-    assert rc != 0
+def test_unknown_verb_raises_systemexit_nonzero(capsys):
+    """Parse errors (unknown subcommand) raise SystemExit with non-zero code."""
+    with pytest.raises(SystemExit) as exc_info:
+        dispatch(["nonsense-verb"])
+    assert exc_info.value.code != 0
 
 
 def test_no_argv_prints_help_and_returns_one():

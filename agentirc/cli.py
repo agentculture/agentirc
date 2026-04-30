@@ -11,9 +11,12 @@ server core is copied from culture in the IRCd extraction PR.
 Public surface (semver-tracked, see docs/api-stability.md once written):
 - `main()` — console-script entry point.
 - `dispatch(argv)` — the function culture's `culture server` shim calls.
-  Always returns an `int` exit code; `--help`/`--version`/parse errors are
-  caught so this is safe to call in-process from a host that wants the
-  return value rather than process termination.
+  Returns an `int` exit code on successful command dispatch. Per Python
+  convention, argparse raises `SystemExit` for `--help`, `--version`, and
+  parse errors; we let that propagate (do not silently swallow). In-process
+  callers that want a return value rather than process termination must
+  catch `SystemExit` themselves — typically `try: rc = dispatch(argv);
+  except SystemExit as e: rc = e.code or 0`.
 """
 
 from __future__ import annotations
@@ -67,14 +70,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def dispatch(argv: Sequence[str]) -> int:
+    # argparse raises SystemExit on --help, --version, and parse errors.
+    # We let that propagate per Python convention; in-process callers must
+    # catch SystemExit themselves.
     parser = _build_parser()
-    try:
-        args = parser.parse_args(list(argv))
-    except SystemExit as exc:
-        # argparse exits on --help (code 0), --version (code 0), or parse
-        # errors (code 2). Convert to a return value so culture's shim can
-        # call dispatch() in-process without terminating the host.
-        return int(exc.code) if isinstance(exc.code, int) else 1
+    args = parser.parse_args(list(argv))
 
     if args.verb is None:
         parser.print_help(sys.stderr)

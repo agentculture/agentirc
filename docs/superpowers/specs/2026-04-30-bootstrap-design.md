@@ -116,7 +116,7 @@ agentirc/                          (repo root)
 `agentirc.cli` exposes:
 
 - `main()` — entrypoint backing both the `agentirc` and `agentirc-cli` console scripts.
-- `dispatch(argv: list[str]) -> int` — the exact function culture's shim will call. Same flag set, same exit codes, same output as the binary. (Culture's `culture server <verb> <args>` becomes `dispatch([<verb>, *<args>])`. It is a pure passthrough; culture does not parse, validate, or rename any flag.)
+- `dispatch(argv: list[str]) -> int` — the exact function culture's shim will call. Same flag set, same exit codes, same output as the binary. (Culture's `culture server <verb> <args>` becomes `dispatch([<verb>, *<args>])`. It is a pure passthrough; culture does not parse, validate, or rename any flag.) Returns `int` on successful command dispatch; raises `SystemExit` on `--help`/`--version`/parse-errors per argparse convention. Culture's shim must catch `SystemExit` (or use `subprocess.run(["agentirc", ...])` instead of an in-process call).
 
 Subcommands cover the full server lifecycle agentirc exposes. Some verbs match `culture server …` today (`start`, `stop`, `status`); the rest are agentirc-only additions. Culture's pure-passthrough shim only ever emits the verbs culture itself uses, so adding new verbs here doesn't break it — culture sees its existing verbs forwarded unchanged, while standalone agentirc users get the broader surface.
 

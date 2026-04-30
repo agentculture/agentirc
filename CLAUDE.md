@@ -38,7 +38,7 @@ Only three modules are public. Everything else is internal and may be refactored
 | `agentirc.cli` | `main()`, `dispatch(argv) -> int` |
 | `agentirc.protocol` | verb name constants, numeric reply codes, extension tag names |
 
-`agentirc.cli.dispatch(argv)` is the function `culture`'s `culture server` shim calls — it must accept the exact same flag set, exit codes, and stderr formatting that `culture server` produces today. Do not "improve" CLI ergonomics during the bootstrap; that breaks the transparency contract culture relies on.
+`agentirc.cli.dispatch(argv)` is the function `culture`'s `culture server` shim calls — it must accept the exact same flag set, exit codes, and stderr formatting that `culture server` produces today. Do not "improve" CLI ergonomics during the bootstrap; that breaks the transparency contract culture relies on. `dispatch()` returns `int` on successful command dispatch and lets argparse's `SystemExit` propagate on `--help`/`--version`/parse-errors per Python convention; in-process callers (i.e. culture's shim) must catch `SystemExit` themselves or use `subprocess`.
 
 ## Defaults preserve culture continuity
 
