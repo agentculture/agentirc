@@ -170,7 +170,7 @@ class VirtualClient:
     async def send_dm(self, target_nick: str, text: str) -> None:
         """Send a direct PRIVMSG to a specific user."""
         text = _sanitize_irc_text(text)
-        from agentirc._internal.remote_client import RemoteClient
+        from agentirc.remote_client import RemoteClient
 
         recipient = self.server.get_client(target_nick)
         if not recipient:
@@ -197,7 +197,7 @@ class VirtualClient:
         """Send NOTICE to any @mentioned users in the text."""
         import re
 
-        from agentirc._internal.remote_client import RemoteClient
+        from agentirc.remote_client import RemoteClient
 
         mentioned_nicks = re.findall(r"@(\S+)", text)
         if not mentioned_nicks:
