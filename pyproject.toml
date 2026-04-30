@@ -75,7 +75,7 @@ testpaths = [
 schema = 2
 source = "https://github.com/OriNachum/culture/blob/df50942/culture/aio.py"
 version = "df50942"
-target = "agentirc/_internal/aio.py"
+target = "agentirc/_internal/"
 cited = "2026-04-30"
 
 [tool.citation.packages.culture-aio.files."aio.py"]
@@ -86,7 +86,7 @@ sha256 = "70ea1f2ca51d33d9e81c80926efe57a7e3d03a2b80605e09cb90ac91e7d12a92"
 schema = 2
 source = "https://github.com/OriNachum/culture/blob/df50942/culture/constants.py"
 version = "df50942"
-target = "agentirc/_internal/constants.py"
+target = "agentirc/_internal/"
 cited = "2026-04-30"
 
 [tool.citation.packages.culture-constants.files."constants.py"]
@@ -97,7 +97,7 @@ sha256 = "681e070655204d0412bcaadf633408d23caf72e13f6b17039ee8487e74f7d7dd"
 schema = 2
 source = "https://github.com/OriNachum/culture/blob/df50942/culture/protocol/message.py"
 version = "df50942"
-target = "agentirc/_internal/protocol/message.py"
+target = "agentirc/_internal/protocol/"
 cited = "2026-04-30"
 
 [tool.citation.packages.culture-protocol-message.files."message.py"]
@@ -108,7 +108,7 @@ sha256 = "e2817ce3de414a4890b9eb2824e151461ee4de5a442fd34cfefaac5840b0bdac"
 schema = 2
 source = "https://github.com/OriNachum/culture/blob/df50942/culture/protocol/replies.py"
 version = "df50942"
-target = "agentirc/_internal/protocol/replies.py"
+target = "agentirc/_internal/protocol/"
 cited = "2026-04-30"
 
 [tool.citation.packages.culture-protocol-replies.files."replies.py"]
