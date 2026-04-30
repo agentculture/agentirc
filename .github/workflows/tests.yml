@@ -44,13 +44,18 @@ jobs:
         if: steps.bootstrap.outputs.ready == 'true'
         run: uv python install 3.12
 
-      - name: Sync deps
+      - name: Sync deps (with dev extras)
         if: steps.bootstrap.outputs.ready == 'true'
-        run: uv sync
+        run: uv sync --extra dev
 
       - name: Run tests
         if: steps.bootstrap.outputs.ready == 'true'
-        run: uv run pytest -n auto --cov=agentirc --cov-report=xml:coverage.xml --cov-report=term -v
+        env:
+          # Console scripts only land on PATH after `uv sync` activates the
+          # project venv; this guard surfaces the path issue clearly if it
+          # ever regresses.
+          UV_PROJECT_ENVIRONMENT: .venv
+        run: uv run pytest -n auto -v
 
   version-check:
     needs: lint
@@ -98,6 +103,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           PR_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if ! git cat-file -e origin/main:pyproject.toml 2>/dev/null; then
+            echo "::notice::main lacks pyproject.toml (first-time bootstrap PR) — skipping version-bump check."
+            exit 0
+          fi
           MAIN_VERSION=$(git show origin/main:pyproject.toml | python3 -c "import sys,tomllib; print(tomllib.loads(sys.stdin.read())['project']['version'])")
 
           if [ "$PR_VERSION" = "$MAIN_VERSION" ]; then

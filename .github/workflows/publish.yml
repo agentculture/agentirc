@@ -4,12 +4,12 @@ name: Publish to PyPI
 # steps are no-ops; once the bootstrap PR adds pyproject.toml, they activate.
 #
 # Trusted Publishing must be configured on PyPI/TestPyPI for this repo before
-# the first real publish.
+# the first real publish. The TestPyPI alias publish (`agentirc`) requires a
+# separate TP configuration on TestPyPI for the `agentirc` project name.
 #
-# NOTE: Until culture's cutover lands (Track A in the bootstrap spec), culture
-# squat-publishes `agentirc-cli` from its own publish.yml. This workflow
-# assumes culture has already removed the `agentirc-cli` alias before we
-# attempt our first 0.1.0 release.
+# Versioning: starts at 9.0.0 to leapfrog culture's earlier squat-publish of
+# `agentirc-cli==8.7.X.devN` on TestPyPI (now disabled). See CLAUDE.md
+# "Versioning" section for the full reasoning.
 
 on:
   push:
@@ -52,7 +52,7 @@ jobs:
 
       - run: uv python install 3.12
 
-      - run: uv sync
+      - run: uv sync --extra dev
 
       - run: uv run pytest -n auto -v
 
@@ -85,10 +85,27 @@ jobs:
           uv build
           uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always --check-url https://test.pypi.org/simple/
 
+      # Mirror the dev release under the `agentirc` distribution name so users
+      # can reach it as either `pip install agentirc-cli==X` or `pip install
+      # agentirc==X` from TestPyPI. Real PyPI publishes only `agentirc-cli`
+      # (the squatted `agentirc` on real PyPI is not ours).
+      #
+      # NOTE: Trusted Publishing must be configured separately on TestPyPI
+      # for the `agentirc` project. If this step fails with a TP error, set
+      # up TP for project `agentirc` on TestPyPI and re-run.
+      - name: Build and publish agentirc (alias) to TestPyPI
+        run: |
+          rm -rf dist/
+          sed -i 's/^name = "agentirc-cli"$/name = "agentirc"/' pyproject.toml
+          uv build
+          uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always --check-url https://test.pypi.org/simple/
+          sed -i 's/^name = "agentirc"$/name = "agentirc-cli"/' pyproject.toml
+
       - name: Print install command
         if: always()
         run: |
           echo "::notice::Test with: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ agentirc-cli==${DEV_VERSION}"
+          echo "::notice::Or via the alias: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ agentirc==${DEV_VERSION}"
 
   publish:
     needs: [guard, test]
