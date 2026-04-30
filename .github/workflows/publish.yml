@@ -4,12 +4,12 @@ name: Publish to PyPI
 # steps are no-ops; once the bootstrap PR adds pyproject.toml, they activate.
 #
 # Trusted Publishing must be configured on PyPI/TestPyPI for this repo before
-# the first real publish.
+# the first real publish. The TestPyPI alias publish (`agentirc`) requires a
+# separate TP configuration on TestPyPI for the `agentirc` project name.
 #
-# NOTE: Until culture's cutover lands (Track A in the bootstrap spec), culture
-# squat-publishes `agentirc-cli` from its own publish.yml. This workflow
-# assumes culture has already removed the `agentirc-cli` alias before we
-# attempt our first 0.1.0 release.
+# Versioning: starts at 9.0.0 to leapfrog culture's earlier squat-publish of
+# `agentirc-cli==8.7.X.devN` on TestPyPI (now disabled). See CLAUDE.md
+# "Versioning" section for the full reasoning.
 
 on:
   push:

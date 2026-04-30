@@ -12,7 +12,7 @@ spec — that comes first.
 
 ## Order of operations
 
-1. **Bootstrap first.** Follow `docs/superpowers/specs/2026-04-30-bootstrap-design.md` and `CLAUDE.md` until `pip install agentirc-cli==0.1.0` produces a working `agentirc` binary and `agentirc serve` is byte-indistinguishable from `culture server start`. Nothing in this onboarding doc supersedes that.
+1. **Bootstrap first.** Follow `docs/superpowers/specs/2026-04-30-bootstrap-design.md` and `CLAUDE.md` until `pip install agentirc-cli==9.0.0` produces a working `agentirc` binary and `agentirc serve` is byte-indistinguishable from `culture server start`. Nothing in this onboarding doc supersedes that.
 2. **Sibling-pattern compliance.** Once the package, tests, and CI exist, work through the artifact checklist below until `steward doctor ../agentirc` passes.
 3. **Vendor skills.** Copy in the recommended skills (next section), one PR per skill, smallest blast radius first (`version-bump`, `run-tests`, `pr-review`).
 4. **Self-audit.** Run `steward doctor` (single-repo mode) after each landed PR. Treat findings as a queue.
@@ -36,7 +36,7 @@ the workflow (you can't open clean PRs without `version-bump` and
 
 | Skill | Upstream | Purpose | Notes for agentirc |
 |---|---|---|---|
-| `version-bump` | `../steward/.claude/skills/version-bump/` | Bump semver in `pyproject.toml`, prepend Keep-a-Changelog entry. Required on every PR. | Pure Python, no per-repo customization needed. Start the changelog at `0.1.0` (per CLAUDE.md). |
+| `version-bump` | `../steward/.claude/skills/version-bump/` | Bump semver in `pyproject.toml`, prepend Keep-a-Changelog entry. Required on every PR. | Pure Python, no per-repo customization needed. Start the changelog at `9.0.0` (per CLAUDE.md "Versioning"). |
 | `run-tests` | `../steward/.claude/skills/run-tests/` | `pytest -n auto` with coverage. | Coverage source resolves from `[tool.coverage.run]` in `pyproject.toml`, so the script works once that section exists. |
 | `pr-review` | `../steward/.claude/skills/pr-review/` | Branch → commit → push → PR → wait for automated reviewers → triage / fix / reply / resolve threads. | Steward owns the canonical workflow. Includes the portability lint that `steward doctor` also runs. |
 | `gh-issues` | `../steward/.claude/skills/gh-issues/` | Fetch GitHub issues with full body + comments via `gh`. | Auto-detects the repo. |
@@ -71,7 +71,7 @@ table below is a snapshot — when in doubt, defer to that file.
 | 5 | Mutation safety | Any write verb defaults to dry-run; `--apply` to commit | Apply when adding mutating verbs. |
 | 6 | Tests | `tests/test_*.py`, `pytest-xdist`, coverage | **TODO** (bootstrap) |
 | 7 | CI | `.github/workflows/tests.yml` + `publish.yml` (Trusted Publishing) | **TODO** (bootstrap) |
-| 8 | Changelog | `CHANGELOG.md`, Keep-a-Changelog format | **TODO** — start at `0.1.0`. |
+| 8 | Changelog | `CHANGELOG.md`, Keep-a-Changelog format | **TODO** — start at `9.0.0`. |
 | 9 | Skills | `.claude/skills/<name>/SKILL.md` + `scripts/` per skill | **TODO** — see Skill manifest above. |
 | 10 | Per-machine config | `.claude/skills.local.yaml.example` (committed) + `.claude/skills.local.yaml` (gitignored) | **TODO** — minimal template once a skill needs it. |
 | 11 | Lint configs | `.flake8`, `.markdownlint-cli2.yaml` (repo-local) | **TODO** — copy from `../steward` / `../culture`. |

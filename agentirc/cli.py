@@ -1,10 +1,12 @@
 """agentirc CLI entry point.
 
-This is the 0.1.0 skeleton. Only `version` is wired up; the IRCd lifecycle
-verbs (`serve`, `start`, `stop`, `restart`, `status`, `link`, `logs`) are
-stubs that exit non-zero with a clear "not yet implemented" message. The
-real dispatch logic lands when the server core is copied from culture in
-the IRCd extraction PR.
+This is the 9.0.0 skeleton — the major version starts at 9 to leapfrog
+culture's earlier squat-publish of `agentirc-cli==8.7.x.devN` on TestPyPI
+so future dev releases sort as the actual "latest". Only `version` is
+wired up; the IRCd lifecycle verbs (`serve`, `start`, `stop`, `restart`,
+`status`, `link`, `logs`) are stubs that exit non-zero with a clear
+"not yet implemented" message. The real dispatch logic lands when the
+server core is copied from culture in the IRCd extraction PR.
 
 Public surface (semver-tracked, see docs/api-stability.md once written):
 - `main()` — console-script entry point.
@@ -84,7 +86,7 @@ def dispatch(argv: Sequence[str]) -> int:
 
     if args.verb in _NOT_IMPLEMENTED_VERBS:
         print(
-            f"agentirc: '{args.verb}' is not yet implemented in {__version__}; "
+            f"agentirc: '{args.verb}' is not yet implemented; "
             "the IRCd extraction lands in a follow-up release.",
             file=sys.stderr,
         )

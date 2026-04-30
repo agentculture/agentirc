@@ -14,7 +14,11 @@ This repo (`agentirc`) is being bootstrapped from a server-core extraction out o
 - Ship **two CLI binaries**, `agentirc` and `agentirc-cli`, both backed by `agentirc.cli:main`.
 - Carry the IRCd server core (RFC 2812 base + server-to-server linking + persistence + server-side skill plugins) that today lives at `../culture/culture/agentirc/`.
 
-The first release is `v0.1.0`. Culture will pin against it as `agentirc-cli>=0.1,<0.2` and call into `agentirc.cli.dispatch(argv)` from its own `culture server` shim, so existing `culture server …` UX is preserved without culture re-implementing anything.
+The first release is **`v9.0.0`** (not 0.1.0 — see "Versioning" below for why). Culture will pin against it as `agentirc-cli>=9.0,<10` and call into `agentirc.cli.dispatch(argv)` from its own `culture server` shim, so existing `culture server …` UX is preserved without culture re-implementing anything.
+
+### Versioning
+
+`agentirc-cli` starts at `9.0.0` rather than `0.1.0`. Culture previously squat-published `agentirc-cli==8.7.X.devN` to TestPyPI to hold the name during the bootstrap window; that squat has been disabled, but the 8.7.X versions remain on TestPyPI forever. PyPI's "Latest" pointer is semver-sorted, so anything below `8.7.1.dev410` would be permanently masked. Starting at `9.0.0` leapfrogs the squat so dev releases (`9.0.X.dev<run>`) actually show as the latest version. Real PyPI has no equivalent squat — culture only squatted on TestPyPI — but the 9.x.x line continues there for consistency.
 
 ## Naming (called out, because three names appear)
 
@@ -73,7 +77,7 @@ The culture-side agent will provide a specific culture commit SHA at copy time. 
 ```
 agentirc/                          (repo root)
 ├── pyproject.toml                 # name = "agentirc-cli"; scripts: agentirc + agentirc-cli → agentirc.cli:main
-├── CHANGELOG.md                   # starts at 0.1.0
+├── CHANGELOG.md                   # starts at 9.0.0 (see Versioning)
 ├── README.md
 ├── LICENSE                        # already present
 ├── .pre-commit-config.yaml
@@ -177,17 +181,17 @@ Update `agentirc/ircd.py` and any other server file to import from `agentirc.pro
 7. **Create `agentirc/protocol.py`** per "What to extract" above. Update `ircd.py` and other server files to import from it.
 8. **Sort the migrated tests** per "Test-suite migration" below. Drop tests that genuinely belong in culture (transport-focused).
 9. **Write `pyproject.toml`:**
-   - `name = "agentirc-cli"`, `version = "0.1.0"`
+   - `name = "agentirc-cli"`, `version = "9.0.0"`
    - `[project.scripts]` declares **both** `agentirc = "agentirc.cli:main"` and `agentirc-cli = "agentirc.cli:main"`.
    - Mirror culture's **dev** dep set only: pytest, pytest-asyncio, pytest-xdist, black, isort, flake8, pylint, bandit. (Take culture's `pyproject.toml` as a reference; copy the dev-dep group verbatim where applicable.)
    - **Do not** copy culture's runtime deps (`claude-agent-sdk`, `anthropic`, `mistune`, `aiohttp`, `textual`, `agex-cli`, `afi-cli`, opentelemetry, etc.) — those belong to culture's clients/UI, not the IRCd. Add only what the moved server-core files actually `import` (likely `pyyaml` for config, plus opentelemetry-api/sdk if `ircd.py` / `events.py` use it). **Never** depend on a backend SDK; **never** declare a `culture` console script.
-10. **Mirror culture's pre-commit, CI, and version workflow.** Copy `.pre-commit-config.yaml`, GitHub Actions, and `/version-bump`/CHANGELOG conventions from culture. Start `CHANGELOG.md` at `0.1.0`.
+10. **Mirror culture's pre-commit, CI, and version workflow.** Copy `.pre-commit-config.yaml`, GitHub Actions, and `/version-bump`/CHANGELOG conventions from culture. Start `CHANGELOG.md` at `9.0.0`.
 11. **Write `docs/api-stability.md`** documenting the three public modules. Mark everything else internal.
 12. **Write minimal `docs/cli.md` and `docs/deployment.md`** that describe the CLI verbs and on-disk footprint (point users at `~/.culture/server.yaml` for defaults, with override via `--config`).
 13. **Run the test suite.** `pytest -n auto` must pass.
 14. **Verify acceptance criteria** (see below).
 15. **First commit.** Single synthetic commit, message: `Initial import from culture@<SHA>` (where `<SHA>` is the source culture commit ID provided by the caller).
-16. **Tag `v0.1.0`** and push.
+16. **Tag `v9.0.0`** and push.
 17. **Publish to PyPI.** Real PyPI on push to `main` is `agentirc-cli` only. TestPyPI on PRs publishes **both** `agentirc-cli` and `agentirc`: a follow-up edit to `.github/workflows/publish.yml` adds a second `uv build` round that rewrites `name = "agentirc-cli"` → `name = "agentirc"` in a copied `pyproject.toml` before building, and uploads that wheel alongside the `agentirc-cli` one. Trusted Publishing must be configured for both project names on TestPyPI.
 18. **Report back** the published version and source SHA so the culture-side cutover PR can pin against it.
 
@@ -203,8 +207,8 @@ When in doubt, prefer moving tests *here* over leaving them in culture: this rep
 
 ## Acceptance criteria
 
-- `pip install agentirc-cli==0.1.0` from PyPI produces working `agentirc` and `agentirc-cli` binaries on a clean venv (both pointing at `agentirc.cli:main`).
-- `pip install agentirc==0.1.0.devN` from TestPyPI produces the same two binaries (the TestPyPI dual-name flow).
+- `pip install agentirc-cli==9.0.0` from PyPI produces working `agentirc` and `agentirc-cli` binaries on a clean venv (both pointing at `agentirc.cli:main`).
+- `pip install agentirc==9.0.0.devN` from TestPyPI produces the same two binaries (the TestPyPI dual-name flow).
 - The installed package has no runtime dependency on `claude-agent-sdk`, `anthropic`, or any backend SDK, and does not install a `culture` console script.
 - `agentirc start --config ~/.culture/server.yaml` behaves indistinguishably from today's `culture server start` (same accepting socket, same log output, same systemd integration).
 - `agentirc serve --config ~/.culture/server.yaml` runs the same IRCd in the foreground (no daemonization). No culture analogue — this is the new standalone-friendly entry point.
@@ -236,7 +240,7 @@ When in doubt, prefer moving tests *here* over leaving them in culture: this rep
 ## Coordination with culture
 
 - This bootstrap is **Track B** in culture's spec. **Track A** (culture-side cutover PR) is owned by the culture-side agent and depends on this Track B completing first.
-- After this work merges and `agentirc-cli==0.1.0` is on PyPI, report back the version + source SHA. The culture-side agent then opens its own PR to add the dependency, delete `culture/agentirc/`, install the `culture server` passthrough, and `/version-bump major`.
+- After this work merges and `agentirc-cli==9.0.0` is on PyPI, report back the version + source SHA. The culture-side agent then opens its own PR to add the dependency, delete `culture/agentirc/`, install the `culture server` passthrough, and `/version-bump major`.
 - All-backends rule (a culture convention): changes that cross the agentirc / culture-transport boundary must be reflected across all four backends in culture (`claude`, `codex`, `copilot`, `acp`). Not your concern for this bootstrap; flagged here so future cross-repo changes account for it.
 
 ## Reference

@@ -70,10 +70,10 @@ pytest tests/path/to/test_file.py::test_name -v
 # CLI smoke (works today against the skeleton)
 agentirc --help
 agentirc-cli --help          # alias of agentirc
-agentirc version             # prints "agentirc 0.1.0"
+agentirc version             # prints "agentirc 9.0.0"
 python -m agentirc version   # equivalent
 
-# Lifecycle verbs (stubs in 0.1.0; real impls land with the IRCd extraction)
+# Lifecycle verbs (stubs in 9.0.0; real impls land with the IRCd extraction)
 agentirc serve --config ~/.culture/server.yaml
 ```
 
@@ -85,12 +85,18 @@ Copy these from culture rather than inventing fresh:
 
 - `.pre-commit-config.yaml`
 - Dev-dep set: `pytest`, `pytest-asyncio`, `pytest-xdist`, `black`, `isort`, `flake8`, `pylint`, `bandit`
-- `/version-bump` workflow and `CHANGELOG.md` style. Start the changelog at `0.1.0`.
+- `/version-bump` workflow and `CHANGELOG.md` style. Start the changelog at `9.0.0` (see "Versioning" below).
 
 GitHub Actions workflows are already in `.github/workflows/`:
 
 - `tests.yml` — pytest with coverage on `agentirc/`, plus a version-bump check that nags via PR comment if `pyproject.toml` matches main.
-- `publish.yml` — Trusted-Publishing release of `agentirc-cli` to TestPyPI on PRs (`0.1.X.dev<run>`) and to PyPI on push to main.
+- `publish.yml` — Trusted-Publishing release of `agentirc-cli` to TestPyPI on PRs (`9.0.X.dev<run>`) and to PyPI on push to main. The TestPyPI step also publishes the same wheel under the `agentirc` distribution name.
+
+## Versioning
+
+`agentirc-cli` starts at **`9.0.0`**, not `0.1.0`. Reason: culture previously squat-published `agentirc-cli==8.7.X.devN` to TestPyPI (now disabled). PyPI sorts by semver, so dev releases below `8.7.1.dev410` would be permanently masked under "Latest." Starting at 9.0.0 leapfrogs the squat so our dev releases (`9.0.X.dev<run>`) are the visible "Latest." Real PyPI is independent — no squat there from culture, but the 9.x.x line continues for consistency.
+
+`__version__` is read from installed-dist metadata via `importlib.metadata.version("agentirc-cli")`; `pyproject.toml` is the single source of truth. Bump with `/version-bump patch|minor|major` once the version-bump skill is vendored (steward has it; see `docs/steward/onboarding.md`).
 
 Both jobs are gated on `hashFiles('pyproject.toml') != ''` so they no-op cleanly during the pre-bootstrap window.
 
@@ -107,14 +113,14 @@ Per-machine paths for these skills go in `.claude/skills.local.yaml` (gitignored
 ## Coordination with culture
 
 - This is **Track B** of a two-repo split. **Track A** is culture-side and is the culture agent's job — do not edit culture from this repo.
-- After `agentirc-cli==0.1.0` is on PyPI, report the published version and source SHA back so culture's cutover PR can pin against it.
+- After `agentirc-cli==9.0.0` is on PyPI, report the published version and source SHA back so culture's cutover PR can pin against it.
 - Culture's *all-backends rule* (a feature added to one of `claude`/`codex`/`copilot`/`acp` must be propagated to the others) does **not** apply inside this repo — agentirc has no backends. It is mentioned in the spec only so future cross-repo changes account for it.
 
 ## Acceptance criteria for the bootstrap
 
 The full list lives in §"Acceptance criteria" of the bootstrap spec. The non-obvious ones:
 
-- `pip install agentirc-cli==0.1.0` on a clean venv produces working `agentirc` *and* `agentirc-cli` binaries (both pointing at `agentirc.cli:main`).
+- `pip install agentirc-cli==9.0.0` on a clean venv produces working `agentirc` *and* `agentirc-cli` binaries (both pointing at `agentirc.cli:main`).
 - `agentirc serve` is byte-indistinguishable from `culture server start` (same socket, same logs, same systemd integration).
 - `agentirc.config.LinkConfig`, `agentirc.config.PeerSpec`, `agentirc.cli.dispatch`, `agentirc.protocol.*` all import from a clean Python session.
 - `docs/api-stability.md` names the three public modules.
