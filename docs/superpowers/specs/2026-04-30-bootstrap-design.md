@@ -67,10 +67,10 @@ The culture-side agent will provide a specific culture commit SHA at copy time. 
 
 **Do NOT copy:**
 
-- `../culture/culture/agentirc/client.py` (stays in culture)
-- `../culture/culture/agentirc/remote_client.py` (stays in culture)
-- `../culture/culture/agentirc/__main__.py` (replaced; see Tasks)
-- Any test that exercises the IRC *client* transport rather than the server. Those stay in culture.
+- ~~`../culture/culture/agentirc/client.py` (stays in culture)~~ — reversed in PR-B2 (9.2.0). Vendored as `agentirc/client.py` because it only imports already-vendored support modules and the IRCd needs it at runtime to accept TCP clients.
+- ~~`../culture/culture/agentirc/remote_client.py` (stays in culture)~~ — reversed in PR-B1 (9.1.0). Server-side ghost-client stub used by `server_link.py`; vendored as `agentirc/remote_client.py`. See PR-B1 commit history.
+- `../culture/culture/agentirc/__main__.py` (replaced; see Tasks).
+- Tests that are bot-fixture-coupled or genuinely cross-cutting (bot+IRCd in one process) stay in culture and get rewritten there to drive `agentirc serve` as a subprocess fixture.
 
 ## Repo layout (target)
 
@@ -155,27 +155,24 @@ Everything else (`agentirc.ircd`, `agentirc.server_link`, `agentirc.channel`, th
 
 ### `agentirc.protocol` — what to extract
 
-`protocol.py` does **not** exist in culture today. The protocol vocabulary is currently inlined as string literals in two places:
+`protocol.py` did not exist in culture; the protocol vocabulary was inlined as string literals across `ircd.py`, `server_link.py`, the skills, and `client.py`. PR-B2 (9.2.0) lands `agentirc/protocol.py` consolidating:
 
-- `../culture/culture/agentirc/ircd.py` — server side
-- `../culture/culture/agentirc/client.py` — client side (read-only reference; do not copy this file)
+- IRC verb names (standard `PRIVMSG`/`JOIN`/`PART`/..., agentirc skill verbs `ROOMCREATE`/`ROOMMETA`/`THREAD`/..., S2S verbs `SJOIN`/`SMSG`/`STHREAD`/...).
+- Numeric reply codes (re-exported from `agentirc._internal.protocol.replies`).
+- IRCv3 / extension tag names (`TRACEPARENT_TAG`, `TRACESTATE_TAG`, `EVENT_TAG_TYPE`, `EVENT_TAG_DATA`).
 
-Extract from both into a single `agentirc/protocol.py`:
+Existing call sites in `ircd.py`, `server_link.py`, and the skills still use inline string literals — migrating them to `protocol.<NAME>` is intentionally out of scope. The goal of `agentirc.protocol` is a stable public surface for downstream consumers (notably culture once it pins `agentirc-cli`); a future PR may sweep call sites if the diff is worth it.
 
-- IRC verb names (e.g., `PRIVMSG`, `JOIN`, `PART`, `MODE`, plus Culture extensions like `THREAD`, `ROOM`, history-sync verbs).
-- Numeric reply codes used by the server.
-- Extension tag names used in capability negotiation.
-
-Update `agentirc/ircd.py` and any other server file to import from `agentirc.protocol` instead of using string literals. Culture's `client.py` will be updated by the culture-side agent to do the same against this module.
+Wire-format quirks (`ROOMETAEND`, `ROOMETASET` typos; `ERR_NOSUCHCHANNEL` semantic misuse for "channel exists already"; `STHREAD` collapse of THREAD_CREATE/THREAD_MESSAGE) are preserved verbatim as constants with explanatory comments — fixing them in agentirc alone would silently break culture's clients/harnesses. They need coordinated cross-repo bumps.
 
 ## Tasks (ordered)
 
-> **Status note (2026-04-30):**
+> **Status note (2026-05-01):**
 >
-> - **Shape A — package skeleton** (PR #2, `9.0.0`): Tasks 1, 6, and a stub form of 9 (skeleton `pyproject.toml` + dual-script `cli.py` shim).
-> - **Shape B-1 — server-core extraction** (this PR, `9.1.0`): Tasks 2, 4, 9 (runtime deps), and a partial 10 (CHANGELOG only — no pre-commit / CI yet). See the "Cite-don't-copy" subsection below for how the no-culture-imports invariant was satisfied.
-> - **Shape B-2 — real CLI + `protocol.py`** (next PR): Tasks 5, 7. Will also vendor `culture.pidfile` and culture-cli-shared helpers into `agentirc/_internal/`.
-> - **Shape B-3 — test suite migration** (PR after that): Task 8.
+> - **Shape A — package skeleton** ✅ (PR #2, `9.0.0`): Tasks 1, 6, and a stub form of 9.
+> - **Shape B-1 — server-core extraction** ✅ (PR #3, `9.1.0`): Tasks 2, 4, 9 (runtime deps), partial 10. See the "Cite-don't-copy" subsection below.
+> - **Shape B-2 — real CLI + `protocol.py` + `client.py`** ✅ (PR-B2, `9.2.0`): Tasks 5, 7, plus vendoring `culture.pidfile`, `culture.cli.shared` (subset), and `culture/agentirc/client.py`. The bootstrap spec previously said `client.py` "stays in culture"; that decision was reversed in PR-B2 because (a) `agentirc/ircd.py:580`'s runtime `from agentirc.client import Client` was a guaranteed `ImportError` without it, and (b) `client.py` only imports already-vendored support modules — no backend-SDK pull-through.
+> - **Shape B-3 — test suite migration** (next PR): Task 8.
 > - **Remaining**: 10 (pre-commit + CI), 11–12 (docs), 13–18 (test run, acceptance, tag, publish, report-back).
 >
 > Task 3 (`Copy protocol/extensions/ wholesale`) is dropped: that path doesn't exist in culture. Re-add only if/when culture creates it.
@@ -216,11 +213,11 @@ The "no `culture` imports remain" invariant and the "files copy as-is, only impo
 
 Tests from culture are sorted into three buckets:
 
-1. **Imports `culture.agentirc.X` only (server core)** → moves to `tests/` here.
-2. **Imports `culture.agentirc.client` / `remote_client` only** → stays in culture (transport-focused). Do not copy.
-3. **Imports both** → if the test is genuinely cross-cutting (a bot connecting to an IRCd in the same process), it stays in culture and is rewritten there to use `agentirc serve` as a subprocess fixture rather than importing `IRCd` directly. Do not copy here unless it's a pure server test that happens to construct a transport object only as a test helper — in which case adapt the test to spin its own helper.
+1. **Imports `culture.agentirc.{ircd,server_link,channel,...}` (server core)** → moves to `tests/` here.
+2. **Imports `culture.agentirc.client` / `remote_client`** → moves to `tests/` here as of 9.2.0. Both files now live in agentirc.
+3. **Imports `culture.bots.*` or other backend-coupled fixtures** → stays in culture and is rewritten there to drive `agentirc serve` as a subprocess fixture rather than importing `IRCd` directly. Do not copy here.
 
-When in doubt, prefer moving tests *here* over leaving them in culture: this repo owns the IRCd, and IRCd-internal tests should run in this repo's CI.
+When in doubt, prefer moving tests *here* over leaving them in culture: this repo owns the IRCd, the client transport, and IRCd-internal tests should run in this repo's CI.
 
 ## Acceptance criteria
 
