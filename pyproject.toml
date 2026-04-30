@@ -199,6 +199,18 @@ notes = "Vendored from culture/agentirc/client.py with import paths rewritten on
 status = "paraphrase"
 sha256 = "b7d57749b9c7c310331a671ff59d4b8059ebe30c975234711eb5a23ab0ddd050"
 
+[tool.citation.packages.culture-cli-server]
+schema = 2
+source = "https://github.com/OriNachum/culture/blob/df50942/culture/cli/server.py"
+version = "df50942"
+target = "agentirc/cli.py"
+cited = "2026-05-01"
+notes = "Real lifecycle CLI extracted from culture/cli/server.py and reshaped as agentirc's top-level CLI. Kept verbs: start/stop/status (lifecycle helpers _wait_for_port, _run_server, _daemonize_server, _run_foreground, _check_already_running, _wait_for_graceful_stop, _force_kill, _verify_daemon_started preserved). Dropped culture-only verbs: default/rename/archive/unarchive (touch culture.config and culture.bots — out of agentirc's scope), plus _check_server_archived, _validate_config_name, _update_single_bot_archive, _set_bots_archive_state. Dropped --mesh-config (depends on culture.credentials/mesh_config). Added agentirc-only verbs: serve (foreground, no PID; for systemd Type=simple/containers), restart, link (peer-spec validator), logs (cat/tail of ~/.culture/logs/server-<name>.log). Top-level argparse rather than 'server' subcommand-of-CLI shape. _DEFAULT_SERVER changed from 'culture' to 'agentirc' so default daemon names don't collide on a host running both."
+
+[tool.citation.packages.culture-cli-server.files."cli.py"]
+status = "paraphrase"
+sha256 = "5ec414b73d48b53d67f3dc3fea8af47c2f23b14eb6246b84139fd4ffa584751c"
+
 [tool.citation.packages.culture-bots-stubs]
 schema = 2
 source = "https://github.com/OriNachum/culture/tree/df50942/culture/bots"
