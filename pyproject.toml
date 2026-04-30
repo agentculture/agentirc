@@ -155,6 +155,50 @@ notes = "Vendored verbatim with imports rewritten: from culture.agentirc.skill t
 status = "paraphrase"
 sha256 = "5e90a9e0ba5cd95651167b71f4cf3d2b5c4f18f809cb061f345ff3a81cf66969"
 
+[tool.citation.packages.culture-pidfile]
+schema = 2
+source = "https://github.com/OriNachum/culture/blob/df50942/culture/pidfile.py"
+version = "df50942"
+target = "agentirc/_internal/pidfile.py"
+cited = "2026-05-01"
+notes = "Vendored from culture/pidfile.py with one adaptation: is_managed_process() recognizes both 'culture' and 'agentirc'/'agentirc-cli' argv tokens so agentirc daemons (which exec as 'agentirc serve') are matched alongside culture's. is_culture_process is preserved as an alias. PID_DIR stays at ~/.culture/pids per the 'Defaults preserve culture continuity' rule."
+
+[tool.citation.packages.culture-pidfile.files."pidfile.py"]
+status = "paraphrase"
+sha256 = "ad72d0081e03aaf4a907c08a3f44b7866e828fc460d4e9faf6770b4dea13def7"
+
+[tool.citation.packages.culture-cli-shared]
+schema = 2
+source = "https://github.com/OriNachum/culture/tree/df50942/culture/cli/shared"
+version = "df50942"
+target = "agentirc/_internal/cli_shared/"
+cited = "2026-05-01"
+notes = "Minimal subset of culture/cli/shared. Kept: DEFAULT_CONFIG, LOG_DIR, _CONFIG_HELP, _SERVER_NAME_HELP, culture_runtime_dir() (constants.py), parse_link() (mesh.py). Dropped: BOT_CONFIG_FILE et al (bot config — agentirc has none); resolve_links_from_mesh, generate_mesh_from_agents (depend on culture.credentials/mesh_config). LinkConfig import in parse_link rewritten from culture.agentirc.config to agentirc.config."
+
+[tool.citation.packages.culture-cli-shared.files."__init__.py"]
+status = "synthesize"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+[tool.citation.packages.culture-cli-shared.files."constants.py"]
+status = "paraphrase"
+sha256 = "5469207f4ae5075e8d76c06b152f039088287d3972bba0a1430c59481c7c33bf"
+
+[tool.citation.packages.culture-cli-shared.files."mesh.py"]
+status = "paraphrase"
+sha256 = "5238e222c33d499df687a4b8002083fabd029b86b8dc885a9deaccb75e6a05c8"
+
+[tool.citation.packages.culture-client]
+schema = 2
+source = "https://github.com/OriNachum/culture/blob/df50942/culture/agentirc/client.py"
+version = "df50942"
+target = "agentirc/client.py"
+cited = "2026-05-01"
+notes = "Vendored from culture/agentirc/client.py with import paths rewritten only — body unchanged. Imports moved from culture.* to agentirc.* / agentirc._internal.* (channel, skill, aio, constants, protocol, telemetry, remote_client). The OTEL tracer name 'culture.agentirc' is preserved verbatim because downstream trace consumers grep for it. The bootstrap spec originally said this file 'stays in culture'; deferring left agentirc/ircd.py:580's runtime import broken on the first TCP client connection. Vendoring is safe under the dependency boundary because client.py only imports already-vendored support modules plus opentelemetry."
+
+[tool.citation.packages.culture-client.files."client.py"]
+status = "paraphrase"
+sha256 = "b7d57749b9c7c310331a671ff59d4b8059ebe30c975234711eb5a23ab0ddd050"
+
 [tool.citation.packages.culture-bots-stubs]
 schema = 2
 source = "https://github.com/OriNachum/culture/tree/df50942/culture/bots"
