@@ -9,7 +9,7 @@ from agentirc.skill import Event, EventType
 from agentirc._internal.protocol.message import Message
 
 if TYPE_CHECKING:
-    from agentirc._internal.channel import Channel
+    from agentirc.channel import Channel
     from agentirc.ircd import IRCd
 
 logger = logging.getLogger(__name__)

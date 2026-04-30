@@ -153,7 +153,7 @@ notes = "Vendored verbatim with imports rewritten: from culture.agentirc.skill t
 
 [tool.citation.packages.culture-virtual-client.files."virtual_client.py"]
 status = "paraphrase"
-sha256 = "e8cb5155d7cf950521b0a55eafcaf4936356579706255ebf1c5adc418a68cdb6"
+sha256 = "aab2f852977f39cc1f4686fba3954786abea0e96d7e2a4c86131bb3304989189"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2
