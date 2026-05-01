@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.4.1] - 2026-05-01
+
+### Documentation
+
+- Marked the bootstrap closed in `docs/superpowers/specs/2026-04-30-bootstrap-design.md` and `CLAUDE.md`. Tasks 16–18 (tag `v9.4.0`, verify PyPI publish, report-back to culture) are done; the spec status note now reads as a closed timeline ("Released ✅"), and `CLAUDE.md`'s "Current state" reads "bootstrap complete (9.4.0 released)" with a non-blocking follow-ups list linking to issues #7–#12 (Track A wire-format fixes, steward backport, callsite sweep, A2 test migration).
+- Fixed 14 stale `OriNachum/*` GitHub URLs in `pyproject.toml` and the bootstrap spec to canonical `agentculture/*` paths. Investigation showed these weren't merely stylistic — `https://github.com/OriNachum/culture` returns 404 and `https://github.com/OriNachum/agentirc` 301-redirects to the wrong path. URL fixes only; sha256s are content-hashed and unaffected. `cite check` still passes.
+
+### Notes
+
+- Functionally identical to `9.4.0`. Published as a fresh PyPI release because `publish.yml` triggers on push-to-`main` and PyPI rejects re-publishing the same version with different sha256.
+
 ## [9.4.0] - 2026-05-01
 
 ### Added
