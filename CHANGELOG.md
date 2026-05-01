@@ -53,6 +53,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - 2 SonarCloud `python:S5332` security hotspots cleared via
   `# NOSONAR S5332` annotations on `tests/telemetry/test_config.py`'s
   localhost OTLP test fixtures (URLs never reach the wire).
+- New `tests/_helpers.py` (agentirc-native, not cited) extracts the
+  duplicated "boot two linked IRCds" pattern into `boot_linked_pair`
+  + `link_pair`. Refactored 9 sites that previously inlined ~22
+  lines of identical scaffolding: 5 in `test_federation.py`, 3 in
+  `test_link_reconnect.py`, plus the `linked_servers` conftest
+  fixture. Drops ~180 duplicated lines, addressing SonarCloud's
+  >3% duplication threshold while keeping the cited test bodies
+  readable. Re-snapshots from culture replay this extraction
+  mechanically.
 - 42 SonarCloud OPEN issues cleared via inline `# NOSONAR <rule>`
   annotations: `python:S1172` (server_link `_replay_event`'s upstream
   signature compat), `python:S2068` (3 test fixture passwords),

@@ -55,32 +55,16 @@ async def test_server_link_bad_password():
 
 
 @pytest.mark.asyncio
-async def test_server_link_duplicate_name_rejected():
+async def test_server_link_duplicate_name_rejected(tmp_path):
     """Same server name trying to link twice -> rejected."""
-    link_password = TEST_LINK_PASSWORD
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-    )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-    )
+    from tests._helpers import boot_linked_pair
 
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-    await server_a.start()
-    await server_b.start()
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
+    link_password = TEST_LINK_PASSWORD
+    server_a, server_b = await boot_linked_pair(tmp_path, link_password=link_password)
 
     try:
         # First link
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         for _ in range(50):
             if "beta" in server_a.links:
                 break
@@ -88,7 +72,7 @@ async def test_server_link_duplicate_name_rejected():
         assert "beta" in server_a.links
 
         # Second link attempt should fail
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         await asyncio.sleep(0.5)
         # Should still only have one link
         assert len(server_a.links) <= 1
@@ -481,29 +465,11 @@ async def test_link_loss_cleans_empty_channels(linked_servers, make_client_a):
 
 
 @pytest.mark.asyncio
-async def test_reconnect_resyncs_state():
+async def test_reconnect_resyncs_state(tmp_path):
     """Drop + reconnect = remote clients reappear."""
-    link_password = TEST_LINK_PASSWORD
+    from tests._helpers import boot_linked_pair
 
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-    )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-    )
-
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-    await server_a.start()
-    await server_b.start()
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
+    server_a, server_b = await boot_linked_pair(tmp_path)
 
     try:
         # Connect client to A
@@ -516,7 +482,7 @@ async def test_reconnect_resyncs_state():
         await tc.recv_all(timeout=0.5)
 
         # Link
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         for _ in range(50):
             if "beta" in server_a.links:
                 break
@@ -533,7 +499,7 @@ async def test_reconnect_resyncs_state():
         assert "alpha-alice" not in server_b.remote_clients
 
         # Reconnect
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         for _ in range(50):
             if "beta" in server_a.links:
                 break
@@ -558,29 +524,11 @@ async def test_reconnect_resyncs_state():
 
 
 @pytest.mark.asyncio
-async def test_backfill_replays_missed_messages():
+async def test_backfill_replays_missed_messages(tmp_path):
     """Send messages during disconnect, reconnect, B has them."""
-    link_password = TEST_LINK_PASSWORD
+    from tests._helpers import boot_linked_pair
 
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-    )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-    )
-
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-    await server_a.start()
-    await server_b.start()
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
+    server_a, server_b = await boot_linked_pair(tmp_path)
 
     try:
         # Connect clients
@@ -601,7 +549,7 @@ async def test_backfill_replays_missed_messages():
         await tc_b.recv_all(timeout=0.5)
 
         # Link
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         for _ in range(50):
             if "beta" in server_a.links:
                 break
@@ -624,7 +572,7 @@ async def test_backfill_replays_missed_messages():
         await asyncio.sleep(0.3)
 
         # Reconnect -- server_a reconnects to server_b
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         for _ in range(50):
             if "beta" in server_a.links:
                 break
@@ -649,29 +597,11 @@ async def test_backfill_replays_missed_messages():
 
 
 @pytest.mark.asyncio
-async def test_backfill_does_not_duplicate():
+async def test_backfill_does_not_duplicate(tmp_path):
     """Pre-disconnect messages not re-sent."""
-    link_password = TEST_LINK_PASSWORD
+    from tests._helpers import boot_linked_pair
 
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-    )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-    )
-
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-    await server_a.start()
-    await server_b.start()
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
+    server_a, server_b = await boot_linked_pair(tmp_path)
 
     try:
         reader_a, writer_a = await asyncio.open_connection("127.0.0.1", server_a.config.port)
@@ -691,7 +621,7 @@ async def test_backfill_does_not_duplicate():
         await tc_b.recv_all(timeout=0.5)
 
         # Link
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         for _ in range(50):
             if "beta" in server_a.links:
                 break
@@ -710,7 +640,7 @@ async def test_backfill_does_not_duplicate():
             link_a.writer.close()
         await asyncio.sleep(0.5)
 
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         for _ in range(50):
             if "beta" in server_a.links:
                 break
@@ -745,29 +675,11 @@ async def test_backfill_empty_when_nothing_missed(linked_servers, make_client_a,
 
 
 @pytest.mark.asyncio
-async def test_history_includes_backfilled_messages():
+async def test_history_includes_backfilled_messages(tmp_path):
     """HISTORY RECENT shows backfilled messages."""
-    link_password = TEST_LINK_PASSWORD
+    from tests._helpers import boot_linked_pair
 
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-    )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-    )
-
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-    await server_a.start()
-    await server_b.start()
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
+    server_a, server_b = await boot_linked_pair(tmp_path)
 
     try:
         reader_a, writer_a = await asyncio.open_connection("127.0.0.1", server_a.config.port)
@@ -787,7 +699,7 @@ async def test_history_includes_backfilled_messages():
         await tc_b.recv_all(timeout=0.5)
 
         # Link
-        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
+        await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD)
         for _ in range(50):
             if "beta" in server_a.links:
                 break

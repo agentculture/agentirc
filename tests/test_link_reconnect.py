@@ -11,42 +11,12 @@ from tests.conftest import TEST_LINK_PASSWORD
 
 
 @pytest.mark.asyncio
-async def test_link_drop_triggers_retry():
+async def test_link_drop_triggers_retry(tmp_path):
     """When a linked peer drops (non-SQUIT), the server schedules retry."""
-    link_password = TEST_LINK_PASSWORD
+    from tests._helpers import boot_linked_pair, link_pair
 
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-    )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-    )
-
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-
-    await server_a.start()
-    await server_b.start()
-
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
-
-    # Update link configs with actual ports
-    config_a.links[0].port = server_b.config.port
-    config_b.links[0].port = server_a.config.port
-
-    # Link the servers
-    await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
-    for _ in range(50):
-        if "beta" in server_a.links and "alpha" in server_b.links:
-            break
-        await asyncio.sleep(0.05)
+    server_a, server_b = await boot_linked_pair(tmp_path)
+    await link_pair(server_a, server_b)
     assert "beta" in server_a.links
 
     # Kill server B abruptly (non-SQUIT drop)
@@ -66,40 +36,12 @@ async def test_link_drop_triggers_retry():
 
 
 @pytest.mark.asyncio
-async def test_squit_does_not_trigger_retry():
+async def test_squit_does_not_trigger_retry(tmp_path):
     """When a peer sends SQUIT, no retry should be scheduled."""
-    link_password = TEST_LINK_PASSWORD
+    from tests._helpers import boot_linked_pair, link_pair
 
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-    )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-    )
-
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-
-    await server_a.start()
-    await server_b.start()
-
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
-
-    config_a.links[0].port = server_b.config.port
-    config_b.links[0].port = server_a.config.port
-
-    await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
-    for _ in range(50):
-        if "beta" in server_a.links and "alpha" in server_b.links:
-            break
-        await asyncio.sleep(0.05)
+    server_a, server_b = await boot_linked_pair(tmp_path)
+    await link_pair(server_a, server_b)
     assert "beta" in server_a.links
 
     # Have server B send SQUIT to server A (graceful delink)
@@ -122,42 +64,19 @@ async def test_squit_does_not_trigger_retry():
 
 
 @pytest.mark.asyncio
-async def test_incoming_connection_cancels_retry():
+async def test_incoming_connection_cancels_retry(tmp_path):
     """When a peer reconnects inbound while retry is pending, retry is cancelled."""
-    link_password = TEST_LINK_PASSWORD
+    from tests._helpers import boot_linked_pair, link_pair
 
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-    )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-    )
-
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-
-    await server_a.start()
-    await server_b.start()
-
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
-
-    config_a.links[0].port = server_b.config.port
-    config_b.links[0].port = server_a.config.port
-
-    # Link the servers (A -> B)
-    await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
-    for _ in range(50):
-        if "beta" in server_a.links and "alpha" in server_b.links:
-            break
-        await asyncio.sleep(0.05)
+    server_a, server_b = await boot_linked_pair(tmp_path)
+    await link_pair(server_a, server_b)
     assert "beta" in server_a.links
+
+    # Stash config_a/b for the post-restart retry-redirect step (was in
+    # the inline boot block; now needs explicit reference for the
+    # reconnect logic that follows).
+    config_a = server_a.config
+    config_b = server_b.config
 
     # Kill server B to trigger retry on A
     await server_b.stop()
@@ -177,7 +96,7 @@ async def test_incoming_connection_cancels_retry():
     config_a.links[0].port = server_b2.config.port
 
     # B2 connects to A (inbound connection to A)
-    await server_b2.connect_to_peer("127.0.0.1", server_a.config.port, link_password)
+    await server_b2.connect_to_peer("127.0.0.1", server_a.config.port, TEST_LINK_PASSWORD)
     for _ in range(50):
         if "beta" in server_a.links:
             break

@@ -312,7 +312,7 @@ cited = "2026-05-01"
 
 [tool.citation.packages.culture-tests-conftest.files."conftest.py"]
 status = "paraphrase"
-sha256 = "a3e893d1b483d4339237f6b459e67a962a812afed972f4e61307d64553f7f986"
+sha256 = "3ee6fd43e2833f28a75363503519d63a16fe6f89843471707bf684e544cac360"
 
 [tool.citation.packages.culture-tests-server-core]
 schema = 2
@@ -359,15 +359,15 @@ sha256 = "f387befe4df163861ec4b597c0fd330745107b3e36ba5604b69d872329418f50"
 
 [tool.citation.packages.culture-tests-server-core.files."test_federation.py"]
 status = "paraphrase"
-sha256 = "3d6ebb5853571233d348c3349bb80f829025055f9036230092a83ce4e6433407"
+sha256 = "1a1812cdbbf3adf026dc52c791ceb45b076b4eea7f0aa5f9f048a631628aee1f"
 
 [tool.citation.packages.culture-tests-server-core.files."test_history.py"]
 status = "quote"
 sha256 = "066e674c847a54ec62fccd5bbaf1c524883e47e3867f9889279d48603b83ce4d"
 
 [tool.citation.packages.culture-tests-server-core.files."test_link_reconnect.py"]
-status = "quote"
-sha256 = "0d5553353cba6d43c2af8cb8b660640cf252b3178164a3a1b623452b92f9c9ec"
+status = "paraphrase"
+sha256 = "876330d0fa8db1dcabcc352c362e0b59c7b6a02bb689e61a8e1e464af3ecf058"
 
 [tool.citation.packages.culture-tests-server-core.files."test_mentions.py"]
 status = "quote"

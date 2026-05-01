@@ -159,45 +159,12 @@ async def make_client(server):
 @pytest_asyncio.fixture
 async def linked_servers(tmp_path):
     """Two IRCd instances linked via S2S federation."""
-    link_password = TEST_LINK_PASSWORD
+    from tests._helpers import boot_linked_pair, link_pair
 
-    config_a = ServerConfig(
-        name="alpha",
-        host="127.0.0.1",
-        port=0,
-        webhook_port=0,
-        links=[LinkConfig(name="beta", host="127.0.0.1", port=0, password=link_password)],
-        telemetry=TelemetryConfig(audit_dir=str(tmp_path / "audit_alpha")),
+    server_a, server_b = await boot_linked_pair(
+        tmp_path, with_audit=True, webhook_port=0
     )
-    config_b = ServerConfig(
-        name="beta",
-        host="127.0.0.1",
-        port=0,
-        webhook_port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password=link_password)],
-        telemetry=TelemetryConfig(audit_dir=str(tmp_path / "audit_beta")),
-    )
-
-    server_a = IRCd(config_a)
-    server_b = IRCd(config_b)
-
-    await server_a.start()
-    await server_b.start()
-
-    server_a.config.port = server_a._server.sockets[0].getsockname()[1]
-    server_b.config.port = server_b._server.sockets[0].getsockname()[1]
-
-    # Update link configs with actual ports
-    config_a.links[0].port = server_b.config.port
-    config_b.links[0].port = server_a.config.port
-
-    # Server A connects to Server B
-    await server_a.connect_to_peer("127.0.0.1", server_b.config.port, link_password)
-    # Wait for handshake to complete
-    for _ in range(50):
-        if "beta" in server_a.links and "alpha" in server_b.links:
-            break
-        await asyncio.sleep(0.05)
+    await link_pair(server_a, server_b)
 
     yield server_a, server_b
 
