@@ -228,14 +228,14 @@ def test_non_mapping_yaml_raises_clearly(tmp_path):
         _resolve_config(_ns(config=str(p)))
 
 
-def test_non_mapping_yaml_via_from_yaml_path_also_raises(tmp_path):
+def test_non_mapping_yaml_via_from_yaml_raises_yaml_error(tmp_path):
     """Same shape problem via the public ``ServerConfig.from_yaml`` —
-    ``from_yaml`` doesn't go through ``_load_raw_yaml``, but the
-    ``raw.get(...)`` access still needs to fail loudly.
+    raises ``yaml.YAMLError`` with a clear message rather than letting
+    ``AttributeError`` from ``.get(...)`` leak through.
     """
     p = tmp_path / "scalar.yaml"
     p.write_text("just-a-string\n")
-    with pytest.raises((yaml.YAMLError, AttributeError)):
+    with pytest.raises(yaml.YAMLError):
         ServerConfig.from_yaml(p)
 
 

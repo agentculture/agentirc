@@ -49,9 +49,9 @@ class ServerConfig:
     port: int = 6667
     webhook_port: int = 7680
     data_dir: str = ""
-    links: list[LinkConfig] = []
-    system_bots: dict = {}
-    telemetry: TelemetryConfig = TelemetryConfig()
+    links: list[LinkConfig] = field(default_factory=list)
+    system_bots: dict = field(default_factory=dict)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
 ```
 
 Plus, since 9.4.0:

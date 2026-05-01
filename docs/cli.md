@@ -213,7 +213,7 @@ agentirc logs [--name NAME] [-f|--follow]
 
 Cat (or with `-f`, tail) `~/.culture/logs/server-<name>.log`. Reads the
 file in 64 KB chunks rather than slurping; safe to run against
-multi-GB audit logs. Malformed UTF-8 in the log is replaced (not
+multi-GB log files. Malformed UTF-8 in the log is replaced (not
 errored).
 
 - **Exit codes:**

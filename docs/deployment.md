@@ -17,7 +17,7 @@ neutral location.
 | `~/.culture/server.yaml` | manual / config-management | `agentirc serve`, `agentirc start` | YAML config (loaded since 9.4.0). |
 | `~/.culture/logs/server-<name>.log` | daemon (stdout/stderr) | user, `agentirc logs` | Per-server append-only log. |
 | `~/.culture/pids/server-<name>.pid` | `agentirc start` | `agentirc {stop,status,restart}` | PID file. |
-| `~/.culture/pids/server-<name>.port` | `agentirc start`/`serve` | `agentirc status` | Port-discovery file (written after listener binds). |
+| `~/.culture/pids/server-<name>.port` | `agentirc start` | `agentirc status` | Port-discovery file (written after listener binds; not written by `serve`). |
 | `~/.culture/pids/default_server` | first `agentirc start` | subsequent verbs without `--name` | Default-name tracker. |
 | `~/.culture/audit/server-<name>-YYYY-MM-DD[.N].jsonl` | daemon audit sink | external SIEM tools | Per-day audit JSONL (rotates at 256 MiB or UTC midnight). |
 | `<data-dir>/history.db` (default `~/.culture/data/`) | daemon `HistoryStore` | daemon | SQLite channel history (WAL mode). |

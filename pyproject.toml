@@ -254,7 +254,7 @@ sha256 = "4dfa6c216d92ff15699c748aede3d3271af1413fc8b70bfc0d9ad04c9f85e172"
 
 [tool.citation.packages.culture-agentirc-server-core.files."config.py"]
 status = "paraphrase"
-sha256 = "9d210e264db480370e0b72ba82224191c5edb75e2fa9591bdba5f73c12c54c61"
+sha256 = "241b1f8c8b67cee6796b6b6ce4c7415aa2d66bf82cfa49bee965e063fe558b8f"
 
 [tool.citation.packages.culture-agentirc-server-core.files."events.py"]
 status = "paraphrase"

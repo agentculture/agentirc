@@ -80,7 +80,16 @@ class ServerConfig:
         if not p.exists():
             return cls()
         with p.open() as f:
-            raw: dict[str, Any] = yaml.safe_load(f) or {}
+            loaded = yaml.safe_load(f)
+        if loaded is None:
+            raw: dict[str, Any] = {}
+        elif not isinstance(loaded, dict):
+            raise yaml.YAMLError(
+                f"agentirc config {str(p)!r}: root must be a mapping, "
+                f"got {type(loaded).__name__}"
+            )
+        else:
+            raw = loaded
 
         server_section = raw.get("server") or {}
         telemetry_section = raw.get("telemetry") or {}
