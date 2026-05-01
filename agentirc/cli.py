@@ -98,13 +98,24 @@ def _load_raw_yaml(cfg_path: str) -> dict:
     """Read ``cfg_path`` as YAML and return the top-level mapping.
 
     Missing files return ``{}``; malformed YAML raises ``yaml.YAMLError``
-    from the underlying loader. Empty files return ``{}``.
+    from the underlying loader. Empty files return ``{}``. A YAML
+    document whose root is a list/scalar (valid YAML but wrong shape)
+    raises ``yaml.YAMLError`` with a clear message rather than letting
+    a downstream ``AttributeError`` leak through.
     """
     p = Path(cfg_path).expanduser()
     if not p.exists():
         return {}
     with p.open() as f:
-        return yaml.safe_load(f) or {}
+        raw = yaml.safe_load(f)
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise yaml.YAMLError(
+            f"agentirc config {cfg_path!r}: root must be a mapping, "
+            f"got {type(raw).__name__}"
+        )
+    return raw
 
 
 def _build_telemetry(yaml_telemetry: dict) -> "TelemetryConfig":  # noqa: F821
@@ -169,8 +180,10 @@ def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (
     host = _pick(args.host, yaml_server.get("host"), "0.0.0.0")
     port = _pick(args.port, yaml_server.get("port"), 6667)
     webhook_port = _pick(args.webhook_port, raw.get("webhook_port"), 7680)
-    data_dir = _pick(
-        args.data_dir, raw.get("data_dir"), os.path.expanduser("~/.culture/data")
+    data_dir = os.path.expanduser(
+        _pick(
+            args.data_dir, raw.get("data_dir"), os.path.expanduser("~/.culture/data")
+        )
     )
 
     cfg = ServerConfig(
@@ -404,29 +417,21 @@ def _force_kill(pid: int, name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _run_server(
-    name: str,
-    host: str,
-    port: int,
-    links: list | None = None,
-    webhook_port: int = 7680,
-    data_dir: str = "",
-) -> None:
-    """Run the IRC server (called in the daemon child process)."""
-    from agentirc.config import ServerConfig
+async def _run_server(config: "ServerConfig") -> None:  # noqa: F821 (forward ref)
+    """Run the IRC server (called in the daemon child process).
+
+    Takes a fully-merged ``ServerConfig`` so YAML-supplied telemetry,
+    system_bots, and any future dataclass fields reach the IRCd.
+    Caller (``_run_foreground`` / ``_daemonize_server``) is responsible
+    for resolving CLI/YAML precedence via ``_resolve_config``.
+    """
     from agentirc.ircd import IRCd
 
-    config = ServerConfig(
-        name=name,
-        host=host,
-        port=port,
-        webhook_port=webhook_port,
-        links=links or [],
-        data_dir=data_dir,
-    )
     ircd = IRCd(config)
     await ircd.start()
-    logger.info("Server '%s' listening on %s:%d", name, host, port)
+    logger.info(
+        "Server '%s' listening on %s:%d", config.name, config.host, config.port
+    )
 
     for lc in config.links:
         try:
@@ -451,11 +456,11 @@ async def _run_server(
             signal.signal(sig, lambda *_: stop_event.set())
 
     await stop_event.wait()
-    logger.info("Server '%s' shutting down", name)
+    logger.info("Server '%s' shutting down", config.name)
     await ircd.stop()
 
 
-def _run_foreground(args: argparse.Namespace, pid_name: str, links: list) -> None:
+def _run_foreground(args: argparse.Namespace, pid_name: str, cfg: "ServerConfig") -> None:  # noqa: F821
     """Run the server in the foreground (blocking).
 
     A PID file is written when *pid_name* is non-empty (``start
@@ -465,27 +470,25 @@ def _run_foreground(args: argparse.Namespace, pid_name: str, links: list) -> Non
     """
     if pid_name:
         write_pid(pid_name, os.getpid())
-        if args.port:
+        if cfg.port:
             # Mirror daemonize: write the port file so `agentirc status`
             # can report `(PID N, port P)` for foreground-managed runs.
-            write_port(pid_name, args.port)
+            write_port(pid_name, cfg.port)
     os.makedirs(LOG_DIR, exist_ok=True)
-    print(f"Server '{args.name}' starting in foreground (PID {os.getpid()})")
-    print(f"  Listening on {args.host}:{args.port}")
-    print(f"  Webhook port: {args.webhook_port}")
+    print(f"Server '{cfg.name}' starting in foreground (PID {os.getpid()})")
+    print(f"  Listening on {cfg.host}:{cfg.port}")
+    print(f"  Webhook port: {cfg.webhook_port}")
     if pid_name:
-        _maybe_set_default_server(args.name)
+        _maybe_set_default_server(cfg.name)
     try:
-        asyncio.run(
-            _run_server(args.name, args.host, args.port, links, args.webhook_port, args.data_dir)
-        )
+        asyncio.run(_run_server(cfg))
     finally:
         if pid_name:
             remove_pid(pid_name)
             remove_port(pid_name)
 
 
-def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> None:
+def _daemonize_server(args: argparse.Namespace, pid_name: str, cfg: "ServerConfig") -> None:  # noqa: F821
     """Fork and set up the daemon child process for the server."""
     if sys.platform == "win32":
         print("Daemon mode not supported on Windows. Use --foreground.", file=sys.stderr)
@@ -499,7 +502,7 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
     os.setsid()
 
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_path = os.path.join(LOG_DIR, f"server-{_safe_log_name(args.name)}.log")
+    log_path = os.path.join(LOG_DIR, f"server-{_safe_log_name(cfg.name)}.log")
     log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     os.dup2(log_fd, 1)
     os.dup2(log_fd, 2)
@@ -521,8 +524,8 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
     )
 
     write_pid(pid_name, os.getpid())
-    if args.port:
-        write_port(pid_name, args.port)
+    if cfg.port:
+        write_port(pid_name, cfg.port)
 
     # PR #4 review (Qodo): the previous version called os._exit(0)
     # unconditionally in the finally block, masking crashes inside
@@ -531,16 +534,14 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
     # and propagate it.
     rc = 0
     try:
-        asyncio.run(
-            _run_server(args.name, args.host, args.port, links, args.webhook_port, args.data_dir)
-        )
+        asyncio.run(_run_server(cfg))
     except Exception:
         # Catch ordinary failures so the daemon child can record them and
         # exit non-zero. SystemExit / KeyboardInterrupt / GeneratorExit
         # deliberately propagate (the asyncio signal handlers translate
         # SIGINT/SIGTERM into a clean stop_event.set, so we never reach
         # this except via an actual fault).
-        logger.exception("Daemon for server '%s' crashed", args.name)
+        logger.exception("Daemon for server '%s' crashed", cfg.name)
         rc = 1
     finally:
         remove_pid(pid_name)
@@ -559,7 +560,7 @@ def _server_serve(args: argparse.Namespace) -> None:
     if args.name is None:
         args.name = _resolve_server_name(args)
         cfg.name = args.name
-    _run_foreground(args, pid_name="", links=cfg.links)
+    _run_foreground(args, pid_name="", cfg=cfg)
 
 
 def _server_start(args: argparse.Namespace) -> None:
@@ -572,9 +573,9 @@ def _server_start(args: argparse.Namespace) -> None:
     _check_already_running(pid_name, args.name)
 
     if getattr(args, "foreground", False):
-        _run_foreground(args, pid_name, cfg.links)
+        _run_foreground(args, pid_name, cfg)
     else:
-        _daemonize_server(args, pid_name, cfg.links)
+        _daemonize_server(args, pid_name, cfg)
 
 
 def _server_stop(args: argparse.Namespace) -> int:
@@ -618,8 +619,16 @@ def _server_stop(args: argparse.Namespace) -> int:
 
 
 def _server_restart(args: argparse.Namespace) -> int:
-    """``agentirc restart`` — stop (best-effort) then start with the same args."""
-    args.name = _resolve_server_name(args)
+    """``agentirc restart`` — stop (best-effort) then start with the same args.
+
+    Resolves the YAML+CLI merge once up-front so ``server.name`` from
+    ``--config`` is honoured for both the stop half and the subsequent
+    ``_server_start`` call. Without the pre-resolution, the default-
+    server file would shadow ``server.name``.
+    """
+    _resolve_config(args)
+    if args.name is None:
+        args.name = _resolve_server_name(args)
     pid_name = f"server-{args.name}"
     pid = read_pid(pid_name)
     if pid and is_process_alive(pid):

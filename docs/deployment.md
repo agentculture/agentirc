@@ -54,11 +54,11 @@ Why `serve` (foreground), not `start` (daemonize):
 - systemd already owns process supervision. `agentirc start` would
   fork, write its own PID file, and leave systemd seeing the parent
   exit cleanly — confusing for `Restart=` policies.
-- `serve` writes no PID file, redirects to nothing (stdout/stderr stay
-  attached so journald captures the log natively), and handles
-  SIGTERM/SIGINT cleanly.
-- The port file is still written under `~/.culture/pids/` so a
-  separate `agentirc status --name main` keeps working.
+- `serve` writes no PID/port files, redirects to nothing (stdout/stderr
+  stay attached so journald captures the log natively), and handles
+  SIGTERM/SIGINT cleanly. Discoverability comes from systemd
+  (`systemctl status agentirc-main.service`) rather than `agentirc
+  status`, which reports `not running` for `serve`-managed daemons.
 
 Save as `/etc/systemd/system/agentirc-main.service` and:
 

@@ -210,3 +210,42 @@ def test_resolve_config_links_yaml_used_when_cli_empty(tmp_path):
     cfg = _resolve_config(args)
     assert len(cfg.links) == 1
     assert cfg.links[0].name == "alpha"
+
+
+# ---------------------------------------------------------------------------
+# Reliability / edge cases (Qodo + Copilot review on PR-B4)
+# ---------------------------------------------------------------------------
+
+
+def test_non_mapping_yaml_raises_clearly(tmp_path):
+    """Top-level list/scalar yaml is valid YAML but wrong shape — should raise
+    a clean ``yaml.YAMLError`` rather than ``AttributeError`` from
+    ``raw.get(...)``.
+    """
+    p = tmp_path / "list.yaml"
+    p.write_text("- one\n- two\n")
+    with pytest.raises(yaml.YAMLError):
+        _resolve_config(_ns(config=str(p)))
+
+
+def test_non_mapping_yaml_via_from_yaml_path_also_raises(tmp_path):
+    """Same shape problem via the public ``ServerConfig.from_yaml`` —
+    ``from_yaml`` doesn't go through ``_load_raw_yaml``, but the
+    ``raw.get(...)`` access still needs to fail loudly.
+    """
+    p = tmp_path / "scalar.yaml"
+    p.write_text("just-a-string\n")
+    with pytest.raises((yaml.YAMLError, AttributeError)):
+        ServerConfig.from_yaml(p)
+
+
+def test_resolve_config_yaml_data_dir_tilde_expanded(tmp_path, monkeypatch):
+    """A ``data_dir: ~/foo`` in YAML must be expanded so persistence code
+    doesn't write to a literal ``~`` directory in the working dir.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    p = tmp_path / "d.yaml"
+    p.write_text("data_dir: ~/agentirc-data\n")
+    cfg = _resolve_config(_ns(config=str(p)))
+    assert cfg.data_dir == str(tmp_path / "agentirc-data")
+    assert "~" not in cfg.data_dir

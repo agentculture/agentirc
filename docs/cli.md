@@ -33,7 +33,7 @@ set (the *start flags*) plus a per-verb extra:
 |---|---|---|
 | `--name NAME` | resolved (see below) | Server display name. Drives PID/port/log filenames. |
 | `--host HOST` | `0.0.0.0` | Bind address. |
-| `--port PORT` | `6667` | Bind TCP port. `0` means OS-assigned (foreground only). |
+| `--port PORT` | `6667` | Bind TCP port. `0` requests an OS-assigned port; in `start` mode the daemon won't write a `.port` file when `--port 0` is used, so `agentirc status` reports only the PID. |
 | `--link SPEC` | none | S2S link, format `name:host:port:password[:trust]`. Repeatable. |
 | `--webhook-port PORT` | `7680` | HTTP port for bot webhooks. Inert until a bot harness is wired in. |
 | `--data-dir PATH` | `~/.culture/data` | Directory for persistent storage (history.db, etc.). |
@@ -103,9 +103,10 @@ supervision is the caller's responsibility (systemd, container runtime,
 - **Stdout/stderr:** the daemon's log goes to the foreground streams.
 - **SIGTERM/SIGINT:** triggers a clean shutdown (closes listening
   socket, terminates active connections, flushes audit, exits 0).
-- **Port file:** if `--port` is non-zero and a name is set, agentirc
-  writes `~/.culture/pids/server-<name>.port` so a parallel
-  `agentirc status --name <name>` can report the listening port.
+- **No PID/port files:** `serve` deliberately writes neither, so
+  `agentirc status` reports `not running` for it. Use `start
+  --foreground` if you need PID/port-file integration with status
+  *and* a foreground process.
 - **Exit code:** propagates the asyncio event loop's exit status; `0`
   on clean shutdown; non-zero if startup fails.
 
