@@ -459,7 +459,7 @@ class Client:
 
             # Notify all channel members (including self)
             join_msg = Message(prefix=self.prefix, command="JOIN", params=[channel_name])
-            for member in list(channel.members):
+            for member in [*channel.members]:
                 await member.send(join_msg)
 
             # Send topic if set
@@ -498,7 +498,7 @@ class Client:
 
             part_params = [channel_name, reason] if reason else [channel_name]
             part_msg = Message(prefix=self.prefix, command="PART", params=part_params)
-            for member in list(channel.members):
+            for member in [*channel.members]:
                 await member.send(part_msg)
 
             await self.server.emit_event(
@@ -545,7 +545,7 @@ class Client:
                 command="TOPIC",
                 params=[channel_name, channel.topic],
             )
-            for member in list(channel.members):
+            for member in [*channel.members]:
                 await member.send(topic_msg)
             await self.server.emit_event(
                 Event(
@@ -569,7 +569,7 @@ class Client:
         await self.send_numeric(replies.RPL_NAMREPLY, "=", channel.name, nicks)
         await self.send_numeric(replies.RPL_ENDOFNAMES, channel.name, "End of /NAMES list")
 
-    async def _handle_list(self, msg: Message) -> None:
+    async def _handle_list(self, _msg: Message) -> None:
         for name, channel in self.server.channels.items():
             topic = channel.topic or ""
             await self.send_numeric(replies.RPL_LIST, name, str(len(channel.members)), topic)
@@ -674,7 +674,7 @@ class Client:
             command="MODE",
             params=[channel_name, "".join(applied_modes)] + applied_params,
         )
-        for member in list(channel.members):
+        for member in [*channel.members]:
             await member.send(mode_msg)
 
     async def _handle_channel_mode(self, msg: Message) -> None:
@@ -807,7 +807,7 @@ class Client:
                 "irc.notice": is_notice,
             },
         ):
-            for member in list(channel.members):
+            for member in [*channel.members]:
                 if member is not self:
                     await member.send(relay)
             self.server.metrics.privmsg_delivered.add(1, {"kind": "channel", "channel": target})
@@ -995,7 +995,7 @@ class Client:
         if target.startswith("#"):
             channel = self.server.channels.get(target)
             if channel:
-                for member in list(channel.members):
+                for member in [*channel.members]:
                     await self._send_who_reply(member, target, channel)
             await self.send_numeric(replies.RPL_ENDOFWHO, target, replies.MSG_ENDOFWHO)
         else:
@@ -1052,8 +1052,8 @@ class Client:
 
         notified: set[Client] = set()
         channel_names = [ch.name for ch in self.channels]
-        for channel in list(self.channels):
-            for member in list(channel.members):
+        for channel in [*self.channels]:
+            for member in [*channel.members]:
                 if member is not self and member not in notified:
                     await member.send(quit_msg)
                     notified.add(member)

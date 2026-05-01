@@ -129,7 +129,9 @@ def _is_managed_via_ps(pid: int) -> bool:
     if ps is None:
         return False
     try:
-        result = subprocess.run(  # noqa: S603 — fixed argv, pid is int
+        # argv is a fixed token list with the pid coerced to int — no shell
+        # interpretation, no path that traverses untrusted input.
+        result = subprocess.run(
             [ps, "-p", str(int(pid)), "-o", "command="],
             capture_output=True,
             text=True,

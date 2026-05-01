@@ -349,7 +349,10 @@ async def _run_server(
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop_event.set)
-        except (NotImplementedError, RuntimeError):
+        except RuntimeError:
+            # NotImplementedError is a subclass of RuntimeError, so this
+            # also catches the Windows event-loop case where the
+            # add_signal_handler API isn't implemented.
             signal.signal(sig, lambda *_: stop_event.set())
 
     await stop_event.wait()
@@ -436,7 +439,12 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
         asyncio.run(
             _run_server(args.name, args.host, args.port, links, args.webhook_port, args.data_dir)
         )
-    except BaseException:  # noqa: BLE001 — we re-emit via os._exit and log
+    except Exception:
+        # Catch ordinary failures so the daemon child can record them and
+        # exit non-zero. SystemExit / KeyboardInterrupt / GeneratorExit
+        # deliberately propagate (the asyncio signal handlers translate
+        # SIGINT/SIGTERM into a clean stop_event.set, so we never reach
+        # this except via an actual fault).
         logger.exception("Daemon for server '%s' crashed", args.name)
         rc = 1
     finally:
@@ -450,16 +458,15 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
 # ---------------------------------------------------------------------------
 
 
-def _server_serve(args: argparse.Namespace) -> int:
+def _server_serve(args: argparse.Namespace) -> None:
     """``agentirc serve`` — run the IRCd in the foreground without writing a PID file."""
     args.name = _resolve_server_name(args)
     _maybe_warn_unused_config(args)
     links = list(getattr(args, "link", []) or [])
     _run_foreground(args, pid_name="", links=links)
-    return 0
 
 
-def _server_start(args: argparse.Namespace) -> int:
+def _server_start(args: argparse.Namespace) -> None:
     """``agentirc start`` — daemonize (or run foreground if ``--foreground``)."""
     args.name = _resolve_server_name(args)
     _maybe_warn_unused_config(args)
@@ -470,10 +477,8 @@ def _server_start(args: argparse.Namespace) -> int:
 
     if getattr(args, "foreground", False):
         _run_foreground(args, pid_name, links)
-        return 0
-
-    _daemonize_server(args, pid_name, links)
-    return 0
+    else:
+        _daemonize_server(args, pid_name, links)
 
 
 def _server_stop(args: argparse.Namespace) -> int:
@@ -528,7 +533,7 @@ def _server_restart(args: argparse.Namespace) -> int:
     return _server_start(args)
 
 
-def _server_status(args: argparse.Namespace) -> int:
+def _server_status(args: argparse.Namespace) -> None:
     args.name = _resolve_server_name(args)
     pid_name = f"server-{args.name}"
     pid = read_pid(pid_name)
@@ -536,18 +541,14 @@ def _server_status(args: argparse.Namespace) -> int:
 
     if pid is None:
         print(f"Server '{args.name}': not running (no PID file)")
-        return 0
-
-    if is_process_alive(pid):
+    elif is_process_alive(pid):
         if port:
             print(f"Server '{args.name}': running (PID {pid}, port {port})")
         else:
             print(f"Server '{args.name}': running (PID {pid})")
-        return 0
-
-    print(f"Server '{args.name}': not running (stale PID {pid})")
-    remove_pid(pid_name)
-    return 0
+    else:
+        print(f"Server '{args.name}': not running (stale PID {pid})")
+        remove_pid(pid_name)
 
 
 def _server_link(args: argparse.Namespace) -> int:

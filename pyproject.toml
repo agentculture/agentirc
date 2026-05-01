@@ -165,7 +165,7 @@ notes = "Vendored from culture/pidfile.py with two adaptations: (1) is_managed_p
 
 [tool.citation.packages.culture-pidfile.files."pidfile.py"]
 status = "paraphrase"
-sha256 = "0710fb016c75ef342150d2a61032b545d99261b4c2ed49f636ffb96504c39a5b"
+sha256 = "a9399cf0bfec92ceea1772dc97c3256a972b7ce4fd08f8f8266535db7a10d95a"
 
 [tool.citation.packages.culture-cli-shared]
 schema = 2
@@ -197,7 +197,7 @@ notes = "Vendored from culture/agentirc/client.py with import paths rewritten on
 
 [tool.citation.packages.culture-client.files."client.py"]
 status = "paraphrase"
-sha256 = "37ab9ffc98bbbf618a1a84fe046f0db3980ae29de8e7c687e0364afc82c5ff4b"
+sha256 = "08235081f0b7f28e563b1b5c0030baa372bb717d14bed4e11122e7296036ed96"
 
 [tool.citation.packages.culture-cli-server]
 schema = 2
@@ -209,7 +209,7 @@ notes = "Real lifecycle CLI extracted from culture/cli/server.py and reshaped as
 
 [tool.citation.packages.culture-cli-server.files."cli.py"]
 status = "paraphrase"
-sha256 = "dd5a870609fcbedf644c8b38ca798d05536e98b889144c024a1a3dc92bf15472"
+sha256 = "011b282ceaa99ec72b2d1b4e67599ca1be108afe10080834890c39a4fb101459"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2
