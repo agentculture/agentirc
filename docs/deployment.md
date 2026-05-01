@@ -40,8 +40,8 @@ After=network.target
 
 [Service]
 Type=simple
-User=spark
-ExecStart=/usr/local/bin/agentirc serve --name spark --config /home/spark/.culture/server.yaml
+User=ircd
+ExecStart=/usr/local/bin/agentirc serve --name main --config /etc/agentirc/server.yaml
 Restart=on-failure
 RestartSec=2
 
@@ -58,14 +58,14 @@ Why `serve` (foreground), not `start` (daemonize):
   attached so journald captures the log natively), and handles
   SIGTERM/SIGINT cleanly.
 - The port file is still written under `~/.culture/pids/` so a
-  separate `agentirc status --name spark` keeps working.
+  separate `agentirc status --name main` keeps working.
 
-Save as `/etc/systemd/system/agentirc-spark.service` and:
+Save as `/etc/systemd/system/agentirc-main.service` and:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now agentirc-spark.service
-sudo journalctl -u agentirc-spark.service -f
+sudo systemctl enable --now agentirc-main.service
+sudo journalctl -u agentirc-main.service -f
 ```
 
 For a launchd / supervisord / s6 / runit equivalent, mirror the same
@@ -222,7 +222,7 @@ pip install --upgrade agentirc-cli
 uv pip install agentirc-cli==9.4.0
 
 # Restart the service
-sudo systemctl restart agentirc-spark.service
+sudo systemctl restart agentirc-main.service
 ```
 
 `agentirc-cli` follows [SemVer](https://semver.org/) — see

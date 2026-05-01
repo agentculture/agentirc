@@ -210,7 +210,7 @@ notes = "Real lifecycle CLI extracted from culture/cli/server.py and reshaped as
 
 [tool.citation.packages.culture-cli-server.files."cli.py"]
 status = "paraphrase"
-sha256 = "011b282ceaa99ec72b2d1b4e67599ca1be108afe10080834890c39a4fb101459"
+sha256 = "857116bfba4addff8a4b9fe49d9eff5398da4be3d084ea8be5769b9b8873d540"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2

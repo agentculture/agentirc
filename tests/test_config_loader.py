@@ -18,15 +18,15 @@ from agentirc.config import LinkConfig, ServerConfig, TelemetryConfig
 
 def _ns(**overrides) -> argparse.Namespace:
     """argparse.Namespace pre-populated with sentinel-None lifecycle flags."""
-    base = dict(
-        name=None,
-        host=None,
-        port=None,
-        webhook_port=None,
-        data_dir=None,
-        link=None,
-        config=None,
-    )
+    base = {
+        "name": None,
+        "host": None,
+        "port": None,
+        "webhook_port": None,
+        "data_dir": None,
+        "link": None,
+        "config": None,
+    }
     base.update(overrides)
     return argparse.Namespace(**base)
 
@@ -66,16 +66,17 @@ def test_from_yaml_server_section_overrides_defaults(tmp_path):
 
 def test_from_yaml_telemetry_section_populates_dataclass(tmp_path):
     p = tmp_path / "t.yaml"
+    audit_dir = str(tmp_path / "audit")
     p.write_text(
         "telemetry:\n"
         "  enabled: true\n"
         "  service_name: test-service\n"
-        "  audit_dir: /tmp/audit\n"
+        f"  audit_dir: {audit_dir}\n"
     )
     cfg = ServerConfig.from_yaml(p)
     assert cfg.telemetry.enabled is True
     assert cfg.telemetry.service_name == "test-service"
-    assert cfg.telemetry.audit_dir == "/tmp/audit"
+    assert cfg.telemetry.audit_dir == audit_dir
     # other telemetry fields stay default
     assert cfg.telemetry.otlp_endpoint == "http://localhost:4317"  # NOSONAR S5332 — test-only OTLP endpoint
 
@@ -115,7 +116,7 @@ def test_from_yaml_ignores_culture_only_keys(tmp_path):
         "poll_interval": 60,
         "sleep_start": "23:00",
         "sleep_end": "08:00",
-        "agents": {"daria": "/home/spark/git/daria"},
+        "agents": {"daria": "/path/to/daria"},
     }))
     # Should not raise
     cfg = ServerConfig.from_yaml(p)
@@ -187,7 +188,11 @@ def test_resolve_config_links_cli_replaces_yaml(tmp_path):
         "  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
     )
     cli_link = LinkConfig(
-        name="cli-peer", host="127.0.0.1", port=7777, password="cli", trust="full"
+        name="cli-peer",
+        host="127.0.0.1",
+        port=7777,
+        password="cli",  # noqa: S106  # NOSONAR S2068 — test fixture, not a real credential
+        trust="full",
     )
     args = _ns(config=str(p), link=[cli_link])
     cfg = _resolve_config(args)

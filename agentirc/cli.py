@@ -94,6 +94,48 @@ def _safe_log_name(name: str) -> str:
     return _safe_name(name)
 
 
+def _load_raw_yaml(cfg_path: str) -> dict:
+    """Read ``cfg_path`` as YAML and return the top-level mapping.
+
+    Missing files return ``{}``; malformed YAML raises ``yaml.YAMLError``
+    from the underlying loader. Empty files return ``{}``.
+    """
+    p = Path(cfg_path).expanduser()
+    if not p.exists():
+        return {}
+    with p.open() as f:
+        return yaml.safe_load(f) or {}
+
+
+def _build_telemetry(yaml_telemetry: dict) -> "TelemetryConfig":  # noqa: F821
+    """Build a TelemetryConfig from a YAML ``telemetry:`` block.
+
+    Drops keys not declared on the dataclass — culture extending
+    TelemetryConfig in the future shouldn't crash agentirc on read.
+    """
+    from agentirc.config import TelemetryConfig
+
+    if not yaml_telemetry:
+        return TelemetryConfig()
+    known = {f.name for f in TelemetryConfig.__dataclass_fields__.values()}
+    tcfg = {k: v for k, v in yaml_telemetry.items() if k in known}
+    return TelemetryConfig(**tcfg)
+
+
+def _resolve_links(cli_links, yaml_links: list) -> list:
+    """Pick CLI links if any, else build from YAML, else empty.
+
+    CLI links replace YAML wholesale — there is no merge.
+    """
+    from agentirc.config import LinkConfig
+
+    if cli_links:
+        return list(cli_links)
+    if yaml_links:
+        return [LinkConfig(**entry) for entry in yaml_links]
+    return []
+
+
 def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (forward ref)
     """Build a ServerConfig from ``--config`` YAML, overlaid with CLI flags.
 
@@ -113,50 +155,23 @@ def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (
     then calls ``_resolve_server_name`` to pick up the default-server
     file or the ``agentirc`` fallback.
     """
-    from agentirc.config import LinkConfig, ServerConfig, TelemetryConfig
+    from agentirc.config import ServerConfig
 
-    cfg_path = getattr(args, "config", None) or DEFAULT_CONFIG
-    p = Path(cfg_path).expanduser()
-    if p.exists():
-        with p.open() as f:
-            raw: dict = yaml.safe_load(f) or {}
-    else:
-        raw = {}
+    raw = _load_raw_yaml(getattr(args, "config", None) or DEFAULT_CONFIG)
     yaml_server = raw.get("server") or {}
-    yaml_links = raw.get("links") or []
-    yaml_telemetry = raw.get("telemetry") or {}
-    yaml_system_bots = raw.get("system_bots") or {}
 
-    name = args.name if args.name is not None else yaml_server.get("name")
-    host = args.host if args.host is not None else yaml_server.get("host", "0.0.0.0")
-    port = args.port if args.port is not None else yaml_server.get("port", 6667)
-    webhook_port = (
-        args.webhook_port
-        if args.webhook_port is not None
-        else raw.get("webhook_port", 7680)
+    def _pick(cli_value, yaml_value, default):
+        if cli_value is not None:
+            return cli_value
+        return yaml_value if yaml_value is not None else default
+
+    name = _pick(args.name, yaml_server.get("name"), None)
+    host = _pick(args.host, yaml_server.get("host"), "0.0.0.0")
+    port = _pick(args.port, yaml_server.get("port"), 6667)
+    webhook_port = _pick(args.webhook_port, raw.get("webhook_port"), 7680)
+    data_dir = _pick(
+        args.data_dir, raw.get("data_dir"), os.path.expanduser("~/.culture/data")
     )
-    data_dir = (
-        args.data_dir
-        if args.data_dir is not None
-        else raw.get("data_dir", os.path.expanduser("~/.culture/data"))
-    )
-
-    cli_links = getattr(args, "link", None)
-    if cli_links:
-        links = list(cli_links)
-    elif yaml_links:
-        links = [LinkConfig(**entry) for entry in yaml_links]
-    else:
-        links = []
-
-    if yaml_telemetry:
-        telemetry_known = {
-            f.name for f in TelemetryConfig.__dataclass_fields__.values()
-        }
-        tcfg = {k: v for k, v in yaml_telemetry.items() if k in telemetry_known}
-        telemetry = TelemetryConfig(**tcfg)
-    else:
-        telemetry = TelemetryConfig()
 
     cfg = ServerConfig(
         name=name or "agentirc",
@@ -164,9 +179,9 @@ def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (
         port=port,
         webhook_port=webhook_port,
         data_dir=data_dir,
-        links=links,
-        system_bots=yaml_system_bots,
-        telemetry=telemetry,
+        links=_resolve_links(getattr(args, "link", None), raw.get("links") or []),
+        system_bots=raw.get("system_bots") or {},
+        telemetry=_build_telemetry(raw.get("telemetry") or {}),
     )
 
     args.name = name  # may be None — handler resolves via default-server file
