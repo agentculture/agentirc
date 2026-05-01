@@ -968,7 +968,7 @@ class ServerLink:
             except ValueError:
                 pass
 
-    async def _replay_event(self, _seq: int, event: Event) -> None:
+    async def _replay_event(self, seq: int, event: Event) -> None:  # noqa: ARG002
         """Replay a single event to the peer as S2S wire format."""
         origin = self.server.config.name
         # Federated events arrive with event.type as either an EventType enum

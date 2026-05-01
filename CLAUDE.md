@@ -2,20 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current state: server-core + real CLI + protocol module landed (9.2.0)
+## Current state: bootstrap functionally complete (9.3.0); docs slice (PR-B4) remains
 
-This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/OriNachum/culture). As of 9.2.0:
+This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/OriNachum/culture). As of 9.3.0:
 
 - **Server-core** (`agentirc/{ircd,server_link,channel,events,skill,remote_client,…}.py`, `agentirc/skills/{rooms,threads,history,icon}.py`) — vendored from `culture@df50942` via the `cite-don't-copy` pattern (see `[tool.citation]` in `pyproject.toml`).
 - **Client transport** (`agentirc/client.py`) — vendored from `culture/agentirc/client.py` in PR-B2. The bootstrap spec originally said this would "stay in culture", but the dependency-boundary analysis after PR-B1 showed `client.py` only imports already-vendored support modules plus opentelemetry. Without it, `agentirc/ircd.py:580`'s runtime `from agentirc.client import Client` raised `ImportError` on the first TCP IRC connection.
 - **Public CLI** (`agentirc/cli.py`) — real verb dispatch extracted from `culture/cli/server.py`. Verbs: `serve` (foreground, no PID; for systemd `Type=simple` and containers), `start`/`stop`/`status` (lifecycle), `restart`, `link` (peer-spec validator), `logs` (cat / tail of `~/.culture/logs/server-<name>.log`), `version`.
 - **Public protocol** (`agentirc/protocol.py`) — verb name constants, numerics, IRCv3 tag names. Wire-format quirks (`ROOMETAEND`, `ROOMETASET` typos, `ERR_NOSUCHCHANNEL` semantic misuse, `STHREAD` verb collapse) preserved verbatim — they need coordinated cross-repo bumps to fix.
+- **Test suite** (PR-B3, 9.3.0) — 36 tests vendored from `culture@df50942` (~6.5kloc), 315 tests run under `pytest -n auto` in ~29s on default workers. Three telemetry tests (`test_bot_event_dispatch_span`, `test_bot_run_span`, `test_metrics_bots`) and `test_welcome_bot` stay in culture because they depend on the real `BotManager`. `tests/conftest.py` was adapted to drop bot-loader sandboxing and the `server_with_bot` / `server_with_bots` fixtures.
 - **Internal support** (`agentirc/_internal/`) — `aio`, `constants`, `protocol/`, `telemetry/`, `virtual_client`, `pidfile` (PR-B2), `cli_shared/` (PR-B2), `bots/` stubs.
 
 End-to-end verified: `agentirc start --port <p>` boots a real IRCd, TCP NICK/USER handshake returns `001 RPL_WELCOME`, `agentirc stop` shuts cleanly. `agentirc serve` is byte-indistinguishable from `culture server start` for the lifecycle contract culture's shim relies on.
 
 What is **not** done yet:
-- **Test suite migration** is PR-B3 — only remaining bootstrap slice.
+- **Bootstrap docs (PR-B4)** — `docs/api-stability.md`, `docs/cli.md`, `docs/deployment.md`. Pure prose; not gating on culture's cutover (the public API surface is already importable; PR-B4 just documents the contract).
 
 Read the bootstrap spec at `docs/superpowers/specs/2026-04-30-bootstrap-design.md` for the full plan; it is the operative source of truth and is intentionally self-contained. The culture-side counterpart spec is at `../culture/docs/superpowers/specs/2026-04-30-agentirc-extraction-design.md` — not normally needed, but explains *why* if a decision looks arbitrary.
 
@@ -43,6 +44,13 @@ There are three different names in play. Don't conflate them:
 - **Stays in culture:** `culture.bots.*` (the real bot manager), `culture.config` / `culture.bots.config` (agent-manifest concerns), `culture.cli.shared.{ipc,display,formatting,process}` (CLI ergonomics agentirc doesn't need), `culture.credentials` / `culture.mesh_config` (OS-keyring + mesh.yaml).
 
 When migrating tests, the rule is: pure server tests come here, transport tests **also** come here now that we own `client.py`, mixed tests stay in culture and get rewritten to drive `agentirc serve` as a subprocess fixture rather than importing `IRCd` directly. When unsure, **prefer copying the test here** — this repo owns the IRCd and the client transport.
+
+### Test layout (since 9.3.0)
+
+- `tests/conftest.py` — paraphrase of culture's conftest. Drops the `_BOTS_DIR_*` `unittest.mock.patch` calls (no-op against agentirc's bot stubs) and the `server_with_bot` / `server_with_bots` fixtures. Keeps `IRCTestClient`, the IRCd lifecycle fixtures (`server`, `linked_servers`, `make_client*`, `server_welcome_disabled`), telemetry fixtures (`tracing_exporter`, `metrics_reader`, `audit_dir`), and the `TEST_LINK_PASSWORD` constant.
+- `tests/test_*.py` — 21 server-core tests + the agentirc-native `test_cli.py`. Cover IRC lifecycle, channels, rooms, threads, history, federation, events, mentions, the icon skill.
+- `tests/telemetry/test_*.py` — 15 telemetry integration tests covering audit JSONL emission, OTLP span injection on dispatch, S2S relay spans, metrics initialization, trace-context propagation. Uses two private helper modules `_fakes.py` (FakeWriter etc.) and `_metrics_helpers.py`. No `tests/telemetry/conftest.py` (the upstream one was bot-coupled).
+- Tests left in culture: `test_bot_event_dispatch_span.py`, `test_bot_run_span.py`, `test_metrics_bots.py`, `test_welcome_bot.py` (bot-manager-coupled), plus the entire bucket-C surface (cli, console, daemon, clients, credentials).
 
 ## Public API contract (semver-tracked)
 
@@ -82,7 +90,7 @@ Do not rename on-disk artifacts during the bootstrap. That is explicitly out of 
 # Dev setup
 uv venv && uv pip install -e ".[dev]"
 
-# Tests (the spec mandates parallel; no tests yet — collected 0)
+# Tests (315 collected, ~29s on default workers)
 pytest -n auto
 
 # Run a single test
@@ -91,7 +99,7 @@ pytest tests/path/to/test_file.py::test_name -v
 # CLI smoke
 agentirc --help
 agentirc-cli --help          # alias of agentirc
-agentirc version             # prints "agentirc 9.2.0"
+agentirc version             # prints "agentirc 9.3.0"
 python -m agentirc version   # equivalent
 
 # Lifecycle (functional since 9.2.0)
@@ -146,7 +154,8 @@ Per-machine paths for these skills go in `.claude/skills.local.yaml` (gitignored
 
 The full list lives in §"Acceptance criteria" of the bootstrap spec. The non-obvious ones:
 
-- `pip install agentirc-cli==9.2.0` on a clean venv produces working `agentirc` *and* `agentirc-cli` binaries (both pointing at `agentirc.cli:main`). ✅ since 9.0.0.
+- `pip install agentirc-cli==9.3.0` on a clean venv produces working `agentirc` *and* `agentirc-cli` binaries (both pointing at `agentirc.cli:main`). ✅ since 9.0.0.
 - `agentirc serve` is byte-indistinguishable from `culture server start` (same socket, same logs, same systemd integration). ✅ since 9.2.0.
 - `agentirc.config.{ServerConfig, LinkConfig, TelemetryConfig}`, `agentirc.cli.{main, dispatch}`, `agentirc.protocol.*` all import from a clean Python session. ✅ since 9.2.0.
-- `docs/api-stability.md` names the three public modules. ⏳ pending.
+- `pytest -n auto` passes for the migrated suite (315 tests, ~29s). ✅ since 9.3.0.
+- `docs/api-stability.md` names the three public modules. ⏳ pending PR-B4.

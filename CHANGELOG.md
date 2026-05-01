@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.3.0] - 2026-05-01
+
+### Added
+
+- Test suite migration (PR-B3): 36 server-core / telemetry tests
+  vendored from `culture@df50942` (~6,500 LOC). 315 tests run under
+  `pytest -n auto` in ~29 seconds.
+  - 21 server-core tests in `tests/` cover IRC lifecycle, channels,
+    rooms, threads, history, federation (S2S), events, mentions,
+    and the icon skill.
+  - 15 telemetry integration tests in `tests/telemetry/` cover audit
+    JSONL emission, OTLP span injection on dispatch, S2S relay
+    spans, metrics initialization, and trace-context propagation.
+  - Test helper modules `_fakes.py` and `_metrics_helpers.py` also
+    vendored verbatim under the same package.
+- `tests/conftest.py` — adapted from culture. Drops the
+  `_BOTS_DIR_*` patches and the `server_with_bot` /
+  `server_with_bots` fixtures (see Changed below). Keeps the
+  `IRCTestClient` raw-TCP helper and the IRCd lifecycle, telemetry,
+  and audit fixtures.
+- Three `[tool.citation]` packages:
+  `culture-tests-conftest` (paraphrase),
+  `culture-tests-server-core` (mostly quote, paraphrase for
+  `test_events_basic.py`), and `culture-tests-telemetry` (mostly
+  quote, paraphrase for `test_tracing.py`).
+
+### Changed
+
+- `agentirc/server_link.py:_replay_event` — parameter renamed from
+  `_seq` (PR-B1's unused-arg compliance variant) back to `seq` to
+  match the upstream signature culture's tests assume; signature
+  carries a `# noqa: ARG002` to keep the linter quiet. Hash refreshed.
+
+### Deferred / out of scope
+
+- Three bot-fixtured telemetry tests
+  (`test_bot_event_dispatch_span.py`, `test_bot_run_span.py`,
+  `test_metrics_bots.py`) and `test_welcome_bot.py` stay in culture
+  — they depend on the real `BotManager` (forbidden by agentirc's
+  dependency boundary). Bucket C tests (cli/console/daemon/clients)
+  also remain in culture indefinitely.
+- `tests/telemetry/conftest.py` is not migrated; its only consumer
+  was the deferred bot-fixtured tests above.
+- Bootstrap docs (`docs/api-stability.md`, `docs/cli.md`,
+  `docs/deployment.md`) ship in PR-B4.
+
 ## [9.2.0] - 2026-05-01
 
 ### Added

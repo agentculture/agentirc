@@ -172,8 +172,8 @@ Wire-format quirks (`ROOMETAEND`, `ROOMETASET` typos; `ERR_NOSUCHCHANNEL` semant
 > - **Shape A — package skeleton** ✅ (PR #2, `9.0.0`): Tasks 1, 6, and a stub form of 9.
 > - **Shape B-1 — server-core extraction** ✅ (PR #3, `9.1.0`): Tasks 2, 4, 9 (runtime deps), partial 10. See the "Cite-don't-copy" subsection below.
 > - **Shape B-2 — real CLI + `protocol.py` + `client.py`** ✅ (PR-B2, `9.2.0`): Tasks 5, 7, plus vendoring `culture.pidfile`, `culture.cli.shared` (subset), and `culture/agentirc/client.py`. The bootstrap spec previously said `client.py` "stays in culture"; that decision was reversed in PR-B2 because (a) `agentirc/ircd.py:580`'s runtime `from agentirc.client import Client` was a guaranteed `ImportError` without it, and (b) `client.py` only imports already-vendored support modules — no backend-SDK pull-through.
-> - **Shape B-3 — test suite migration** (next PR): Task 8.
-> - **Remaining**: 10 (pre-commit + CI), 11–12 (docs), 13–18 (test run, acceptance, tag, publish, report-back).
+> - **Shape B-3 — test suite migration** ✅ (PR-B3, `9.3.0`): Task 8 + Task 13. 36 tests vendored from `culture@df50942` (~6.5kloc), 315 tests run under `pytest -n auto` in ~29s. `tests/conftest.py` adapted (paraphrase) to drop bot-loader sandboxing and bot-fixture definitions. Three telemetry/test_bot_*.py files plus `test_welcome_bot.py` stay in culture (BotManager-coupled). Bucket-C tests stay in culture indefinitely.
+> - **Remaining**: 11–12 (docs — `api-stability.md`, `cli.md`, `deployment.md`, ship in PR-B4), 14 (acceptance criteria spot-check), 16–18 (tag, publish, report-back to culture).
 >
 > Task 3 (`Copy protocol/extensions/ wholesale`) is dropped: that path doesn't exist in culture. Re-add only if/when culture creates it.
 
@@ -218,6 +218,15 @@ Tests from culture are sorted into three buckets:
 3. **Imports `culture.bots.*` or other backend-coupled fixtures** → stays in culture and is rewritten there to drive `agentirc serve` as a subprocess fixture rather than importing `IRCd` directly. Do not copy here.
 
 When in doubt, prefer moving tests *here* over leaving them in culture: this repo owns the IRCd, the client transport, and IRCd-internal tests should run in this repo's CI.
+
+**Realised in PR-B3 (9.3.0):**
+
+- 21 root server-core tests + 15 telemetry tests = 36 files (~6.5kloc) vendored verbatim with mechanical import rewrites (`culture.agentirc.X` → `agentirc.X`, `culture.protocol.message` → `agentirc._internal.protocol.message`, `culture.telemetry.X` → `agentirc._internal.telemetry.X`, `culture.agentirc.client` → `agentirc.client`).
+- `tests/conftest.py` adapted as paraphrase: dropped the `_BOTS_DIR_*` `unittest.mock.patch` calls (no-op against agentirc's no-op `_internal/bots/` stubs) and the `server_with_bot` / `server_with_bots` fixtures (`culture.bots.*` is forbidden).
+- `tests/telemetry/test_tracing.py` paraphrase: one `unittest.mock.patch` target rewritten from `"culture.telemetry.tracing.OTLPSpanExporter"` to `"agentirc._internal.telemetry.tracing.OTLPSpanExporter"`. OTEL service-name strings (`"culture.agentirc"`) and OTEL attribute keys (`"culture.s2s.*"`, `"culture.federation.peer"`, `"culture.dev/traceparent"`) preserved verbatim — they are public observability identifiers downstream consumers grep for.
+- `tests/test_events_basic.py` paraphrase: `with patch("culture.bots.bot_manager.BOTS_DIR", …)` block removed (same dead-weight rationale as the conftest patches).
+- `agentirc/server_link.py:_replay_event` parameter renamed from `_seq` (PR-B1's unused-arg compliance variant) back to `seq` to match the upstream signature culture's tests assume; signature carries a `# noqa: ARG002` to keep the linter quiet.
+- **Stayed in culture:** `test_bot_event_dispatch_span.py`, `test_bot_run_span.py`, `test_metrics_bots.py` (need real `BotManager` for the bot-event path), `test_welcome_bot.py` (inspects `bot_manager.bots`), and the 57-file bucket-C surface (cli, console, daemon, clients, credentials, mesh_config). `tests/telemetry/conftest.py` not migrated — its only consumer was the deferred bot tests above.
 
 ## Acceptance criteria
 
