@@ -3,7 +3,8 @@
 #
 # Subcommands:
 #   lint              run the portability lint on the current diff (staged + unstaged)
-#   poll <PR>         fetch and display review comments
+#   poll <PR>         fetch and display review comments + SonarCloud findings
+#   sonar <PR>        list every SonarCloud issue / hotspot / duplication on a PR
 #   reply <PR>        batch reply to review comments (JSONL on stdin), --resolve
 #   delta             dump CLAUDE.md head + culture.yaml for each sibling project
 #                     listed in skills.local.yaml (alignment-delta check)
@@ -53,6 +54,12 @@ case "$cmd" in
     poll)
         PR="${1:?Usage: workflow.sh poll <PR>}"
         bash "$SCRIPT_DIR/pr-comments.sh" "$PR"
+        echo
+        bash "$SCRIPT_DIR/pr-sonar.sh" "$PR"
+        ;;
+    sonar)
+        PR="${1:?Usage: workflow.sh sonar <PR>}"
+        bash "$SCRIPT_DIR/pr-sonar.sh" "$PR"
         ;;
     reply)
         PR="${1:?Usage: workflow.sh reply <PR>  (JSONL on stdin)}"

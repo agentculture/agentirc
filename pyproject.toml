@@ -245,7 +245,7 @@ sha256 = "477760b85e4acf861a92aaf0ea73550c07267e3c33740a412a3075598bfb68aa"
 
 [tool.citation.packages.culture-agentirc-server-core.files."server_link.py"]
 status = "paraphrase"
-sha256 = "f2392407ebfbcdddf69316dce4a4f898384f8e2861df7391b56208240a664db0"
+sha256 = "b7c59d64c61bab8ce93595b9a406c7a6d5107ab4361a42f8ccd7ad0f5f7004e7"
 
 [tool.citation.packages.culture-agentirc-server-core.files."channel.py"]
 status = "paraphrase"
@@ -312,7 +312,7 @@ cited = "2026-05-01"
 
 [tool.citation.packages.culture-tests-conftest.files."conftest.py"]
 status = "paraphrase"
-sha256 = "89c83ce3e8c27eac03fa1f01cef21c015bb76527a71c000eef5f35b6c1f1f121"
+sha256 = "a3e893d1b483d4339237f6b459e67a962a812afed972f4e61307d64553f7f986"
 
 [tool.citation.packages.culture-tests-server-core]
 schema = 2
@@ -326,8 +326,8 @@ status = "quote"
 sha256 = "ad335460aa043e9a9e3cce3e70d3ffef4ed0f8ae98138c6b8ec26e16044b1820"
 
 [tool.citation.packages.culture-tests-server-core.files."test_connection.py"]
-status = "quote"
-sha256 = "87fd58cfe1af89f119ed96a01ffc50b8620a967cf228f03d5a297b7e4ef6682f"
+status = "paraphrase"
+sha256 = "243205febd7cfdca5b129b1ce4e1952802aa68f6999e0dc807ce15ac068dc996"
 
 [tool.citation.packages.culture-tests-server-core.files."test_discovery.py"]
 status = "quote"
@@ -358,8 +358,8 @@ status = "quote"
 sha256 = "f387befe4df163861ec4b597c0fd330745107b3e36ba5604b69d872329418f50"
 
 [tool.citation.packages.culture-tests-server-core.files."test_federation.py"]
-status = "quote"
-sha256 = "2514da859ec70874060edd60d36c7a49c703517c8b3516ee444cc35af6b9eb40"
+status = "paraphrase"
+sha256 = "3d6ebb5853571233d348c3349bb80f829025055f9036230092a83ce4e6433407"
 
 [tool.citation.packages.culture-tests-server-core.files."test_history.py"]
 status = "quote"
@@ -386,8 +386,8 @@ status = "quote"
 sha256 = "3c4e320dc459faccdf86ac67e5a33134fa5a14cc283fe1f6e79a8c09d281cd8c"
 
 [tool.citation.packages.culture-tests-server-core.files."test_rooms_federation.py"]
-status = "quote"
-sha256 = "389865fc422fd0852030f606b2f89b7e27290b064654220e1eea380ba8dc5e7e"
+status = "paraphrase"
+sha256 = "d59f7c9cc95944d1e237fff99ee795f6281dcdccfefb39f4719f43f322085148"
 
 [tool.citation.packages.culture-tests-server-core.files."test_rooms_integration.py"]
 status = "quote"
@@ -454,8 +454,8 @@ status = "quote"
 sha256 = "bfe2b1166032ec027a0ab06b3124d31a9b9deccb431d0550e14fb83f0a778f21"
 
 [tool.citation.packages.culture-tests-telemetry.files."test_metrics_s2s.py"]
-status = "quote"
-sha256 = "de7ddb3ee302284b162066069639b914d30eef8040a1fcbf8003881b0fc5c4f6"
+status = "paraphrase"
+sha256 = "b07815fba360afda871fb2ed2996087b5778d912027751da264e188e87a7b41f"
 
 [tool.citation.packages.culture-tests-telemetry.files."test_outbound_inject.py"]
 status = "quote"
@@ -466,16 +466,16 @@ status = "quote"
 sha256 = "5cfeffe6ccb3b18e1d78669086cc9e6e1ac473f8929eb1d1bcd15523851dd284"
 
 [tool.citation.packages.culture-tests-telemetry.files."test_s2s_relay_span.py"]
-status = "quote"
-sha256 = "07b436dd2b5d0a1514f5282d35f10d5ff5ace1ae741346b94998c54d555b6ca4"
+status = "paraphrase"
+sha256 = "a2802230c8742b4a94e27f4854b81803119a41a5ca245d92d67001c0e2356489"
 
 [tool.citation.packages.culture-tests-telemetry.files."test_server_init.py"]
 status = "quote"
 sha256 = "16ad131fdb48a8ff0162227f68d0b50ac4f9dc783dbd0d8061112613efff72f5"
 
 [tool.citation.packages.culture-tests-telemetry.files."test_server_link_inject.py"]
-status = "quote"
-sha256 = "ab65be59e9369ad468e6f9bf08f8280b9a675491aa8d33604073e2df52672d9c"
+status = "paraphrase"
+sha256 = "ce2de77e1002758976e7ac50bd61cbc8a551e128b285eb01e4a1cf23ce3aa148"
 
 [tool.citation.packages.culture-tests-telemetry.files."test_tracing.py"]
 status = "paraphrase"

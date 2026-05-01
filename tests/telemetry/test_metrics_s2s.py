@@ -131,7 +131,7 @@ async def test_s2s_link_events_auth_fail():
                     name="alpha",
                     host="127.0.0.1",
                     port=0,
-                    password="correct",  # nosec B106 - test fixture, intentional bad-password assertion
+                    password="correct",  # nosec B106  # NOSONAR S2068 — test fixture, intentional bad-password assertion
                 )
             ],
         )

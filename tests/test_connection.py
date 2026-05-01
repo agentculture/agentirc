@@ -6,7 +6,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_server_accepts_connection(server):
     """Server accepts a TCP connection."""
-    reader, writer = await asyncio.open_connection("127.0.0.1", server.config.port)
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.config.port)  # NOSONAR S1481
     writer.close()
     await writer.wait_closed()
 

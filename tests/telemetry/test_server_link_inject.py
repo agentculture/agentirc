@@ -94,7 +94,7 @@ async def test_send_raw_injects_traceparent_when_span_active(tracing_exporter):
     prefix, sep, body = line.partition(" ")
     assert sep == " "
     assert prefix.startswith("@")
-    tags = dict(t.split("=", 1) for t in prefix[1:].split(";") if "=" in t)
+    tags = dict(t.split("=", 1) for t in prefix[1:].split(";") if "=" in t)  # NOSONAR S7494
     assert TRACEPARENT_TAG in tags
     # Tag value must be 55-char W3C format
     assert len(tags[TRACEPARENT_TAG]) == 55

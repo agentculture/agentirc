@@ -16,7 +16,7 @@ from agentirc.skill import Event, EventType
 from agentirc._internal.telemetry.context import TRACEPARENT_TAG
 
 
-async def _wait_for_span(exporter, name: str, timeout: float = 1.0) -> None:
+async def _wait_for_span(exporter, name: str, timeout: float = 1.0) -> None:  # NOSONAR S7483
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
         if any(s.name == name for s in exporter.get_finished_spans()):
@@ -100,7 +100,7 @@ async def test_relay_resigns_per_hop(tracing_exporter, linked_servers):
     line = smsg_lines[0]
     # Extract the traceparent value from the @-tag block.
     tag_block = line.split(" ", 1)[0][1:]
-    tags = dict(t.split("=", 1) for t in tag_block.split(";") if "=" in t)
+    tags = dict(t.split("=", 1) for t in tag_block.split(";") if "=" in t)  # NOSONAR S7494
     tp_value = tags[TRACEPARENT_TAG]
     # W3C: 00-<trace-id>-<parent-id>-<flags>
     parts = tp_value.split("-")

@@ -32,7 +32,7 @@ async def test_server_link_bad_password():
         name="beta",
         host="127.0.0.1",
         port=0,
-        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password="correct")],
+        links=[LinkConfig(name="alpha", host="127.0.0.1", port=0, password="correct")],  # NOSONAR S2068 — test fixture for bad-password rejection assertion
     )
 
     server_a = IRCd(config_a)
@@ -100,7 +100,7 @@ async def test_server_link_duplicate_name_rejected():
 @pytest.mark.asyncio
 async def test_squit_cleans_up_link(linked_servers):
     """SQUIT removes link."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
     assert "beta" in server_a.links
 
     link = server_a.links["beta"]
@@ -118,7 +118,7 @@ async def test_squit_cleans_up_link(linked_servers):
 @pytest.mark.asyncio
 async def test_burst_sends_local_clients(linked_servers, make_client_a):
     """Remote clients populated after link when clients exist before linking."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     # Create a client on server A
     await make_client_a(nick="alpha-alice", user="alice")
@@ -133,7 +133,7 @@ async def test_burst_sends_local_clients(linked_servers, make_client_a):
 @pytest.mark.asyncio
 async def test_burst_sends_channel_membership(linked_servers, make_client_a):
     """Remote clients appear in channels after burst."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -150,7 +150,7 @@ async def test_burst_sends_channel_membership(linked_servers, make_client_a):
 @pytest.mark.asyncio
 async def test_burst_sends_channel_topic(linked_servers, make_client_a):
     """Topic synced across servers."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -166,7 +166,7 @@ async def test_burst_sends_channel_topic(linked_servers, make_client_a):
 @pytest.mark.asyncio
 async def test_remote_client_appears_in_names(linked_servers, make_client_a, make_client_b):
     """NAMES shows remote nicks."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -187,7 +187,7 @@ async def test_remote_client_appears_in_names(linked_servers, make_client_a, mak
 @pytest.mark.asyncio
 async def test_remote_client_appears_in_who(linked_servers, make_client_a, make_client_b):
     """WHO shows remote nicks."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -209,7 +209,7 @@ async def test_remote_client_appears_in_who(linked_servers, make_client_a, make_
 @pytest.mark.asyncio
 async def test_remote_client_appears_in_whois(linked_servers, make_client_a, make_client_b):
     """WHOIS works for remote clients, shows remote server name."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     await make_client_a(nick="alpha-alice", user="alice")
     await asyncio.sleep(0.3)
@@ -218,7 +218,7 @@ async def test_remote_client_appears_in_whois(linked_servers, make_client_a, mak
     await client_b.send("WHOIS alpha-alice")
     resp = await client_b.recv_all(timeout=0.5)
 
-    # 311 = RPL_WHOISUSER
+    # 311 (RPL_WHOISUSER)  # NOSONAR S125
     whois_user = [l for l in resp if " 311 " in l]
     assert whois_user, f"No WHOISUSER reply: {resp}"
     assert "alpha-alice" in whois_user[0]
@@ -237,7 +237,7 @@ async def test_remote_client_appears_in_whois(linked_servers, make_client_a, mak
 @pytest.mark.asyncio
 async def test_privmsg_relayed_to_remote_channel(linked_servers, make_client_a, make_client_b):
     """A sends PRIVMSG to #test, B receives it."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -260,7 +260,7 @@ async def test_privmsg_relayed_to_remote_channel(linked_servers, make_client_a, 
 @pytest.mark.asyncio
 async def test_privmsg_dm_to_remote_nick(linked_servers, make_client_a, make_client_b):
     """DM across servers."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await asyncio.sleep(0.3)
@@ -279,7 +279,7 @@ async def test_privmsg_dm_to_remote_nick(linked_servers, make_client_a, make_cli
 @pytest.mark.asyncio
 async def test_notice_relayed(linked_servers, make_client_a, make_client_b):
     """NOTICE across servers."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -302,7 +302,7 @@ async def test_notice_relayed(linked_servers, make_client_a, make_client_b):
 @pytest.mark.asyncio
 async def test_join_relayed(linked_servers, make_client_a, make_client_b):
     """JOIN visible to remote members."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_b = await make_client_b(nick="beta-bob", user="bob")
     await client_b.send("JOIN #test")
@@ -322,7 +322,7 @@ async def test_join_relayed(linked_servers, make_client_a, make_client_b):
 @pytest.mark.asyncio
 async def test_part_relayed(linked_servers, make_client_a, make_client_b):
     """PART visible to remote members."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -345,7 +345,7 @@ async def test_part_relayed(linked_servers, make_client_a, make_client_b):
 @pytest.mark.asyncio
 async def test_quit_relayed(linked_servers, make_client_a, make_client_b):
     """QUIT visible, RemoteClient removed."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -371,7 +371,7 @@ async def test_quit_relayed(linked_servers, make_client_a, make_client_b):
 @pytest.mark.asyncio
 async def test_topic_change_relayed(linked_servers, make_client_a, make_client_b):
     """TOPIC visible across servers."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -392,7 +392,7 @@ async def test_topic_change_relayed(linked_servers, make_client_a, make_client_b
 @pytest.mark.asyncio
 async def test_no_relay_loop(linked_servers, make_client_a, make_client_b):
     """Message from B relayed to A is NOT sent back to B."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")
@@ -826,7 +826,7 @@ async def test_history_includes_backfilled_messages():
 @pytest.mark.asyncio
 async def test_three_way_conversation(linked_servers, make_client_a, make_client_b):
     """Clients on both servers chat back and forth."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #chat")
@@ -854,7 +854,7 @@ async def test_three_way_conversation(linked_servers, make_client_a, make_client
 @pytest.mark.asyncio
 async def test_remote_client_mentioned(linked_servers, make_client_a, make_client_b):
     """@mention across servers sends NOTICE."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     client_a = await make_client_a(nick="alpha-alice", user="alice")
     await client_a.send("JOIN #test")

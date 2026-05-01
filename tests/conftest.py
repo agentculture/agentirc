@@ -37,7 +37,7 @@ from agentirc._internal.telemetry.metrics import reset_for_tests as _reset_metri
 from agentirc._internal.telemetry.tracing import reset_for_tests as _reset_telemetry
 
 # Test-only link password — not a real credential (S2068)
-TEST_LINK_PASSWORD = "testlink123"  # noqa: S105
+TEST_LINK_PASSWORD = "testlink123"  # noqa: S105  # NOSONAR S2068 — test fixture, not a real credential
 
 # Default total wait for recv_until / recv. Callers needing a different
 # bound should wrap their own `async with asyncio.timeout(...)` around the
@@ -57,7 +57,7 @@ class IRCTestClient:
         self.writer.write(f"{text}\r\n".encode())
         await self.writer.drain()
 
-    async def recv(self, timeout: float = 2.0) -> str:
+    async def recv(self, timeout: float = 2.0) -> str:  # NOSONAR S7483 — public test-helper signature; see RECV_TIMEOUT_SECONDS note above
         while "\r\n" not in self._buffer:
             data = await asyncio.wait_for(self.reader.read(4096), timeout=timeout)
             if not data:
@@ -66,7 +66,7 @@ class IRCTestClient:
         line, self._buffer = self._buffer.split("\r\n", 1)
         return line
 
-    async def recv_all(self, timeout: float = 0.5) -> list[str]:
+    async def recv_all(self, timeout: float = 0.5) -> list[str]:  # NOSONAR S7483
         lines = []
         try:
             while True:

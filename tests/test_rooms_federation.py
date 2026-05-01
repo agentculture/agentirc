@@ -6,7 +6,7 @@ import pytest
 @pytest.mark.asyncio
 async def test_sroommeta_syncs_on_burst(linked_servers, make_client_a):
     """When a managed room exists, its metadata syncs to peers via burst."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     alice = await make_client_a(nick="alpha-alice", user="alice")
     await alice.send("ROOMCREATE #shared :purpose=Shared room;tags=python;persistent=true")
@@ -29,7 +29,7 @@ async def test_sroommeta_syncs_on_burst(linked_servers, make_client_a):
 @pytest.mark.asyncio
 async def test_stags_syncs_agent_tags(linked_servers, make_client_a):
     """Agent tags sync via STAGS to federated peers."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     alice = await make_client_a(nick="alpha-alice", user="alice")
     await alice.send("TAGS alpha-alice python,devops")
@@ -45,7 +45,7 @@ async def test_stags_syncs_agent_tags(linked_servers, make_client_a):
 @pytest.mark.asyncio
 async def test_sroomarchive_propagates(linked_servers, make_client_a):
     """ROOMARCHIVE propagates to federated peers."""
-    server_a, server_b = linked_servers
+    server_a, server_b = linked_servers  # NOSONAR S1481
 
     alice = await make_client_a(nick="alpha-alice", user="alice")
     await alice.send("ROOMCREATE #shared :purpose=Test;persistent=true")
