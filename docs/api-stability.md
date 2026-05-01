@@ -12,6 +12,17 @@ import only from these three modules.
 | [`agentirc.cli`](#agentirccli) | `main()`, `dispatch(argv) -> int` | Public, semver-tracked |
 | [`agentirc.protocol`](#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names | Public, semver-tracked |
 
+> **Reserved for 9.5.0 (pending implementation):** `agentirc.protocol` will
+> additionally export the `Event` dataclass, the `EventType` enum,
+> per-type `EVENT_TYPE_*` string constants, the
+> `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR` verb constants, and the
+> `BOT_CAP = "agentirc.io/bot"` capability identifier. `ServerConfig`
+> will gain a new `event_subscription_queue_max: int = 1024` field. The
+> wire format and verb syntax are specified in
+> [`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md);
+> a quick reference for bot authors is at [`docs/extension-api.md`](extension-api.md).
+> Tracking issue: [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15).
+
 ## Semver contract
 
 Following [SemVer 2.0](https://semver.org/):
@@ -178,6 +189,35 @@ Re-exported from `agentirc._internal.protocol.replies`. About 33 names:
 
 Re-exported from `agentirc._internal.telemetry.context`:
 `TRACEPARENT_TAG`, `TRACESTATE_TAG`, `EVENT_TAG_TYPE`, `EVENT_TAG_DATA`.
+
+### Reserved for 9.5.0: bot extension surface
+
+These additions are **specified but not yet implemented**. They will land
+together as a single minor bump in 9.5.0 — see the design spec at
+[`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md)
+for rationale, federation behavior, and acceptance criteria, and
+[`docs/extension-api.md`](extension-api.md) for the bot-author quick
+reference.
+
+- **Event verbs:** `EVENTSUB`, `EVENTUNSUB`, `EVENT`, `EVENTERR`.
+- **Bot capability:** `BOT_CAP = "agentirc.io/bot"`. When negotiated via
+  the existing CAP REQ/ACK flow, the connection is treated as a bot:
+  silent JOIN/PART/QUIT broadcasts, no auto-op on channel creation,
+  `+` prefix in NAMES output, `B` flag in WHO output, authorized to
+  issue `EVENTSUB`.
+- **Event dataclass and enum:** `Event` and `EventType` (currently
+  internal in `agentirc.skill`). Promoted to public for Python consumers.
+  Wire format — not the Python class names — is the contract; non-Python
+  bots pin against the JSON shape documented in `extension-api.md`.
+- **Per-type string constants:** `EVENT_TYPE_MESSAGE`,
+  `EVENT_TYPE_USER_JOIN`, …, one per type-string in the canonical
+  vocabulary. Convenience for callers that prefer non-enum-aware
+  constants.
+
+The `ServerConfig` additions (one new field
+`event_subscription_queue_max: int = 1024`) and the `webhook_port`
+binding-removal are described under
+[`agentirc.config`](#agentircconfig) once 9.5.0 lands.
 
 ### Wire-format quirks (preserved verbatim)
 
