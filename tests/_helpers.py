@@ -65,6 +65,10 @@ async def boot_linked_pair(
     server_b = IRCd(config_b)
     await server_a.start()
     await server_b.start()
+    # `_server` is set by `start()` — assert for type-checker / SonarCloud
+    # S2259, since the IRCd type carries `_server: asyncio.AbstractServer | None`.
+    assert server_a._server is not None
+    assert server_b._server is not None
     server_a.config.port = server_a._server.sockets[0].getsockname()[1]
     server_b.config.port = server_b._server.sockets[0].getsockname()[1]
     return server_a, server_b
