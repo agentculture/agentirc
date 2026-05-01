@@ -460,13 +460,15 @@ async def _run_server(config: "ServerConfig") -> None:  # noqa: F821 (forward re
     await ircd.stop()
 
 
-def _run_foreground(args: argparse.Namespace, pid_name: str, cfg: "ServerConfig") -> None:  # noqa: F821
+def _run_foreground(pid_name: str, cfg: "ServerConfig") -> None:  # noqa: F821
     """Run the server in the foreground (blocking).
 
     A PID file is written when *pid_name* is non-empty (``start
     --foreground``). The agentirc-only ``serve`` verb passes ``""`` to
     skip PID writes — useful for systemd ``Type=simple`` and containers
-    that own process supervision.
+    that own process supervision. All runtime values come from *cfg*;
+    ``args`` is no longer needed since the verb-handler resolves the
+    YAML+CLI merge before calling here.
     """
     if pid_name:
         write_pid(pid_name, os.getpid())
@@ -560,7 +562,7 @@ def _server_serve(args: argparse.Namespace) -> None:
     if args.name is None:
         args.name = _resolve_server_name(args)
         cfg.name = args.name
-    _run_foreground(args, pid_name="", cfg=cfg)
+    _run_foreground(pid_name="", cfg=cfg)
 
 
 def _server_start(args: argparse.Namespace) -> None:
@@ -573,7 +575,7 @@ def _server_start(args: argparse.Namespace) -> None:
     _check_already_running(pid_name, args.name)
 
     if getattr(args, "foreground", False):
-        _run_foreground(args, pid_name, cfg)
+        _run_foreground(pid_name, cfg)
     else:
         _daemonize_server(args, pid_name, cfg)
 

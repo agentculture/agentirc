@@ -210,7 +210,7 @@ notes = "Real lifecycle CLI extracted from culture/cli/server.py and reshaped as
 
 [tool.citation.packages.culture-cli-server.files."cli.py"]
 status = "paraphrase"
-sha256 = "f8e68bb65aa4868a27ad92abbb68fd2ef2c8cba77ca261b7a593d129173c2586"
+sha256 = "80c8a350fcd6178796b710ac86ded77663f2d717e5e067679b23f38def05d1c0"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2
@@ -254,7 +254,7 @@ sha256 = "4dfa6c216d92ff15699c748aede3d3271af1413fc8b70bfc0d9ad04c9f85e172"
 
 [tool.citation.packages.culture-agentirc-server-core.files."config.py"]
 status = "paraphrase"
-sha256 = "241b1f8c8b67cee6796b6b6ce4c7415aa2d66bf82cfa49bee965e063fe558b8f"
+sha256 = "886d743bc5c4ccf17648a5eb743f198058749e79ba4db3a4b30eb96fb9cebc44"
 
 [tool.citation.packages.culture-agentirc-server-core.files."events.py"]
 status = "paraphrase"

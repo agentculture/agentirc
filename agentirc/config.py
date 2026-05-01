@@ -79,39 +79,48 @@ class ServerConfig:
         p = Path(path).expanduser()
         if not p.exists():
             return cls()
-        with p.open() as f:
-            loaded = yaml.safe_load(f)
-        if loaded is None:
-            raw: dict[str, Any] = {}
-        elif not isinstance(loaded, dict):
-            raise yaml.YAMLError(
-                f"agentirc config {str(p)!r}: root must be a mapping, "
-                f"got {type(loaded).__name__}"
-            )
-        else:
-            raw = loaded
+        raw = _load_root_mapping(p)
+        return cls(**_yaml_kwargs(raw))
 
-        server_section = raw.get("server") or {}
-        telemetry_section = raw.get("telemetry") or {}
-        links_section = raw.get("links") or []
-        system_bots = raw.get("system_bots") or {}
 
-        kwargs: dict[str, Any] = {}
-        for key in ("name", "host", "port"):
-            if key in server_section:
-                kwargs[key] = server_section[key]
-        for key in ("webhook_port", "data_dir"):
-            if key in raw:
-                kwargs[key] = raw[key]
-        if links_section:
-            kwargs["links"] = [LinkConfig(**entry) for entry in links_section]
-        if telemetry_section:
-            telemetry_known = {
-                f.name for f in TelemetryConfig.__dataclass_fields__.values()
-            }
-            tcfg = {k: v for k, v in telemetry_section.items() if k in telemetry_known}
-            kwargs["telemetry"] = TelemetryConfig(**tcfg)
-        if system_bots:
-            kwargs["system_bots"] = system_bots
+def _load_root_mapping(p: Path) -> dict[str, Any]:
+    """Load YAML at *p* and require the root to be a mapping."""
+    with p.open() as f:
+        loaded = yaml.safe_load(f)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise yaml.YAMLError(
+            f"agentirc config {str(p)!r}: root must be a mapping, "
+            f"got {type(loaded).__name__}"
+        )
+    return loaded
 
-        return cls(**kwargs)
+
+def _yaml_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
+    """Project a raw YAML mapping onto ServerConfig constructor kwargs."""
+    server_section = raw.get("server") or {}
+    kwargs: dict[str, Any] = {}
+    for key in ("name", "host", "port"):
+        if key in server_section:
+            kwargs[key] = server_section[key]
+    for key in ("webhook_port", "data_dir"):
+        if key in raw:
+            kwargs[key] = raw[key]
+    links_section = raw.get("links") or []
+    if links_section:
+        kwargs["links"] = [LinkConfig(**entry) for entry in links_section]
+    telemetry_section = raw.get("telemetry") or {}
+    if telemetry_section:
+        kwargs["telemetry"] = _build_telemetry(telemetry_section)
+    system_bots = raw.get("system_bots") or {}
+    if system_bots:
+        kwargs["system_bots"] = system_bots
+    return kwargs
+
+
+def _build_telemetry(yaml_telemetry: dict) -> TelemetryConfig:
+    """Build a TelemetryConfig, dropping keys not on the dataclass."""
+    known = {f.name for f in TelemetryConfig.__dataclass_fields__.values()}
+    tcfg = {k: v for k, v in yaml_telemetry.items() if k in known}
+    return TelemetryConfig(**tcfg)
