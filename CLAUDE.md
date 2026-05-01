@@ -2,21 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current state: bootstrap functionally complete (9.3.0); docs slice (PR-B4) remains
+## Current state: bootstrap functionally + docs complete (9.4.0); release ceremony remains
 
-This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/OriNachum/culture). As of 9.3.0:
+This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/OriNachum/culture). As of 9.4.0:
 
 - **Server-core** (`agentirc/{ircd,server_link,channel,events,skill,remote_client,…}.py`, `agentirc/skills/{rooms,threads,history,icon}.py`) — vendored from `culture@df50942` via the `cite-don't-copy` pattern (see `[tool.citation]` in `pyproject.toml`).
-- **Client transport** (`agentirc/client.py`) — vendored from `culture/agentirc/client.py` in PR-B2. The bootstrap spec originally said this would "stay in culture", but the dependency-boundary analysis after PR-B1 showed `client.py` only imports already-vendored support modules plus opentelemetry. Without it, `agentirc/ircd.py:580`'s runtime `from agentirc.client import Client` raised `ImportError` on the first TCP IRC connection.
-- **Public CLI** (`agentirc/cli.py`) — real verb dispatch extracted from `culture/cli/server.py`. Verbs: `serve` (foreground, no PID; for systemd `Type=simple` and containers), `start`/`stop`/`status` (lifecycle), `restart`, `link` (peer-spec validator), `logs` (cat / tail of `~/.culture/logs/server-<name>.log`), `version`.
+- **Client transport** (`agentirc/client.py`) — vendored from `culture/agentirc/client.py` in PR-B2.
+- **Public CLI** (`agentirc/cli.py`) — real verb dispatch extracted from `culture/cli/server.py`. Verbs: `serve` (foreground, no PID; for systemd `Type=simple` and containers), `start`/`stop`/`status` (lifecycle), `restart`, `link` (peer-spec validator), `logs` (cat / tail of `~/.culture/logs/server-<name>.log`), `version`. Since 9.4.0, `serve`/`start`/`restart` overlay CLI flags on `--config` YAML (precedence: CLI > YAML > built-in default).
+- **Public config** (`agentirc/config.py`) — `ServerConfig`, `LinkConfig`, `TelemetryConfig` dataclasses plus the `ServerConfig.from_yaml(path)` classmethod (added 9.4.0). Recognises `server`/`telemetry`/`links`/`webhook_port`/`data_dir`/`system_bots` keys; silently ignores culture-only keys (`supervisor`, `agents`, `buffer_size`, etc.) so the same `~/.culture/server.yaml` can drive both daemons.
 - **Public protocol** (`agentirc/protocol.py`) — verb name constants, numerics, IRCv3 tag names. Wire-format quirks (`ROOMETAEND`, `ROOMETASET` typos, `ERR_NOSUCHCHANNEL` semantic misuse, `STHREAD` verb collapse) preserved verbatim — they need coordinated cross-repo bumps to fix.
-- **Test suite** (PR-B3, 9.3.0) — 36 tests vendored from `culture@df50942` (~6.5kloc), 315 tests run under `pytest -n auto` in ~29s on default workers. Three telemetry tests (`test_bot_event_dispatch_span`, `test_bot_run_span`, `test_metrics_bots`) and `test_welcome_bot` stay in culture because they depend on the real `BotManager`. `tests/conftest.py` was adapted to drop bot-loader sandboxing and the `server_with_bot` / `server_with_bots` fixtures.
-- **Internal support** (`agentirc/_internal/`) — `aio`, `constants`, `protocol/`, `telemetry/`, `virtual_client`, `pidfile` (PR-B2), `cli_shared/` (PR-B2), `bots/` stubs.
+- **Test suite** (PR-B3, 9.3.0; +13 in 9.4.0) — 36 tests vendored from `culture@df50942` (~6.5kloc) plus 13 new agentirc-native tests in `tests/test_config_loader.py`. 328 tests run under `pytest -n auto` in ~28s on default workers. Three telemetry tests (`test_bot_event_dispatch_span`, `test_bot_run_span`, `test_metrics_bots`) and `test_welcome_bot` stay in culture because they depend on the real `BotManager`.
+- **Internal support** (`agentirc/_internal/`) — `aio`, `constants`, `protocol/`, `telemetry/`, `virtual_client`, `pidfile`, `cli_shared/`, `bots/` stubs.
+- **Bootstrap docs** (PR-B4, 9.4.0) — `docs/api-stability.md` (3 public modules + semver contract), `docs/cli.md` (verb table, flag reference, exit codes, YAML/CLI precedence, agentirc-vs-culture diff table), `docs/deployment.md` (on-disk footprint, systemd `Type=simple` example, container deployment, multi-host federation, log rotation, coexistence with culture, backup).
 
-End-to-end verified: `agentirc start --port <p>` boots a real IRCd, TCP NICK/USER handshake returns `001 RPL_WELCOME`, `agentirc stop` shuts cleanly. `agentirc serve` is byte-indistinguishable from `culture server start` for the lifecycle contract culture's shim relies on.
+End-to-end verified: `agentirc start --port <p>` boots a real IRCd, TCP NICK/USER handshake returns `001 RPL_WELCOME`, `agentirc stop` shuts cleanly. `agentirc serve --config server.yaml --port 9999` correctly overlays CLI flag on YAML.
 
 What is **not** done yet:
-- **Bootstrap docs (PR-B4)** — `docs/api-stability.md`, `docs/cli.md`, `docs/deployment.md`. Pure prose; not gating on culture's cutover (the public API surface is already importable; PR-B4 just documents the contract).
+- **Acceptance-criteria spot-check** (Task 14 in the bootstrap spec) — read-only audit to confirm every bullet in §"Acceptance criteria" is ✅ before tagging.
+- **Release ceremony** (Tasks 16–18) — tag `v9.4.0`, the existing `publish.yml` CI pushes to PyPI on push to `main`, then report version + source SHA back so culture's cutover PR can pin against it.
+- **Cross-repo wire-format fixes (Track A)** — `ROOMETAEND`/`ROOMETASET` typos, `ERR_NOSUCHCHANNEL` overload, `STHREAD` collapse. Each requires culture-side change first then agentirc bump.
+- **Steward backport** — port the 9.3.0 `pr-sonar.sh` + `workflow.sh` SonarCloud wiring back to the steward skills repo.
 
 Read the bootstrap spec at `docs/superpowers/specs/2026-04-30-bootstrap-design.md` for the full plan; it is the operative source of truth and is intentionally self-contained. The culture-side counterpart spec is at `../culture/docs/superpowers/specs/2026-04-30-agentirc-extraction-design.md` — not normally needed, but explains *why* if a decision looks arbitrary.
 

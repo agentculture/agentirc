@@ -54,6 +54,8 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+import yaml
+
 from agentirc import __version__
 from agentirc._internal.cli_shared.constants import (
     DEFAULT_CONFIG,
@@ -92,23 +94,88 @@ def _safe_log_name(name: str) -> str:
     return _safe_name(name)
 
 
-def _maybe_warn_unused_config(args: argparse.Namespace) -> None:
-    """Emit a warning when ``--config`` is set to something that won't be loaded.
+def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (forward ref)
+    """Build a ServerConfig from ``--config`` YAML, overlaid with CLI flags.
 
-    ``agentirc`` does not yet wire ``~/.culture/server.yaml`` into the
-    IRCd construction path — ``ServerConfig`` is built purely from CLI
-    flags. Silently ignoring a non-default ``--config`` was flagged as
-    confusing in PR #4 review (Qodo + Copilot). Until YAML loading
-    lands, warn explicitly so users notice.
+    Precedence (highest first): explicit CLI flag (``not None``) >
+    matching YAML key > built-in default. Loads raw YAML so we can
+    distinguish "key absent from YAML" from "key present but matching
+    the dataclass default" — needed to let downstream
+    ``_resolve_server_name`` handle the "no name anywhere" case via
+    the default-server file rather than the ``ServerConfig`` dataclass
+    default ``"culture"``.
+
+    Mutates ``args`` in place so ``args.host`` / ``args.port`` /
+    ``args.name`` / ``args.webhook_port`` / ``args.data_dir`` /
+    ``args.link`` reflect the resolved values for the daemonize / log
+    / status code that reads them directly. ``args.name`` is left
+    ``None`` if neither CLI nor YAML supplied a name; the handler
+    then calls ``_resolve_server_name`` to pick up the default-server
+    file or the ``agentirc`` fallback.
     """
-    cfg = getattr(args, "config", None)
-    if cfg and cfg != DEFAULT_CONFIG:
-        print(
-            f"agentirc: warning: --config {cfg!r} was supplied, but YAML config "
-            "loading is not yet wired (PR-B4). Server settings will come from "
-            "CLI flags (--host/--port/--link/--data-dir) only.",
-            file=sys.stderr,
-        )
+    from agentirc.config import LinkConfig, ServerConfig, TelemetryConfig
+
+    cfg_path = getattr(args, "config", None) or DEFAULT_CONFIG
+    p = Path(cfg_path).expanduser()
+    if p.exists():
+        with p.open() as f:
+            raw: dict = yaml.safe_load(f) or {}
+    else:
+        raw = {}
+    yaml_server = raw.get("server") or {}
+    yaml_links = raw.get("links") or []
+    yaml_telemetry = raw.get("telemetry") or {}
+    yaml_system_bots = raw.get("system_bots") or {}
+
+    name = args.name if args.name is not None else yaml_server.get("name")
+    host = args.host if args.host is not None else yaml_server.get("host", "0.0.0.0")
+    port = args.port if args.port is not None else yaml_server.get("port", 6667)
+    webhook_port = (
+        args.webhook_port
+        if args.webhook_port is not None
+        else raw.get("webhook_port", 7680)
+    )
+    data_dir = (
+        args.data_dir
+        if args.data_dir is not None
+        else raw.get("data_dir", os.path.expanduser("~/.culture/data"))
+    )
+
+    cli_links = getattr(args, "link", None)
+    if cli_links:
+        links = list(cli_links)
+    elif yaml_links:
+        links = [LinkConfig(**entry) for entry in yaml_links]
+    else:
+        links = []
+
+    if yaml_telemetry:
+        telemetry_known = {
+            f.name for f in TelemetryConfig.__dataclass_fields__.values()
+        }
+        tcfg = {k: v for k, v in yaml_telemetry.items() if k in telemetry_known}
+        telemetry = TelemetryConfig(**tcfg)
+    else:
+        telemetry = TelemetryConfig()
+
+    cfg = ServerConfig(
+        name=name or "agentirc",
+        host=host,
+        port=port,
+        webhook_port=webhook_port,
+        data_dir=data_dir,
+        links=links,
+        system_bots=yaml_system_bots,
+        telemetry=telemetry,
+    )
+
+    args.name = name  # may be None — handler resolves via default-server file
+    args.host = cfg.host
+    args.port = cfg.port
+    args.webhook_port = cfg.webhook_port
+    args.data_dir = cfg.data_dir
+    args.link = cfg.links
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -117,21 +184,34 @@ def _maybe_warn_unused_config(args: argparse.Namespace) -> None:
 
 
 def _add_start_flags(parser: argparse.ArgumentParser) -> None:
-    """Attach the lifecycle flag set used by ``serve``/``start``/``restart``."""
+    """Attach the lifecycle flag set used by ``serve``/``start``/``restart``.
+
+    All flags default to ``None`` (the *sentinel* default) rather than
+    their concrete values. ``_resolve_config`` distinguishes "user
+    supplied this flag" from "argparse filled in the default" and
+    overlays CLI values on top of YAML; sentinel defaults are required
+    for that distinction. The user-visible defaults — ``0.0.0.0``,
+    ``6667``, ``7680``, ``~/.culture/data`` — are documented in the
+    help strings and live on the ``ServerConfig`` dataclass.
+    """
     parser.add_argument("--name", default=None, help=_SERVER_NAME_HELP)
-    parser.add_argument("--host", default="0.0.0.0", help="Listen address")
-    parser.add_argument("--port", type=int, default=6667, help="Listen port")
+    parser.add_argument(
+        "--host", default=None, help="Listen address (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--port", type=int, default=None, help="Listen port (default: 6667)"
+    )
     parser.add_argument(
         "--link",
         type=parse_link,
         action="append",
-        default=[],
+        default=None,
         help="Link to peer: name:host:port:password[:trust]",
     )
     parser.add_argument(
         "--webhook-port",
         type=int,
-        default=7680,
+        default=None,
         help=(
             "HTTP port for bot webhooks (default: 7680; "
             "inert in agentirc until a bot harness is wired in)"
@@ -139,7 +219,7 @@ def _add_start_flags(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--data-dir",
-        default=os.path.expanduser("~/.culture/data"),
+        default=None,
         help="Data directory for persistent storage (default: ~/.culture/data)",
     )
     parser.add_argument("--config", default=DEFAULT_CONFIG, help=_CONFIG_HELP)
@@ -460,25 +540,26 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
 
 def _server_serve(args: argparse.Namespace) -> None:
     """``agentirc serve`` — run the IRCd in the foreground without writing a PID file."""
-    args.name = _resolve_server_name(args)
-    _maybe_warn_unused_config(args)
-    links = list(getattr(args, "link", []) or [])
-    _run_foreground(args, pid_name="", links=links)
+    cfg = _resolve_config(args)
+    if args.name is None:
+        args.name = _resolve_server_name(args)
+        cfg.name = args.name
+    _run_foreground(args, pid_name="", links=cfg.links)
 
 
 def _server_start(args: argparse.Namespace) -> None:
     """``agentirc start`` — daemonize (or run foreground if ``--foreground``)."""
-    args.name = _resolve_server_name(args)
-    _maybe_warn_unused_config(args)
+    cfg = _resolve_config(args)
+    if args.name is None:
+        args.name = _resolve_server_name(args)
+        cfg.name = args.name
     pid_name = f"server-{args.name}"
     _check_already_running(pid_name, args.name)
 
-    links = list(getattr(args, "link", []) or [])
-
     if getattr(args, "foreground", False):
-        _run_foreground(args, pid_name, links)
+        _run_foreground(args, pid_name, cfg.links)
     else:
-        _daemonize_server(args, pid_name, links)
+        _daemonize_server(args, pid_name, cfg.links)
 
 
 def _server_stop(args: argparse.Namespace) -> int:

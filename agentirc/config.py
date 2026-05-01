@@ -1,4 +1,10 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 
 @dataclass
@@ -47,3 +53,56 @@ class ServerConfig:
     links: list[LinkConfig] = field(default_factory=list)
     system_bots: dict = field(default_factory=dict)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "ServerConfig":
+        """Load a ServerConfig from a YAML file.
+
+        Recognises top-level ``server`` (host/port/name), ``telemetry``,
+        ``links``, ``webhook_port``, ``data_dir``, and ``system_bots``.
+        Unknown top-level keys (``supervisor``, ``agents``, ``buffer_size``,
+        ``poll_interval``, ``sleep_start``, ``sleep_end``) are silently
+        ignored — those belong to culture's broader process supervisor,
+        and agentirc must coexist with culture using the same
+        ``~/.culture/server.yaml`` file. Unknown keys *inside* the
+        ``server:`` block are also tolerated for the same reason
+        (culture's ``ServerConnConfig`` carries ``archived``,
+        ``archived_at``, ``archived_reason`` that agentirc has no use
+        for).
+
+        A missing path returns the dataclass defaults rather than
+        raising — callers (CLI handlers) treat the file as optional.
+        Malformed YAML raises ``yaml.YAMLError`` from the underlying
+        loader; we deliberately do not catch it so users see the parse
+        error.
+        """
+        p = Path(path).expanduser()
+        if not p.exists():
+            return cls()
+        with p.open() as f:
+            raw: dict[str, Any] = yaml.safe_load(f) or {}
+
+        server_section = raw.get("server") or {}
+        telemetry_section = raw.get("telemetry") or {}
+        links_section = raw.get("links") or []
+        system_bots = raw.get("system_bots") or {}
+
+        kwargs: dict[str, Any] = {}
+        for key in ("name", "host", "port"):
+            if key in server_section:
+                kwargs[key] = server_section[key]
+        for key in ("webhook_port", "data_dir"):
+            if key in raw:
+                kwargs[key] = raw[key]
+        if links_section:
+            kwargs["links"] = [LinkConfig(**entry) for entry in links_section]
+        if telemetry_section:
+            telemetry_known = {
+                f.name for f in TelemetryConfig.__dataclass_fields__.values()
+            }
+            tcfg = {k: v for k, v in telemetry_section.items() if k in telemetry_known}
+            kwargs["telemetry"] = TelemetryConfig(**tcfg)
+        if system_bots:
+            kwargs["system_bots"] = system_bots
+
+        return cls(**kwargs)

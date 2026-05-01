@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.4.0] - 2026-05-01
+
+### Added
+
+- `ServerConfig.from_yaml(path)` — public classmethod on
+  `agentirc.config.ServerConfig` that loads `~/.culture/server.yaml`
+  (or any YAML file). Recognises `server`, `telemetry`, `links`,
+  `webhook_port`, `data_dir`, `system_bots` keys; silently ignores
+  culture-only top-level keys (`supervisor`, `agents`, `buffer_size`,
+  `poll_interval`, `sleep_start`, `sleep_end`, `webhooks`) so the same
+  file can drive both `culture server` and `agentirc` daemons.
+- CLI handlers (`serve`, `start`, `restart`) now overlay CLI flags on
+  top of YAML config. Precedence: explicit CLI flag (sentinel-`None`
+  detection) > YAML key > built-in default. Closes the bootstrap
+  acceptance criterion *"`agentirc start --config <path>` behaves
+  indistinguishably from `culture server start`"*.
+- New runtime dependency: `pyyaml>=6.0`.
+- `docs/api-stability.md` — semver contract for the three public
+  modules (`agentirc.config`, `agentirc.cli`, `agentirc.protocol`),
+  full member list per module, internal-may-refactor list, wire-format
+  quirks paragraph, versioning history.
+- `docs/cli.md` — verb table (8 verbs), per-verb flag reference, exit
+  codes, stderr formatting, YAML/CLI precedence, and the agentirc-vs-
+  culture differences table.
+- `docs/deployment.md` — on-disk footprint, systemd `Type=simple`
+  example unit, container deployment, standalone deployment,
+  multi-host federation, log rotation (logrotate `copytruncate` rule),
+  coexistence with culture, backup recommendations.
+
+### Changed
+
+- `agentirc/cli.py:_add_start_flags` — argparse defaults for `--name`,
+  `--host`, `--port`, `--link`, `--webhook-port`, `--data-dir` are now
+  sentinel `None` rather than concrete values. The user-visible
+  defaults (`0.0.0.0`, `6667`, `7680`, `~/.culture/data`) are still
+  documented in help strings and live on the `ServerConfig` dataclass;
+  the change lets `_resolve_config` distinguish "user-supplied" from
+  "argparse-filled" when overlaying CLI on YAML.
+
+### Removed
+
+- `agentirc/cli.py:_maybe_warn_unused_config` — the
+  *"`--config` was supplied, but YAML config loading is not yet wired
+  (PR-B4)"* warning that PR #4 review (Qodo + Copilot) requested. YAML
+  loading is now wired; the warning was the placeholder for this PR.
+
+### Notes
+
+- Bootstrap is functionally + docs complete as of 9.4.0. Remaining
+  work per the spec status note: acceptance-criteria spot-check (Task
+  14) and release ceremony (Tasks 16–18 — tag, publish, report-back to
+  culture). The cross-repo wire-format fixes (Track A) and steward
+  backport of `pr-sonar.sh` are the only outstanding follow-ups.
+- 13 new tests in `tests/test_config_loader.py` exercise
+  `ServerConfig.from_yaml` (missing/empty/malformed files, unknown-key
+  tolerance, telemetry/links sections) and the `_resolve_config` merge
+  (CLI overrides YAML, YAML used when CLI absent, defaults on both
+  absent, links wholesale-replace). Total suite: 328 tests, ~28s under
+  `pytest -n auto`.
+
 ## [9.3.0] - 2026-05-01
 
 ### Added
