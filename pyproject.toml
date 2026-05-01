@@ -1,9 +1,9 @@
 [project]
 name = "agentirc-cli"
-version = "9.2.0"
+version = "9.3.0"
 description = "Agent-friendly IRCd: server core for AI agent meshes"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Ori Nachum" },
 ]
@@ -19,9 +19,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Communications :: Chat :: Internet Relay Chat",
 ]
 dependencies = [
@@ -245,7 +245,7 @@ sha256 = "477760b85e4acf861a92aaf0ea73550c07267e3c33740a412a3075598bfb68aa"
 
 [tool.citation.packages.culture-agentirc-server-core.files."server_link.py"]
 status = "paraphrase"
-sha256 = "709a8a7d2f7836b9bf382f7fb4d5046a61f8eac06e27323d87835615314d6bbe"
+sha256 = "b7c59d64c61bab8ce93595b9a406c7a6d5107ab4361a42f8ccd7ad0f5f7004e7"
 
 [tool.citation.packages.culture-agentirc-server-core.files."channel.py"]
 status = "paraphrase"
@@ -302,3 +302,181 @@ sha256 = "574682bfc9f042e8c1a304db17cfb4b1e1034f384241b83aaaecfb64decb2271"
 [tool.citation.packages.culture-agentirc-server-core.files."skills/icon.py"]
 status = "paraphrase"
 sha256 = "5ef97657599a37476b96aa59968373aed8c82024027297f8300be9886dc18d4a"
+
+[tool.citation.packages.culture-tests-conftest]
+schema = 2
+source = "https://github.com/OriNachum/culture/blob/df50942/tests/conftest.py"
+version = "df50942"
+target = "tests/"
+cited = "2026-05-01"
+
+[tool.citation.packages.culture-tests-conftest.files."conftest.py"]
+status = "paraphrase"
+sha256 = "3ee6fd43e2833f28a75363503519d63a16fe6f89843471707bf684e544cac360"
+
+[tool.citation.packages.culture-tests-server-core]
+schema = 2
+source = "https://github.com/OriNachum/culture/tree/df50942/tests"
+version = "df50942"
+target = "tests/"
+cited = "2026-05-01"
+
+[tool.citation.packages.culture-tests-server-core.files."test_channel.py"]
+status = "quote"
+sha256 = "ad335460aa043e9a9e3cce3e70d3ffef4ed0f8ae98138c6b8ec26e16044b1820"
+
+[tool.citation.packages.culture-tests-server-core.files."test_connection.py"]
+status = "paraphrase"
+sha256 = "243205febd7cfdca5b129b1ce4e1952802aa68f6999e0dc807ce15ac068dc996"
+
+[tool.citation.packages.culture-tests-server-core.files."test_discovery.py"]
+status = "quote"
+sha256 = "50d0dcad3f30f8b01215264147690786013e1753fae01cd682e6a415601394c8"
+
+[tool.citation.packages.culture-tests-server-core.files."test_events_basic.py"]
+status = "paraphrase"
+sha256 = "bf1e9175a6167b24c13c0f9da2eff923e7e557a3cb99606d7829a14e63596187"
+
+[tool.citation.packages.culture-tests-server-core.files."test_events_catalog.py"]
+status = "quote"
+sha256 = "4e986c18b98c6bd05232c7197c81873554225e3e7492db1b99986ac3039fec37"
+
+[tool.citation.packages.culture-tests-server-core.files."test_events_federation.py"]
+status = "quote"
+sha256 = "f79cd2caf57c264243734bc3ce9cd1cd5543afc46ee28b0a1a6c94ae50efa86a"
+
+[tool.citation.packages.culture-tests-server-core.files."test_events_history.py"]
+status = "quote"
+sha256 = "2148d1fbb951d5cf7f43d18088a92c268416ef5481837c37ca27cce3367e21db"
+
+[tool.citation.packages.culture-tests-server-core.files."test_events_lifecycle.py"]
+status = "quote"
+sha256 = "b60dc1d4eed3c6c9d689ad2a9958eee8f095d1864fbe2a3bbd3dceea52a84728"
+
+[tool.citation.packages.culture-tests-server-core.files."test_events_reserved_nick.py"]
+status = "quote"
+sha256 = "f387befe4df163861ec4b597c0fd330745107b3e36ba5604b69d872329418f50"
+
+[tool.citation.packages.culture-tests-server-core.files."test_federation.py"]
+status = "paraphrase"
+sha256 = "1a1812cdbbf3adf026dc52c791ceb45b076b4eea7f0aa5f9f048a631628aee1f"
+
+[tool.citation.packages.culture-tests-server-core.files."test_history.py"]
+status = "quote"
+sha256 = "066e674c847a54ec62fccd5bbaf1c524883e47e3867f9889279d48603b83ce4d"
+
+[tool.citation.packages.culture-tests-server-core.files."test_link_reconnect.py"]
+status = "paraphrase"
+sha256 = "876330d0fa8db1dcabcc352c362e0b59c7b6a02bb689e61a8e1e464af3ecf058"
+
+[tool.citation.packages.culture-tests-server-core.files."test_mentions.py"]
+status = "quote"
+sha256 = "2a0ec31bbace495fbee41813c319a3965396faaab24974fede2e8931d835b51e"
+
+[tool.citation.packages.culture-tests-server-core.files."test_messaging.py"]
+status = "quote"
+sha256 = "0e6d500f721d5ee5eba0616caeb4822ffbd7bb6f7eb9287be2aa0fea7d7293c5"
+
+[tool.citation.packages.culture-tests-server-core.files."test_modes.py"]
+status = "quote"
+sha256 = "35cd36a0171b824d638c89e021283843739eac8afc3dd846ec7e01115e6fd0e6"
+
+[tool.citation.packages.culture-tests-server-core.files."test_room_persistence.py"]
+status = "quote"
+sha256 = "3c4e320dc459faccdf86ac67e5a33134fa5a14cc283fe1f6e79a8c09d281cd8c"
+
+[tool.citation.packages.culture-tests-server-core.files."test_rooms_federation.py"]
+status = "paraphrase"
+sha256 = "d59f7c9cc95944d1e237fff99ee795f6281dcdccfefb39f4719f43f322085148"
+
+[tool.citation.packages.culture-tests-server-core.files."test_rooms_integration.py"]
+status = "quote"
+sha256 = "9dcfb16639533c44bf3633c61b19f3cd75c549cea3cdac9b5624ecf7196ab3eb"
+
+[tool.citation.packages.culture-tests-server-core.files."test_server_icon_skill.py"]
+status = "quote"
+sha256 = "c39526445af4861cab4b238ba27b00cc598cd0cf0312cea7e6d558eac62f6bd5"
+
+[tool.citation.packages.culture-tests-server-core.files."test_skills.py"]
+status = "quote"
+sha256 = "55b4d18ec526282d87055409bcc6a497a8766d2cad28b67bd5d21df9af95149f"
+
+[tool.citation.packages.culture-tests-server-core.files."test_threads.py"]
+status = "quote"
+sha256 = "0e31f65beea7521536c599b51fac36122eb9b42d50918d8c0bcb1d04d7f763bc"
+
+
+[tool.citation.packages.culture-tests-telemetry]
+schema = 2
+source = "https://github.com/OriNachum/culture/tree/df50942/tests/telemetry"
+version = "df50942"
+target = "tests/telemetry/"
+cited = "2026-05-01"
+
+[tool.citation.packages.culture-tests-telemetry.files."_fakes.py"]
+status = "quote"
+sha256 = "8358c340572006317fddadde2a07da75075f1426a3ded4cf04e4aa0b7c0f8b08"
+
+[tool.citation.packages.culture-tests-telemetry.files."_metrics_helpers.py"]
+status = "quote"
+sha256 = "1f6a01ecaa8c3577ebdd58eedb7146532688e602a2e39f3a4f323f10b6aa6c4f"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_audit_emit.py"]
+status = "quote"
+sha256 = "7b2c618443d5a5ff899ee830453537fb17256c5156c4a7242eee8017d557a2ed"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_audit_lifecycle.py"]
+status = "quote"
+sha256 = "24e17aac1d31530ed77e69f59391c30f48c69427ded4a1b28330e04464e7f872"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_audit_module.py"]
+status = "quote"
+sha256 = "e88c118abdf7f7f5241919a780417466ecf4f43180ee6dbf5253c9c05dece081"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_audit_parse_error.py"]
+status = "quote"
+sha256 = "34cd91ef77811c5024f1534700b005605e706aaa7234bc22524aab85c272df3c"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_config.py"]
+status = "paraphrase"
+sha256 = "150f9cb11d5737f154f0f85f8e7e65135482ad86010ca2386215f9a462ad2474"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_dispatch_span.py"]
+status = "quote"
+sha256 = "a5116e92d1d88da18f2cd5d026b69c0efbcdf3845c3da4c5f3177dfa46ade7fb"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_emit_event_span.py"]
+status = "quote"
+sha256 = "5fb0cf247669717f1add5392d18d3a5639d35d3350982b521a40e3ad031bc7ab"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_metrics_init.py"]
+status = "quote"
+sha256 = "bfe2b1166032ec027a0ab06b3124d31a9b9deccb431d0550e14fb83f0a778f21"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_metrics_s2s.py"]
+status = "paraphrase"
+sha256 = "b07815fba360afda871fb2ed2996087b5778d912027751da264e188e87a7b41f"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_outbound_inject.py"]
+status = "quote"
+sha256 = "1b2a5132dc1b02cb19ca9aa3edc951c2d0431ff9a26e649175eef72faafb7168"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_parse_error.py"]
+status = "quote"
+sha256 = "5cfeffe6ccb3b18e1d78669086cc9e6e1ac473f8929eb1d1bcd15523851dd284"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_s2s_relay_span.py"]
+status = "paraphrase"
+sha256 = "a2802230c8742b4a94e27f4854b81803119a41a5ca245d92d67001c0e2356489"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_server_init.py"]
+status = "quote"
+sha256 = "16ad131fdb48a8ff0162227f68d0b50ac4f9dc783dbd0d8061112613efff72f5"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_server_link_inject.py"]
+status = "paraphrase"
+sha256 = "ce2de77e1002758976e7ac50bd61cbc8a551e128b285eb01e4a1cf23ce3aa148"
+
+[tool.citation.packages.culture-tests-telemetry.files."test_tracing.py"]
+status = "paraphrase"
+sha256 = "1847662286c1d15848ae3624f61c88f78f1f5d16ab30af3e77981c94e9e5c86d"
