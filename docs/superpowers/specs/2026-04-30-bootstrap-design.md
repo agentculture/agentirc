@@ -7,7 +7,7 @@
 
 ## Summary
 
-This repo (`agentirc`) is being bootstrapped from a server-core extraction out of the sibling project [`culture`](https://github.com/OriNachum/culture). When this design is implemented, this repo will:
+This repo (`agentirc`) is being bootstrapped from a server-core extraction out of the sibling project [`culture`](https://github.com/agentculture/culture). When this design is implemented, this repo will:
 
 - Be a publishable Python package on PyPI under the **distribution name `agentirc-cli`** (with TestPyPI dev releases also published as `agentirc`).
 - Expose a Python **import package named `agentirc`**.

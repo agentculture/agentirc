@@ -52,8 +52,8 @@ agentirc = "agentirc.cli:main"
 agentirc-cli = "agentirc.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/OriNachum/agentirc"
-Issues = "https://github.com/OriNachum/agentirc/issues"
+Homepage = "https://github.com/agentculture/agentirc"
+Issues = "https://github.com/agentculture/agentirc/issues"
 
 [build-system]
 requires = [
@@ -74,7 +74,7 @@ testpaths = [
 
 [tool.citation.packages.culture-aio]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/culture/aio.py"
+source = "https://github.com/agentculture/culture/blob/df50942/culture/aio.py"
 version = "df50942"
 target = "agentirc/_internal/"
 cited = "2026-04-30"
@@ -85,7 +85,7 @@ sha256 = "70ea1f2ca51d33d9e81c80926efe57a7e3d03a2b80605e09cb90ac91e7d12a92"
 
 [tool.citation.packages.culture-constants]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/culture/constants.py"
+source = "https://github.com/agentculture/culture/blob/df50942/culture/constants.py"
 version = "df50942"
 target = "agentirc/_internal/"
 cited = "2026-04-30"
@@ -96,7 +96,7 @@ sha256 = "681e070655204d0412bcaadf633408d23caf72e13f6b17039ee8487e74f7d7dd"
 
 [tool.citation.packages.culture-protocol-message]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/culture/protocol/message.py"
+source = "https://github.com/agentculture/culture/blob/df50942/culture/protocol/message.py"
 version = "df50942"
 target = "agentirc/_internal/protocol/"
 cited = "2026-04-30"
@@ -107,7 +107,7 @@ sha256 = "e2817ce3de414a4890b9eb2824e151461ee4de5a442fd34cfefaac5840b0bdac"
 
 [tool.citation.packages.culture-protocol-replies]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/culture/protocol/replies.py"
+source = "https://github.com/agentculture/culture/blob/df50942/culture/protocol/replies.py"
 version = "df50942"
 target = "agentirc/_internal/protocol/"
 cited = "2026-04-30"
@@ -118,7 +118,7 @@ sha256 = "53b7a94f76a6853217c905d4e13cc898c181fc2e9201738bb2c18f5e719a9e8f"
 
 [tool.citation.packages.culture-telemetry]
 schema = 2
-source = "https://github.com/OriNachum/culture/tree/df50942/culture/telemetry"
+source = "https://github.com/agentculture/culture/tree/df50942/culture/telemetry"
 version = "df50942"
 target = "agentirc/_internal/telemetry/"
 cited = "2026-04-30"
@@ -146,7 +146,7 @@ sha256 = "17262e10e4cb1d3fa1db56c7b966e33757d4581fe961789d8f1f7197f3328c02"
 
 [tool.citation.packages.culture-virtual-client]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/culture/bots/virtual_client.py"
+source = "https://github.com/agentculture/culture/blob/df50942/culture/bots/virtual_client.py"
 version = "df50942"
 target = "agentirc/_internal/virtual_client.py"
 cited = "2026-04-30"
@@ -158,7 +158,7 @@ sha256 = "5e90a9e0ba5cd95651167b71f4cf3d2b5c4f18f809cb061f345ff3a81cf66969"
 
 [tool.citation.packages.culture-pidfile]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/culture/pidfile.py"
+source = "https://github.com/agentculture/culture/blob/df50942/culture/pidfile.py"
 version = "df50942"
 target = "agentirc/_internal/pidfile.py"
 cited = "2026-05-01"
@@ -170,7 +170,7 @@ sha256 = "a9399cf0bfec92ceea1772dc97c3256a972b7ce4fd08f8f8266535db7a10d95a"
 
 [tool.citation.packages.culture-cli-shared]
 schema = 2
-source = "https://github.com/OriNachum/culture/tree/df50942/culture/cli/shared"
+source = "https://github.com/agentculture/culture/tree/df50942/culture/cli/shared"
 version = "df50942"
 target = "agentirc/_internal/cli_shared/"
 cited = "2026-05-01"
@@ -190,7 +190,7 @@ sha256 = "5238e222c33d499df687a4b8002083fabd029b86b8dc885a9deaccb75e6a05c8"
 
 [tool.citation.packages.culture-client]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/culture/agentirc/client.py"
+source = "https://github.com/agentculture/culture/blob/df50942/culture/agentirc/client.py"
 version = "df50942"
 target = "agentirc/client.py"
 cited = "2026-05-01"
@@ -202,7 +202,7 @@ sha256 = "08235081f0b7f28e563b1b5c0030baa372bb717d14bed4e11122e7296036ed96"
 
 [tool.citation.packages.culture-cli-server]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/culture/cli/server.py"
+source = "https://github.com/agentculture/culture/blob/df50942/culture/cli/server.py"
 version = "df50942"
 target = "agentirc/cli.py"
 cited = "2026-05-01"
@@ -214,7 +214,7 @@ sha256 = "80c8a350fcd6178796b710ac86ded77663f2d717e5e067679b23f38def05d1c0"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2
-source = "https://github.com/OriNachum/culture/tree/df50942/culture/bots"
+source = "https://github.com/agentculture/culture/tree/df50942/culture/bots"
 version = "df50942"
 target = "agentirc/_internal/bots/"
 cited = "2026-04-30"
@@ -234,7 +234,7 @@ sha256 = "6c9e188b865256024999143a6330af4571b09e10220caff570c4bebbe93148fb"
 
 [tool.citation.packages.culture-agentirc-server-core]
 schema = 2
-source = "https://github.com/OriNachum/culture/tree/df50942/culture/agentirc"
+source = "https://github.com/agentculture/culture/tree/df50942/culture/agentirc"
 version = "df50942"
 target = "agentirc/"
 cited = "2026-04-30"
@@ -306,7 +306,7 @@ sha256 = "5ef97657599a37476b96aa59968373aed8c82024027297f8300be9886dc18d4a"
 
 [tool.citation.packages.culture-tests-conftest]
 schema = 2
-source = "https://github.com/OriNachum/culture/blob/df50942/tests/conftest.py"
+source = "https://github.com/agentculture/culture/blob/df50942/tests/conftest.py"
 version = "df50942"
 target = "tests/"
 cited = "2026-05-01"
@@ -317,7 +317,7 @@ sha256 = "3ee6fd43e2833f28a75363503519d63a16fe6f89843471707bf684e544cac360"
 
 [tool.citation.packages.culture-tests-server-core]
 schema = 2
-source = "https://github.com/OriNachum/culture/tree/df50942/tests"
+source = "https://github.com/agentculture/culture/tree/df50942/tests"
 version = "df50942"
 target = "tests/"
 cited = "2026-05-01"
@@ -409,7 +409,7 @@ sha256 = "0e31f65beea7521536c599b51fac36122eb9b42d50918d8c0bcb1d04d7f763bc"
 
 [tool.citation.packages.culture-tests-telemetry]
 schema = 2
-source = "https://github.com/OriNachum/culture/tree/df50942/tests/telemetry"
+source = "https://github.com/agentculture/culture/tree/df50942/tests/telemetry"
 version = "df50942"
 target = "tests/telemetry/"
 cited = "2026-05-01"
