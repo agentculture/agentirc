@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current state: bootstrap functionally + docs complete (9.4.0); release ceremony remains
+## Current state: bootstrap complete (9.4.0 released)
 
-This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/OriNachum/culture). As of 9.4.0:
+This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/agentculture/culture). As of 9.4.0 (tagged at `5590256` and live on PyPI):
 
 - **Server-core** (`agentirc/{ircd,server_link,channel,events,skill,remote_client,…}.py`, `agentirc/skills/{rooms,threads,history,icon}.py`) — vendored from `culture@df50942` via the `cite-don't-copy` pattern (see `[tool.citation]` in `pyproject.toml`).
 - **Client transport** (`agentirc/client.py`) — vendored from `culture/agentirc/client.py` in PR-B2.
@@ -15,13 +15,13 @@ This repo is the agentirc server-core extraction out of the sibling project [`cu
 - **Internal support** (`agentirc/_internal/`) — `aio`, `constants`, `protocol/`, `telemetry/`, `virtual_client`, `pidfile`, `cli_shared/`, `bots/` stubs.
 - **Bootstrap docs** (PR-B4, 9.4.0) — `docs/api-stability.md` (3 public modules + semver contract), `docs/cli.md` (verb table, flag reference, exit codes, YAML/CLI precedence, agentirc-vs-culture diff table), `docs/deployment.md` (on-disk footprint, systemd `Type=simple` example, container deployment, multi-host federation, log rotation, coexistence with culture, backup).
 
-End-to-end verified: `agentirc start --port <p>` boots a real IRCd, TCP NICK/USER handshake returns `001 RPL_WELCOME`, `agentirc stop` shuts cleanly. `agentirc serve --config server.yaml --port 9999` correctly overlays CLI flag on YAML.
+End-to-end verified: `agentirc start --port <p>` boots a real IRCd, TCP NICK/USER handshake returns `001 RPL_WELCOME`, `agentirc stop` shuts cleanly. `agentirc serve --config server.yaml --port 9999` correctly overlays CLI flag on YAML. `pip install agentirc-cli==9.4.0` from real PyPI in a clean venv produces both `agentirc` and `agentirc-cli` binaries; both reach the same `agentirc.cli:main` entry point. Acceptance audit recorded at [`docs/superpowers/specs/2026-05-01-task14-audit.md`](docs/superpowers/specs/2026-05-01-task14-audit.md). Culture-side cutover unblocked via [agentculture/culture#308](https://github.com/agentculture/culture/issues/308).
 
-What is **not** done yet:
-- **Acceptance-criteria spot-check** (Task 14 in the bootstrap spec) — read-only audit to confirm every bullet in §"Acceptance criteria" is ✅ before tagging.
-- **Release ceremony** (Tasks 16–18) — tag `v9.4.0`, the existing `publish.yml` CI pushes to PyPI on push to `main`, then report version + source SHA back so culture's cutover PR can pin against it.
-- **Cross-repo wire-format fixes (Track A)** — `ROOMETAEND`/`ROOMETASET` typos, `ERR_NOSUCHCHANNEL` overload, `STHREAD` collapse. Each requires culture-side change first then agentirc bump.
-- **Steward backport** — port the 9.3.0 `pr-sonar.sh` + `workflow.sh` SonarCloud wiring back to the steward skills repo.
+**Outstanding follow-ups (non-blocking; the bootstrap itself is closed):**
+- **Cross-repo wire-format fixes (Track A)** — [#7](https://github.com/agentculture/agentirc/issues/7) (`ROOMETAEND`/`ROOMETASET` typos), [#8](https://github.com/agentculture/agentirc/issues/8) (`ERR_NOSUCHCHANNEL` overload), [#9](https://github.com/agentculture/agentirc/issues/9) (`STHREAD` verb collapse). Each requires culture-side change first then agentirc bump.
+- **Steward backport** — [#10](https://github.com/agentculture/agentirc/issues/10). Port the 9.3.0 `pr-sonar.sh` + `workflow.sh sonar` wiring upstream so other workspace projects pick it up via re-vendoring.
+- **Optional callsite sweep** — [#11](https://github.com/agentculture/agentirc/issues/11). Replace inline IRC verb / numeric-reply string literals in `ircd.py`/`server_link.py`/`skills/*.py` with `agentirc.protocol.<NAME>` imports. Pure refactor.
+- **A2 bot-fixtured tests (low-priority)** — [#12](https://github.com/agentculture/agentirc/issues/12). Currently in culture; could be migrated to agentirc via subprocess-fixture rewrite if culture's coverage drifts.
 
 Read the bootstrap spec at `docs/superpowers/specs/2026-04-30-bootstrap-design.md` for the full plan; it is the operative source of truth and is intentionally self-contained. The culture-side counterpart spec is at `../culture/docs/superpowers/specs/2026-04-30-agentirc-extraction-design.md` — not normally needed, but explains *why* if a decision looks arbitrary.
 
