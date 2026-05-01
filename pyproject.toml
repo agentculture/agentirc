@@ -1,6 +1,6 @@
 [project]
 name = "agentirc-cli"
-version = "9.3.0"
+version = "9.4.0"
 description = "Agent-friendly IRCd: server core for AI agent meshes"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,7 @@ dependencies = [
     "opentelemetry-api>=1.22",
     "opentelemetry-sdk>=1.22",
     "opentelemetry-exporter-otlp-proto-grpc>=1.22",
+    "pyyaml>=6.0",
 ]
 
 [project.license]
@@ -209,7 +210,7 @@ notes = "Real lifecycle CLI extracted from culture/cli/server.py and reshaped as
 
 [tool.citation.packages.culture-cli-server.files."cli.py"]
 status = "paraphrase"
-sha256 = "011b282ceaa99ec72b2d1b4e67599ca1be108afe10080834890c39a4fb101459"
+sha256 = "80c8a350fcd6178796b710ac86ded77663f2d717e5e067679b23f38def05d1c0"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2
@@ -252,8 +253,8 @@ status = "paraphrase"
 sha256 = "4dfa6c216d92ff15699c748aede3d3271af1413fc8b70bfc0d9ad04c9f85e172"
 
 [tool.citation.packages.culture-agentirc-server-core.files."config.py"]
-status = "quote"
-sha256 = "e44ca2a7ee38e8a575275ad6a2109f2711d79e458568ac15b95741a1e459f301"
+status = "paraphrase"
+sha256 = "886d743bc5c4ccf17648a5eb743f198058749e79ba4db3a4b30eb96fb9cebc44"
 
 [tool.citation.packages.culture-agentirc-server-core.files."events.py"]
 status = "paraphrase"

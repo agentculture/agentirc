@@ -10,12 +10,13 @@ resolution-markers = [
 
 [[package]]
 name = "agentirc-cli"
-version = "9.3.0"
+version = "9.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-sdk" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -45,6 +46,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 provides-extras = ["dev"]
 
