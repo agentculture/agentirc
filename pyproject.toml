@@ -161,11 +161,11 @@ source = "https://github.com/OriNachum/culture/blob/df50942/culture/pidfile.py"
 version = "df50942"
 target = "agentirc/_internal/pidfile.py"
 cited = "2026-05-01"
-notes = "Vendored from culture/pidfile.py with one adaptation: is_managed_process() recognizes both 'culture' and 'agentirc'/'agentirc-cli' argv tokens so agentirc daemons (which exec as 'agentirc serve') are matched alongside culture's. is_culture_process is preserved as an alias. PID_DIR stays at ~/.culture/pids per the 'Defaults preserve culture continuity' rule."
+notes = "Vendored from culture/pidfile.py with two adaptations: (1) is_managed_process() recognizes both 'culture' and 'agentirc'/'agentirc-cli' argv tokens so agentirc daemons (which exec as 'agentirc serve') are matched alongside culture's; (2) PR #4 review hardening — non-/proc platforms (macOS, Windows) no longer return True from is_managed_process; fall back to 'ps -p <pid> -o command=' when available, otherwise fail closed (return False) to prevent SIGTERM-on-PID-reuse against unrelated processes. is_culture_process is preserved as an alias. PID_DIR stays at ~/.culture/pids per the 'Defaults preserve culture continuity' rule."
 
 [tool.citation.packages.culture-pidfile.files."pidfile.py"]
 status = "paraphrase"
-sha256 = "ad72d0081e03aaf4a907c08a3f44b7866e828fc460d4e9faf6770b4dea13def7"
+sha256 = "0710fb016c75ef342150d2a61032b545d99261b4c2ed49f636ffb96504c39a5b"
 
 [tool.citation.packages.culture-cli-shared]
 schema = 2
@@ -205,11 +205,11 @@ source = "https://github.com/OriNachum/culture/blob/df50942/culture/cli/server.p
 version = "df50942"
 target = "agentirc/cli.py"
 cited = "2026-05-01"
-notes = "Real lifecycle CLI extracted from culture/cli/server.py and reshaped as agentirc's top-level CLI. Kept verbs: start/stop/status (lifecycle helpers _wait_for_port, _run_server, _daemonize_server, _run_foreground, _check_already_running, _wait_for_graceful_stop, _force_kill, _verify_daemon_started preserved). Dropped culture-only verbs: default/rename/archive/unarchive (touch culture.config and culture.bots — out of agentirc's scope), plus _check_server_archived, _validate_config_name, _update_single_bot_archive, _set_bots_archive_state. Dropped --mesh-config (depends on culture.credentials/mesh_config). Added agentirc-only verbs: serve (foreground, no PID; for systemd Type=simple/containers), restart, link (peer-spec validator), logs (cat/tail of ~/.culture/logs/server-<name>.log). Top-level argparse rather than 'server' subcommand-of-CLI shape. _DEFAULT_SERVER changed from 'culture' to 'agentirc' so default daemon names don't collide on a host running both."
+notes = "Real lifecycle CLI extracted from culture/cli/server.py and reshaped as agentirc's top-level CLI. Kept verbs: start/stop/status (lifecycle helpers _wait_for_port, _run_server, _daemonize_server, _run_foreground, _check_already_running, _wait_for_graceful_stop, _force_kill, _verify_daemon_started preserved). Dropped culture-only verbs: default/rename/archive/unarchive (touch culture.config and culture.bots — out of agentirc's scope), plus _check_server_archived, _validate_config_name, _update_single_bot_archive, _set_bots_archive_state. Dropped --mesh-config (depends on culture.credentials/mesh_config). Added agentirc-only verbs: serve (foreground, no PID; for systemd Type=simple/containers), restart, link (peer-spec validator), logs (cat/tail of ~/.culture/logs/server-<name>.log). Top-level argparse rather than 'server' subcommand-of-CLI shape. _DEFAULT_SERVER changed from 'culture' to 'agentirc' so default daemon names don't collide on a host running both. PR #4 review hardening: log-path interpolation uses _safe_name (path-traversal guard); non-default --config emits a warning until YAML loading lands; daemon child propagates non-zero exit code on asyncio.run crash (no longer masked by os._exit(0)); foreground writes/cleans .port file alongside .pid; stop cleans .port; logs streams in chunks rather than slurping; _run_server uses asyncio.get_running_loop()."
 
 [tool.citation.packages.culture-cli-server.files."cli.py"]
 status = "paraphrase"
-sha256 = "32022b472b5bb13627893a37383ef05af3d91deb1a833ac4109dc3b84b5c628a"
+sha256 = "dd5a870609fcbedf644c8b38ca798d05536e98b889144c024a1a3dc92bf15472"
 
 [tool.citation.packages.culture-bots-stubs]
 schema = 2

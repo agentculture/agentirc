@@ -92,21 +92,62 @@ def is_managed_process(pid: int) -> bool:
     Reads /proc/<pid>/cmdline on Linux and checks NUL-separated argv
     tokens for an exact match against ``culture``, ``agentirc``, or
     ``agentirc-cli`` (e.g. argv[0] basename or a ``-m culture``
-    argument). On platforms without /proc, returns True (assumes valid).
-    On Linux, read/parse failures return False (fail closed) to avoid
-    killing unrelated processes after PID reuse.
+    argument). On platforms without /proc (macOS, Windows) or when
+    /proc parsing fails, falls back to ``ps -p <pid> -o command=``
+    when available; if neither identification path succeeds, returns
+    False (fail closed) so a stale PID file can never SIGTERM an
+    unrelated reused-PID process. Upstream culture treated the
+    macOS/Windows case as "assume valid"; PR #4 review flagged that
+    as exploitable when PIDs are reused.
     """
-    if not os.path.isdir("/proc"):
-        return True
-    try:
-        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
-        tokens = [t for t in raw.decode(errors="replace").split("\x00") if t]
-        return any(
-            os.path.basename(t) in _MANAGED_PROCESS_TOKENS or t in _MANAGED_PROCESS_TOKENS
-            for t in tokens
-        )
-    except OSError:
+    if os.path.isdir("/proc"):
+        try:
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            tokens = [t for t in raw.decode(errors="replace").split("\x00") if t]
+            return any(
+                os.path.basename(t) in _MANAGED_PROCESS_TOKENS
+                or t in _MANAGED_PROCESS_TOKENS
+                for t in tokens
+            )
+        except OSError:
+            return False
+    return _is_managed_via_ps(pid)
+
+
+def _is_managed_via_ps(pid: int) -> bool:
+    """Fallback identity check using ``ps`` for non-/proc platforms.
+
+    Uses ``ps -p <pid> -o command=`` (POSIX) to recover the command
+    line and tests for a managed-process token. Any failure (no
+    ``ps``, non-zero exit, parse error) returns False so we fail
+    closed rather than signalling an unknown process.
+    """
+    import shutil
+    import subprocess
+
+    ps = shutil.which("ps")
+    if ps is None:
         return False
+    try:
+        result = subprocess.run(  # noqa: S603 — fixed argv, pid is int
+            [ps, "-p", str(int(pid)), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    cmdline = result.stdout.strip()
+    if not cmdline:
+        return False
+    tokens = cmdline.split()
+    return any(
+        os.path.basename(t) in _MANAGED_PROCESS_TOKENS or t in _MANAGED_PROCESS_TOKENS
+        for t in tokens
+    )
 
 
 def is_culture_process(pid: int) -> bool:
@@ -119,9 +160,16 @@ def is_culture_process(pid: int) -> bool:
 
 
 def is_process_alive(pid: int) -> bool:
-    """Check whether a process with the given PID is alive."""
+    """Check whether a process with the given PID is alive.
+
+    Uses signal 0 (existence test, no signal delivered) per POSIX. The
+    ``# NOSONAR S4828`` marker is intentional: signal 0 cannot deliver
+    a signal to the target — it only reports whether the kernel can
+    locate the PID. Sonar's "sending signals is safe here" rule is a
+    false positive for this idiom.
+    """
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # NOSONAR S4828 — sig=0 is existence test, no delivery
         return True
     except ProcessLookupError:
         return False

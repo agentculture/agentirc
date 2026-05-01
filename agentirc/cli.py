@@ -63,12 +63,14 @@ from agentirc._internal.cli_shared.constants import (
 )
 from agentirc._internal.cli_shared.mesh import parse_link
 from agentirc._internal.pidfile import (
+    _safe_name,
     is_culture_process,
     is_process_alive,
     read_default_server,
     read_pid,
     read_port,
     remove_pid,
+    remove_port,
     write_default_server,
     write_pid,
     write_port,
@@ -77,6 +79,36 @@ from agentirc._internal.pidfile import (
 logger = logging.getLogger("agentirc")
 
 _DEFAULT_SERVER = "agentirc"
+
+
+def _safe_log_name(name: str) -> str:
+    """Sanitize a server name for use in log file paths.
+
+    Reuses the pidfile sanitizer so a name containing path separators
+    or ``..`` cannot escape ``LOG_DIR``. PR #4 review (Copilot)
+    flagged the unsanitized interpolation as a path-traversal risk
+    on both write (daemon log fd) and read (``agentirc logs``).
+    """
+    return _safe_name(name)
+
+
+def _maybe_warn_unused_config(args: argparse.Namespace) -> None:
+    """Emit a warning when ``--config`` is set to something that won't be loaded.
+
+    ``agentirc`` does not yet wire ``~/.culture/server.yaml`` into the
+    IRCd construction path — ``ServerConfig`` is built purely from CLI
+    flags. Silently ignoring a non-default ``--config`` was flagged as
+    confusing in PR #4 review (Qodo + Copilot). Until YAML loading
+    lands, warn explicitly so users notice.
+    """
+    cfg = getattr(args, "config", None)
+    if cfg and cfg != DEFAULT_CONFIG:
+        print(
+            f"agentirc: warning: --config {cfg!r} was supplied, but YAML config "
+            "loading is not yet wired (PR-B4). Server settings will come from "
+            "CLI flags (--host/--port/--link/--data-dir) only.",
+            file=sys.stderr,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +255,7 @@ def _check_already_running(pid_name: str, name: str) -> None:
 
 def _verify_daemon_started(args: argparse.Namespace, pid: int) -> None:
     """Wait for the daemon child to be ready, exit on failure."""
-    log_hint = f"{LOG_DIR}/server-{args.name}.log"
+    log_hint = f"{LOG_DIR}/server-{_safe_log_name(args.name)}.log"
     if args.port == 0:
         time.sleep(0.5)
         if not is_process_alive(pid):
@@ -254,7 +286,12 @@ def _wait_for_graceful_stop(pid: int, timeout_ticks: int = 50) -> bool:
 
 
 def _force_kill(pid: int, name: str) -> None:
-    """Force-kill a process that didn't stop gracefully."""
+    """Force-kill a process that didn't stop gracefully.
+
+    Only reached after :func:`_server_stop` has already verified
+    ``is_managed_process(pid)``; the Sonar S4828 marker is intentional —
+    the gate is the safety boundary, not the kill itself.
+    """
     if sys.platform == "win32":
         print(f"Server '{name}' did not stop gracefully, terminating")
         sig = signal.SIGTERM
@@ -262,7 +299,7 @@ def _force_kill(pid: int, name: str) -> None:
         print(f"Server '{name}' did not stop gracefully, sending SIGKILL")
         sig = signal.SIGKILL
     try:
-        os.kill(pid, sig)
+        os.kill(pid, sig)  # NOSONAR S4828 — gated by is_managed_process in caller
     except ProcessLookupError:
         pass
 
@@ -305,7 +342,10 @@ async def _run_server(
             ircd.maybe_retry_link(lc.name)
 
     stop_event = asyncio.Event()
-    loop = asyncio.get_event_loop()
+    # asyncio.get_running_loop() is the supported in-coroutine accessor;
+    # asyncio.get_event_loop() emits DeprecationWarning since 3.12 inside
+    # a running coroutine.
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop_event.set)
@@ -327,6 +367,10 @@ def _run_foreground(args: argparse.Namespace, pid_name: str, links: list) -> Non
     """
     if pid_name:
         write_pid(pid_name, os.getpid())
+        if args.port:
+            # Mirror daemonize: write the port file so `agentirc status`
+            # can report `(PID N, port P)` for foreground-managed runs.
+            write_port(pid_name, args.port)
     os.makedirs(LOG_DIR, exist_ok=True)
     print(f"Server '{args.name}' starting in foreground (PID {os.getpid()})")
     print(f"  Listening on {args.host}:{args.port}")
@@ -340,6 +384,7 @@ def _run_foreground(args: argparse.Namespace, pid_name: str, links: list) -> Non
     finally:
         if pid_name:
             remove_pid(pid_name)
+            remove_port(pid_name)
 
 
 def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> None:
@@ -356,7 +401,7 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
     os.setsid()
 
     os.makedirs(LOG_DIR, exist_ok=True)
-    log_path = os.path.join(LOG_DIR, f"server-{args.name}.log")
+    log_path = os.path.join(LOG_DIR, f"server-{_safe_log_name(args.name)}.log")
     log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     os.dup2(log_fd, 1)
     os.dup2(log_fd, 2)
@@ -381,13 +426,23 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
     if args.port:
         write_port(pid_name, args.port)
 
+    # PR #4 review (Qodo): the previous version called os._exit(0)
+    # unconditionally in the finally block, masking crashes inside
+    # asyncio.run() so systemd/supervisord saw a clean shutdown for
+    # what was actually a fatal error. Capture the exception status
+    # and propagate it.
+    rc = 0
     try:
         asyncio.run(
             _run_server(args.name, args.host, args.port, links, args.webhook_port, args.data_dir)
         )
+    except BaseException:  # noqa: BLE001 — we re-emit via os._exit and log
+        logger.exception("Daemon for server '%s' crashed", args.name)
+        rc = 1
     finally:
         remove_pid(pid_name)
-        os._exit(0)
+        remove_port(pid_name)
+        os._exit(rc)
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +453,7 @@ def _daemonize_server(args: argparse.Namespace, pid_name: str, links: list) -> N
 def _server_serve(args: argparse.Namespace) -> int:
     """``agentirc serve`` — run the IRCd in the foreground without writing a PID file."""
     args.name = _resolve_server_name(args)
+    _maybe_warn_unused_config(args)
     links = list(getattr(args, "link", []) or [])
     _run_foreground(args, pid_name="", links=links)
     return 0
@@ -406,6 +462,7 @@ def _server_serve(args: argparse.Namespace) -> int:
 def _server_start(args: argparse.Namespace) -> int:
     """``agentirc start`` — daemonize (or run foreground if ``--foreground``)."""
     args.name = _resolve_server_name(args)
+    _maybe_warn_unused_config(args)
     pid_name = f"server-{args.name}"
     _check_already_running(pid_name, args.name)
 
@@ -431,23 +488,30 @@ def _server_stop(args: argparse.Namespace) -> int:
     if not is_process_alive(pid):
         print(f"Server '{args.name}' is not running (stale PID {pid})")
         remove_pid(pid_name)
+        remove_port(pid_name)
         return 0
 
     if not is_culture_process(pid):
         print(f"PID {pid} is not an agentirc/culture process — removing stale PID file")
         remove_pid(pid_name)
+        remove_port(pid_name)
         return 0
 
     print(f"Stopping server '{args.name}' (PID {pid})...")
-    os.kill(pid, signal.SIGTERM)
+    # NOSONAR S4828 — gated by is_culture_process / is_managed_process above;
+    # PR #4 tightened the non-/proc fallback so a stale-PID-on-macOS no
+    # longer reaches this line.
+    os.kill(pid, signal.SIGTERM)  # NOSONAR S4828
 
     if _wait_for_graceful_stop(pid):
         print(f"Server '{args.name}' stopped")
         remove_pid(pid_name)
+        remove_port(pid_name)
         return 0
 
     _force_kill(pid, args.name)
     remove_pid(pid_name)
+    remove_port(pid_name)
     print(f"Server '{args.name}' killed")
     return 0
 
@@ -512,21 +576,31 @@ def _server_link(args: argparse.Namespace) -> int:
 
 
 def _server_logs(args: argparse.Namespace) -> int:
-    """``agentirc logs`` — print or tail the server's daemon log."""
+    """``agentirc logs`` — stream or tail the server's daemon log.
+
+    Reads the file in fixed-size chunks rather than slurping it into
+    memory; large daemon logs (the IRCd can produce gigabytes of audit
+    output) would otherwise spike CLI memory usage. PR #4 review
+    (Copilot) flagged the previous ``read_text()`` implementation as
+    unbounded.
+    """
     name = _resolve_server_name(args)
-    log_path = Path(LOG_DIR) / f"server-{name}.log"
+    log_path = Path(LOG_DIR) / f"server-{_safe_log_name(name)}.log"
 
     if not log_path.exists():
         print(f"agentirc logs: no log file for server '{name}' at {log_path}", file=sys.stderr)
         return 1
 
-    if not args.follow:
-        print(log_path.read_text(errors="replace"), end="")
-        return 0
-
+    chunk_size = 64 * 1024
     with log_path.open("r", errors="replace") as fh:
-        sys.stdout.write(fh.read())
+        while True:
+            chunk = fh.read(chunk_size)
+            if not chunk:
+                break
+            sys.stdout.write(chunk)
         sys.stdout.flush()
+        if not args.follow:
+            return 0
         try:
             while True:
                 line = fh.readline()
