@@ -15,7 +15,7 @@ import only from these three modules.
 > **Reserved for 9.5.0 (pending implementation):** `agentirc.protocol` will
 > additionally export the `Event` dataclass, the `EventType` enum,
 > per-type `EVENT_TYPE_*` string constants, the
-> `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR` verb constants, and the
+> `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB` verb constants, and the
 > `BOT_CAP = "agentirc.io/bot"` capability identifier. `ServerConfig`
 > will gain a new `event_subscription_queue_max: int = 1024` field. The
 > wire format and verb syntax are specified in
@@ -199,7 +199,7 @@ for rationale, federation behavior, and acceptance criteria, and
 [`docs/extension-api.md`](extension-api.md) for the bot-author quick
 reference.
 
-- **Event verbs:** `EVENTSUB`, `EVENTUNSUB`, `EVENT`, `EVENTERR`.
+- **Event verbs:** `EVENTSUB`, `EVENTUNSUB`, `EVENT`, `EVENTERR`, `EVENTPUB`. Subscribers stream events with filter syntax (`type=`/`channel=`/`nick=` AND-ed globs); `EVENTPUB` lets a bot emit its own typed events back into the stream (server-side validation of `type` against `EVENT_TYPE_RE`; `nick` and `timestamp` derived server-side, not trusted from the client).
 - **Bot capability:** `BOT_CAP = "agentirc.io/bot"`. When negotiated via
   the existing CAP REQ/ACK flow, the connection is treated as a bot:
   silent JOIN/PART/QUIT broadcasts, no auto-op on channel creation,

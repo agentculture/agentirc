@@ -17,10 +17,22 @@ Once negotiated, the client:
 - Joins channels silently (no JOIN broadcast to other channel members).
 - Never gets auto-op on a newly created channel.
 - Appears in `NAMES` prefixed with `+` and in `WHO` with a `B` flag.
-- May issue `EVENTSUB` to stream events.
+- May issue `EVENTSUB` to stream events and `EVENTPUB` to emit custom events.
 
 Everything else (`PRIVMSG`, `NOTICE`, mention notifications, channel ops,
 threads, rooms) works exactly the same as for a human client.
+
+### Porting note: JOIN before PRIVMSG
+
+`PRIVMSG <#channel>` requires channel membership. Culture's in-process
+`VirtualClient.broadcast_to_channel` lets a bot post to a channel it
+hasn't joined; TCP-connected bots get no such shortcut. The canonical
+pattern under bot CAP is **JOIN, PRIVMSG, then optionally PART** — all
+silent (no broadcasts to other members). For event-triggered bots that
+post into channels they discover at runtime (e.g. a welcome bot reacting
+to `user.join`), the JOIN-broadcast-PART sequence is cheap because each
+step is silent. Decide per bot whether to stay joined for low-latency
+posting or PART after each emission to avoid occupying a member slot.
 
 ## Connecting
 
@@ -131,8 +143,8 @@ is a major bump. Bot code must tolerate unknown types and forward-skip them.
 `message`, `topic`, `thread.create`, `thread.message`, and `thread.close` are
 already delivered to channel members via the normal IRC path (`PRIVMSG`,
 `TOPIC`) or have dedicated storage (threads). Subscribers will see them once
-via `EVENTSUB`; they are not double-delivered as `event=`-tagged PRIVMSGs to
-`#system`.
+via `EVENTSUB`; they are not double-delivered as `PRIVMSG`s to `#system`
+carrying the `@event=<type>` and `@event-data=<base64-json>` IRCv3 tags.
 
 ## Backpressure
 
@@ -150,6 +162,37 @@ When the queue overflows:
 Bots should aim to drain `EVENT` lines as fast as they arrive. If a bot
 genuinely cannot keep up, the right response is to widen the filter (subscribe
 to fewer types/channels), not to ignore overflow.
+
+## Emitting custom events (`EVENTPUB`)
+
+Bots can emit their own typed events back into the stream — useful for
+chained-bot patterns where one bot's emission triggers another bot's logic
+(e.g. a welcome bot fires `welcome.greeted`, an onboarding logger
+subscribes to it).
+
+```text
+EVENTPUB <type> <channel-or-*> :<base64-json-data>
+```
+
+- `<type>` — must match `^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$` (at
+  least one dot segment). Single-segment names like `message` or `topic`
+  are reserved for the built-in vocabulary and rejected with
+  `EVENTERR <type> :invalid-type`.
+- `<channel-or-*>` — exact channel name or `*` for non-channel-scoped.
+- `:<base64-json-data>` — type-specific payload; must be a JSON object.
+
+The server fills in `nick` (from your connection — bots cannot spoof it)
+and `timestamp` (server-side, so federation peers see consistent values),
+constructs the full `Event`, and feeds it into the same emit pipeline that
+handles built-in events. Subscribers see it as an `EVENT` line; peers
+across federation receive a `SEVENT` relay.
+
+Reflexive: a bot subscribed to a filter that matches its own emission
+receives the `EVENT` line for it. Filter on `nick` if you want to ignore
+self-emissions.
+
+`EVENTPUB` requires the `agentirc.io/bot` capability (same gate as
+`EVENTSUB`).
 
 ## Mentioning, DMs, ops
 
@@ -190,8 +233,8 @@ hide bots from presence lists.
   compatibility, but webhook→bot dispatch is the consumer's responsibility.
   See [`deployment.md`](deployment.md) for details.
 - **No SASL or token auth on bot CAP.** Bots authenticate the same way
-  human clients do (server password if `--require-password`, otherwise
-  open). Per-bot ACLs are a future issue.
+  human clients do, using whatever client authentication the server
+  currently supports. Per-bot ACLs are a future issue.
 
 ## Reference
 

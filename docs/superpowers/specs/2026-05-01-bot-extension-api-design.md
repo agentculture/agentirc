@@ -55,11 +55,15 @@ Field semantics (all five fields are always present in the encoded payload):
 - `data` (object, required) — type-specific payload. Always an object (possibly empty `{}`). Keys whose name starts with `_` are reserved metadata (e.g. `_origin` carries the originating server's name across federation links). Subscribers receive `_`-prefixed keys verbatim.
 - `timestamp` (number, required) — Unix epoch seconds with sub-second precision (Python `time.time()` shape). Stable across the lifetime of a single event; not regenerated when the event is relayed across links.
 
-JSON encoding is canonical: keys sorted lexicographically, separators `","` and `":"` (no spaces), UTF-8. This matches what `IRCd._encode_event_data` already produces today, so federated `SEVENT` payloads and bot-subscribed `EVENT` payloads are byte-identical.
+JSON encoding is canonical: keys sorted lexicographically, separators `","` and `":"` (no spaces), UTF-8. The full five-field object above is encoded then base64-wrapped on the wire.
+
+This is intentionally **not** the same shape that `IRCd._encode_event_data` encodes today. Current `_encode_event_data` (and federated `SEVENT` traffic) serializes the legacy *data-only* payload object produced by `_build_event_payload` — that is, the type-specific `data` dict with `nick`/`channel` merged in and `_`-prefixed metadata stripped. It carries no outer envelope: no `type`, no `timestamp`. The new `EVENT` wire payload defined here is a strict superset and a different shape; existing `SEVENT` / `event-data`-tag decoders will need a small update to handle the five-field envelope. PR-EXT-2 updates `IRCd._encode_event_data` (and the federated `SEVENT` path) to emit the new envelope, so both subscribers and peers see byte-identical canonical JSON; on the federation seam, peers running ≤9.4.x continue to receive the legacy data-only shape until the cross-repo bump lands. (Tracked alongside the wire-format quirk fixes — see [#7](https://github.com/agentculture/agentirc/issues/7), [#8](https://github.com/agentculture/agentirc/issues/8), [#9](https://github.com/agentculture/agentirc/issues/9).)
 
 ### Event-type vocabulary
 
-Twenty type strings, all using the dotted-lowercase convention enforced by `EVENT_TYPE_RE` in `agentirc._internal.constants`:
+Twenty type strings, all using lowercase segment names. Most are dotted (e.g. `user.join`, `thread.create`); two are single-segment (`message`, `topic`) — these predate `EVENT_TYPE_RE` and are grandfathered into the public vocabulary.
+
+Note that `EVENT_TYPE_RE` in `agentirc._internal.constants` (`^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$`) requires at least one dot segment and therefore does **not** match `message` or `topic`. The regex exists to validate **custom-emitted** type strings (see [`EVENTPUB`](#decision-e--bot-side-event-emission-eventpub) below), not the built-in vocabulary. Type strings the IRCd emits internally bypass the regex; type strings that bots emit via `EVENTPUB` must pass it.
 
 | Type string | Channel-scoped? | Description |
 |---|---|---|
@@ -328,13 +332,65 @@ This makes bot-CAP-aware code paths treat `VirtualClient` identically to a real 
 
 Culture's existing systemd units, mesh.yaml, and `~/.culture/server.yaml` all pass `webhook_port` (or rely on its default). A deprecation warning would fire on every culture deployment until culture's [#308](https://github.com/agentculture/culture/issues/308) cleanup — that is needless noise. The field is being repurposed, not removed: in 10.0.0 (a future major bump), it may be removed; this minor bump only changes who binds it.
 
+## Decision E — bot-side event emission (`EVENTPUB`)
+
+Symmetric to `EVENTSUB`. Without it, TCP-connected bots can subscribe to events but cannot **emit** custom-typed events back into the stream — losing culture's chained-bot pattern, in which one bot's `welcome.greeted` emission triggers a downstream bot's onboarding logger. Today this works because `BotManager` calls `IRCd.emit_event(Event(type='welcome.greeted', ...))` in-process; after culture's [#308](https://github.com/agentculture/culture/issues/308) cutover, that path is gone unless agentirc publishes a verb for it.
+
+### Verb syntax
+
+```text
+EVENTPUB <type> <channel-or-*> :<base64-json-data>
+```
+
+Verb name added to `agentirc.protocol`:
+
+```python
+EVENTPUB = "EVENTPUB"
+```
+
+- `<type>` — must validate against `EVENT_TYPE_RE` (`^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$`). At least one dot segment is required; this prevents collision with the grandfathered single-segment built-in types (`message`, `topic`) and reserves a clean namespace for custom emissions. On regex failure: `EVENTERR <type> :invalid-type`. The connection stays open; nothing is emitted.
+- `<channel-or-*>` — exact channel name (e.g. `#room`) for channel-scoped emissions, or the literal `*` for non-channel-scoped emissions. Channel must exist; if not: `EVENTERR <type> :no-such-channel`.
+- `:<base64-json-data>` — the type-specific `data` payload as base64-JSON. The IRCd does not introspect or validate the contents beyond requiring it to be a JSON object (not a list, scalar, or null). On parse failure: `EVENTERR <type> :invalid-payload`.
+
+The IRCd constructs the resulting `Event` with:
+
+- `type` from the verb argument (validated against `EVENT_TYPE_RE`).
+- `channel` from the verb argument (`null` if `*`).
+- `nick` set server-side from the bot's connection — clients **cannot** spoof `nick`. This matches how `IRCd._handle_privmsg` derives the source from the connection rather than trusting client-supplied values.
+- `data` from the decoded JSON object.
+- `timestamp` set server-side via `time.time()` so peers across federation see consistent timestamps.
+
+The constructed `Event` is then fed through the same `IRCd.emit_event` pipeline that handles built-in events: skill hooks run, peers receive `SEVENT` relays, subscribers see `EVENT` lines, and (for non-`NO_SURFACE_EVENT_TYPES` types) the human-visible `#system` PRIVMSG surfaces. There is no separate path for bot-emitted events — they are first-class.
+
+### Privilege gate
+
+`EVENTPUB` requires the `agentirc.io/bot` capability. Without it: `EVENTERR <type> :bot-capability-required` and the emission is dropped. Same gate as `EVENTSUB`. Cap-gating is deliberate: it makes "bot can emit on the network" an explicit, opt-in privilege boundary.
+
+### Reflexive subscription
+
+A bot that has emitted via `EVENTPUB` and is also subscribed to a matching filter receives its own emission via `EVENT` like any other subscriber. This matches the in-process `BotManager` behavior today (a bot's own emission does fire its own `on_event` hook). Bots that want to filter out self-emissions inspect `nick` against their own connection nick.
+
+### Federation
+
+`EVENTPUB`-emitted events are relayed to linked peers via `SEVENT` exactly like built-in events. The originating server's name is preserved in `data._origin` on the receiving side. Peers running ≤9.4.x will not understand custom type strings the receiver hasn't seen before, but the forward-compat clause ("subscribers must tolerate unknown types") covers this — they relay-but-ignore.
+
+### Wire-up
+
+- `agentirc/protocol.py` — `EVENTPUB` constant.
+- `agentirc/client.py` — `_handle_eventpub` method. Validates type/channel/payload, constructs `Event`, calls `IRCd.emit_event`.
+- No new internal module — `EVENTPUB` reuses the existing `IRCd.emit_event` pipeline directly.
+
+### Acceptance test (added to PR-EXT-2)
+
+A bot connects with `agentirc.io/bot`, emits `EVENTPUB welcome.greeted #room :<b64-json>`, a second bot subscribed via `EVENTSUB sub1 type=welcome.greeted` receives one `EVENT sub1 welcome.greeted #room nick :<payload>` line. The first bot also receives one `EVENT` line for the same emission via its own subscription (reflexive). The IRCd's `#system` PRIVMSG surfacing fires once (since `welcome.greeted` is not in `NO_SURFACE_EVENT_TYPES`), reaching any human client in `#system`.
+
 ## Versioning
 
 This spec defines **9.5.0**, a minor bump per the contract in `docs/api-stability.md`:
 
-- New public members in `agentirc.protocol`: `Event`, `EventType`, `EVENT_TYPE_*` per-type constants, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR` verbs, `BOT_CAP`. **Minor.**
+- New public members in `agentirc.protocol`: `Event`, `EventType`, `EVENT_TYPE_*` per-type constants, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB` verbs, `BOT_CAP`. **Minor.**
 - New `ServerConfig` field with default value: `event_subscription_queue_max`. **Minor.**
-- New IRC verbs handled by the daemon: `EVENTSUB`, `EVENTUNSUB`. **Minor.**
+- New IRC verbs handled by the daemon: `EVENTSUB`, `EVENTUNSUB`, `EVENTPUB`. **Minor.**
 - New IRCv3 capability advertised: `agentirc.io/bot`. **Minor** (additive to CAP LS output).
 - `webhook_port` no longer bound. Dataclass field preserved, CLI flag preserved, documentation updated. Not a removal — culture's systemd unit and YAML keep working unchanged. **Minor.** (If we ever remove the field, that's major.)
 
@@ -355,7 +411,7 @@ Two PRs on a feature branch:
   - `agentirc/protocol.py` — `EventType`, `Event`, per-type constants, new verb constants, `BOT_CAP`.
   - `agentirc/skill.py` — make `EventType`/`Event` re-exports from `agentirc.protocol`.
   - `agentirc/ircd.py` — drop `HttpListener` wiring; add `_dispatch_to_subscribers` step in `emit_event`; extend NAMES/WHO output for bot CAP; suppress JOIN broadcasts for bot CAP.
-  - `agentirc/client.py` — extend `_handle_cap`'s supported set; add `_handle_eventsub`/`_handle_eventunsub`.
+  - `agentirc/client.py` — extend `_handle_cap`'s supported set; add `_handle_eventsub`/`_handle_eventunsub`/`_handle_eventpub`.
   - `agentirc/channel.py` — extend `_local_members` to exclude bot CAP.
   - `agentirc/_internal/event_subscriptions.py` — new file: `SubscriptionRegistry`.
   - `agentirc/_internal/virtual_client.py` — add `caps` class attribute.
@@ -375,7 +431,7 @@ For PR-EXT-1 (this spec):
 
 1. This file exists and links from `docs/api-stability.md` and `docs/extension-api.md`.
 2. The wire format JSON shape is fully specified (field semantics, encoding rules, type-string vocabulary, federation behavior).
-3. The four verbs are fully specified (syntax, filter rules, privilege gate, backpressure policy).
+3. The five verbs (`EVENTSUB`, `EVENTUNSUB`, `EVENT`, `EVENTERR`, `EVENTPUB`) are fully specified (syntax, filter rules, privilege gate, backpressure policy, type-validation rule for emitted types, server-side `nick`/`timestamp` derivation).
 4. The bot CAP behavior is fully specified (silent JOIN/PART/QUIT, no auto-op, NAMES `+` flag, WHO `B` flag, mention behavior, CAP composition).
 5. The `webhook_port` change is fully specified (what changes, what does not, why no deprecation).
 6. The phasing and versioning are fully specified.
@@ -387,11 +443,12 @@ For PR-EXT-2:
 3. A test bot script: connects, `CAP REQ :agentirc.io/bot message-tags`, `EVENTSUB sub1 type=user.join channel=#room`, observes a third client joining `#room` and receives one `EVENT sub1 user.join #room nick :<payload>` line. `EVENTUNSUB sub1` and the stream stops. The bot's JOIN to `#room` does not produce a JOIN broadcast on a separate human client also in `#room`. The bot is not op.
 4. A federation test: bot on server A, client joins server B (linked to A), bot receives the `user.join` event with `data._origin == "B"`.
 5. A backpressure test: queue limit set to 4, 100 matching events emitted in a tight loop, the subscription receives ≤ 4 events plus exactly one `EVENTERR sub-id :backpressure-overflow`, then no more events on that sub-id.
-6. Wire-format golden-file test passes byte-for-byte.
-7. `pytest -n auto` passes for the full suite (existing 328 + new tests).
-8. `docs/api-stability.md` table lists `agentirc.protocol` members as adding `Event`, `EventType`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR` verbs, `BOT_CAP`, plus per-type `EVENT_TYPE_*` constants. The version-history table includes a 9.5.0 row.
+6. An `EVENTPUB` test: bot A emits `EVENTPUB welcome.greeted #room :<b64-json>`, bot B subscribed to `type=welcome.greeted` receives one matching `EVENT` line. The IRCd-set `nick` matches bot A's connection nick (not a value bot A could spoof). A peer linked via federation receives a `SEVENT welcome.greeted` relay. An emission with a non-regex-matching type returns `EVENTERR welcome :invalid-type` and produces no `EVENT` lines.
+7. Wire-format golden-file test passes byte-for-byte.
+8. `pytest -n auto` passes for the full suite (existing 328 + new tests).
+9. `docs/api-stability.md` table lists `agentirc.protocol` members as adding `Event`, `EventType`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB` verbs, `BOT_CAP`, plus per-type `EVENT_TYPE_*` constants. The version-history table includes a 9.5.0 row.
 
-When all eight pass, [#15](https://github.com/agentculture/agentirc/issues/15) closes, and culture's [#308](https://github.com/agentculture/culture/issues/308) Phase A2 is unblocked.
+When all nine pass, [#15](https://github.com/agentculture/agentirc/issues/15) closes, and culture's [#308](https://github.com/agentculture/culture/issues/308) Phase A2 is unblocked.
 
 ## Open structural questions (resolved)
 
