@@ -166,7 +166,7 @@ notes = "Deprecation re-export of agentirc.virtual_client.VirtualClient at the l
 
 [tool.citation.packages.agentirc-internal-virtual-client-shim.files."virtual_client.py"]
 status = "synthesize"
-sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+sha256 = "18bbaf8f3198f0b88a4db3a3d204eff082dd381e4338ff898c1edd32253d11b2"
 
 [tool.citation.packages.culture-pidfile]
 schema = 2

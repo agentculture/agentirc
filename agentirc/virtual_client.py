@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from agentirc.protocol import BOT_CAP
-from agentirc.skill import Event, EventType
+from agentirc.protocol import BOT_CAP, Event, EventType
 from agentirc._internal.protocol.message import Message
 
 if TYPE_CHECKING:

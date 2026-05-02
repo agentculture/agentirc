@@ -14,7 +14,8 @@ from opentelemetry import trace as _otel_trace
 from agentirc.channel import Channel
 from agentirc.config import ServerConfig
 from agentirc.events import NO_SURFACE_EVENT_TYPES, render_event
-from agentirc.skill import Event, EventType, Skill
+from agentirc.protocol import Event, EventType
+from agentirc.skill import Skill
 from agentirc.virtual_client import VirtualClient
 from agentirc._internal.constants import (
     EVENT_TAG_DATA,
