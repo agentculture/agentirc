@@ -221,13 +221,12 @@ Re-exported from `agentirc._internal.protocol.replies`. About 33 names:
 Re-exported from `agentirc._internal.telemetry.context`:
 `TRACEPARENT_TAG`, `TRACESTATE_TAG`, `EVENT_TAG_TYPE`, `EVENT_TAG_DATA`.
 
-### Reserved for 9.5.0: bot extension surface
+### Bot extension surface (shipped in 9.5.0)
 
-These additions are **specified but not yet implemented**. They will land
-together as a single minor bump in 9.5.0 — see the design spec at
+Shipped in 9.5.0 as a single minor bump. The design spec at
 [`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md)
-for rationale, federation behavior, and acceptance criteria, and
-[`docs/extension-api.md`](extension-api.md) for the bot-author quick
+records rationale, federation behavior, and acceptance criteria;
+[`docs/extension-api.md`](extension-api.md) is the bot-author quick
 reference.
 
 - **Event verbs:** `EVENTSUB`, `EVENTUNSUB`, `EVENT`, `EVENTERR`, `EVENTPUB`. Subscribers stream events with filter syntax (`type=`/`channel=`/`nick=` AND-ed globs); `EVENTPUB` lets a bot emit its own typed events back into the stream (server-side validation of `type` against `EVENT_TYPE_RE`; `nick` and `timestamp` derived server-side, not trusted from the client).
@@ -236,8 +235,10 @@ reference.
   silent JOIN/PART/QUIT broadcasts, no auto-op on channel creation,
   `+` prefix in NAMES output, `B` flag in WHO output, authorized to
   issue `EVENTSUB`.
-- **Event dataclass and enum:** `Event` and `EventType` (currently
-  internal in `agentirc.skill`). Promoted to public for Python consumers.
+- **Event dataclass and enum:** `Event` and `EventType` are public from
+  `agentirc.protocol` since 9.5.0; `agentirc.skill` re-exports both for
+  backward compatibility through the 9.x line (removal scheduled for
+  10.0.0). Python consumers should import from `agentirc.protocol`.
   Wire format — not the Python class names — is the contract; non-Python
   bots pin against the JSON shape documented in `extension-api.md`.
 - **Per-type string constants:** `EVENT_TYPE_MESSAGE`,
@@ -248,7 +249,7 @@ reference.
 The `ServerConfig` additions (one new field
 `event_subscription_queue_max: int = 1024`) and the `webhook_port`
 binding-removal are described under
-[`agentirc.config`](#agentircconfig) once 9.5.0 lands.
+[`agentirc.config`](#agentircconfig).
 
 ### Wire-format quirks (preserved verbatim)
 

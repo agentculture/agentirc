@@ -1,10 +1,10 @@
 # Extension API for out-of-process bots
 
-**Status:** Proposed for 9.5.0. The wire format and verbs described here are
-**reserved** in `docs/api-stability.md` but **not yet implemented**. Track the
-landing PR via [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15).
-The full design lives at
-[`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md).
+**Status:** Shipped in 9.5.0 (closes
+[agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15)).
+See the [CHANGELOG](../CHANGELOG.md#950---2026-05-02) for the release notes;
+the [full design spec](superpowers/specs/2026-05-01-bot-extension-api-design.md)
+records rationale, federation behavior, and acceptance criteria.
 
 This page is a quick reference for bot authors. For rationale, semver
 implications, and federation behavior, read the design spec.
