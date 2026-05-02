@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.5.0a1] - 2026-05-02
+
+### Added
+
+- Public `agentirc.protocol` exports for the bot extension API: the `Event` dataclass, the `EventType` enum (now `StrEnum`), 20 per-type `EVENT_TYPE_*` string constants, the `EVENTSUB` / `EVENTUNSUB` / `EVENT` / `EVENTERR` / `EVENTPUB` verb constants, and the `BOT_CAP = "agentirc.io/bot"` capability identifier. `Event.type` is widened to `EventType | str` so federation peers can deliver event types this version doesn't recognise. See `docs/superpowers/specs/2026-05-01-bot-extension-api-design.md` for the full design and `docs/extension-api.md` for the bot-author quick reference.
+- `ServerConfig.event_subscription_queue_max: int = 1024` — per-subscription queue bound. Recognised by `ServerConfig.from_yaml` as a top-level key. Consumed by the subscription registry that lands in 9.5.0a3.
+- `agentirc.skill` keeps re-exporting `Event` and `EventType` for backward compat; the re-export shim is removed in 9.6.0 once Phase A2 confirms no consumer relies on the path.
+
+### Notes
+
+- This is the **declarations slice** of the bot extension API. No behavior changes: `EVENTSUB` etc. are reserved verb constants but the daemon does not yet handle them; `BOT_CAP` is exported but not yet advertised in `CAP LS` output. The wire-format envelope refactor lands in 9.5.0a2; the bot CAP behavior, subscription verbs, `EVENTPUB`, and `webhook_port` unbinding land in 9.5.0a3 / 9.5.0 final.
+- Tracks [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15).
+
 ## [9.4.1] - 2026-05-01
 
 ### Documentation

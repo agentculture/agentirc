@@ -53,6 +53,12 @@ class ServerConfig:
     links: list[LinkConfig] = field(default_factory=list)
     system_bots: dict = field(default_factory=dict)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    # Bot extension API (9.5.0): per-subscription event-queue bound. When
+    # exceeded, the subscription is dropped with EVENTERR :backpressure-overflow
+    # and the bot reconciles via re-subscribe + BACKFILL. Behavior wires up in
+    # 9.5.0a3; the field is exposed in 9.5.0a1 so consumers can pin against the
+    # public surface.
+    event_subscription_queue_max: int = 1024
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ServerConfig":
@@ -104,7 +110,7 @@ def _yaml_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
     for key in ("name", "host", "port"):
         if key in server_section:
             kwargs[key] = server_section[key]
-    for key in ("webhook_port", "data_dir"):
+    for key in ("webhook_port", "data_dir", "event_subscription_queue_max"):
         if key in raw:
             kwargs[key] = raw[key]
     links_section = raw.get("links") or []
