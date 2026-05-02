@@ -185,6 +185,9 @@ def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (
             args.data_dir, raw.get("data_dir"), os.path.expanduser("~/.culture/data")
         )
     )
+    event_subscription_queue_max = _pick(
+        None, raw.get("event_subscription_queue_max"), 1024
+    )
 
     cfg = ServerConfig(
         name=name or "agentirc",
@@ -195,6 +198,7 @@ def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (
         links=_resolve_links(getattr(args, "link", None), raw.get("links") or []),
         system_bots=raw.get("system_bots") or {},
         telemetry=_build_telemetry(raw.get("telemetry") or {}),
+        event_subscription_queue_max=event_subscription_queue_max,
     )
 
     args.name = name  # may be None — handler resolves via default-server file

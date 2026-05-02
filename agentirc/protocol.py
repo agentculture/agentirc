@@ -1,6 +1,6 @@
-"""Public protocol surface for agentirc — verbs, numerics, and tags.
+"""Public protocol surface for agentirc — verbs, numerics, tags, and the bot extension API.
 
-Semver-tracked module. Three categories of constants live here:
+Semver-tracked module. Five categories of public symbols live here:
 
 1. **Verb names** — IRC command verbs as bare uppercase tokens. Mostly
    RFC 2812 (PRIVMSG, JOIN, QUIT, ...), plus agentirc skill verbs
@@ -14,6 +14,16 @@ Semver-tracked module. Three categories of constants live here:
    consumers don't reach into the underscore namespace.
 3. **Message tag names** — IRCv3 tag keys for traceparent/tracestate
    and agentirc-specific event tags.
+4. **Event types and the Event dataclass** — :class:`EventType`
+   (a :class:`enum.StrEnum` of 20 dotted-lowercase wire strings) and
+   :class:`Event` (a frozen-shape dataclass). Plus 20 ``EVENT_TYPE_*``
+   per-type string constants for callers that prefer bare strings over
+   enum-coercion at JSON boundaries. Added in 9.5.0a1 as part of the
+   bot extension API.
+5. **Bot extension verbs and capability** — ``EVENTSUB``, ``EVENTUNSUB``,
+   ``EVENT``, ``EVENTERR``, ``EVENTPUB`` verb constants and
+   ``BOT_CAP = "agentirc.io/bot"``. Reserved in 9.5.0a1; daemon
+   behavior wires up in 9.5.0a3 / 9.5.0 final.
 
 Existing call sites under ``agentirc.ircd``, ``agentirc.server_link``
 and the skills modules still use inline string literals. Migrating them

@@ -12,13 +12,29 @@ import only from these three modules.
 | [`agentirc.cli`](#agentirccli) | `main()`, `dispatch(argv) -> int` | Public, semver-tracked |
 | [`agentirc.protocol`](#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names | Public, semver-tracked |
 
-> **Reserved for 9.5.0 (pending implementation):** `agentirc.protocol` will
-> additionally export the `Event` dataclass, the `EventType` enum,
-> per-type `EVENT_TYPE_*` string constants, the
-> `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB` verb constants, and the
-> `BOT_CAP = "agentirc.io/bot"` capability identifier. `ServerConfig`
-> will gain a new `event_subscription_queue_max: int = 1024` field. The
-> wire format and verb syntax are specified in
+> **Bot extension API — phased rollout:**
+>
+> - **9.5.0a1 (current alpha — declarations slice):** `agentirc.protocol`
+>   exports the `Event` dataclass, the `EventType` enum (now `StrEnum`),
+>   20 per-type `EVENT_TYPE_*` string constants, the
+>   `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB` verb constants,
+>   and the `BOT_CAP = "agentirc.io/bot"` capability identifier.
+>   `ServerConfig` gains the `event_subscription_queue_max: int = 1024`
+>   field. **The symbols are importable; the daemon does not yet handle
+>   the verbs and does not advertise `BOT_CAP`** — calling them is a
+>   no-op until the behavior slices land.
+> - **9.5.0a2 (planned):** wire-format envelope refactor —
+>   `_build_event_payload`/`_encode_event_data` emit the 5-field envelope
+>   `{type, channel, nick, data, timestamp}`; federated `SEVENT` shifts
+>   to the new shape. Internal change; no new public symbols.
+> - **9.5.0a3 (planned):** bot-CAP behavior, `EVENTSUB`/`EVENTUNSUB`
+>   handlers, the in-memory `SubscriptionRegistry`, and `EVENTPUB`
+>   handler. Daemon starts advertising `BOT_CAP` in `CAP LS` output.
+> - **9.5.0 (final):** `webhook_port` no longer bound; `cli.md` /
+>   `deployment.md` updated; this block flips from "phased rollout" to
+>   "current," and the version-history table picks up a 9.5.0 row.
+>
+> Wire format and verb syntax are specified in
 > [`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md);
 > a quick reference for bot authors is at [`docs/extension-api.md`](extension-api.md).
 > Tracking issue: [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15).

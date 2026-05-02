@@ -150,6 +150,33 @@ def test_server_config_yaml_loads_event_queue_max(tmp_path):
     assert cfg.event_subscription_queue_max == 256
 
 
+def test_cli_resolve_config_propagates_event_queue_max(tmp_path, monkeypatch):
+    """`agentirc serve --config ...` honors event_subscription_queue_max from YAML.
+
+    Regression guard for PR #17 review (Copilot 3176158134): the cli-level
+    config resolver previously dropped the field on the floor, so the dataclass
+    default leaked through even when YAML overrode it.
+    """
+    import argparse
+
+    from agentirc.cli import _resolve_config
+
+    yaml_path = tmp_path / "server.yaml"
+    yaml_path.write_text("event_subscription_queue_max: 42\n")
+
+    args = argparse.Namespace(
+        config=str(yaml_path),
+        name=None,
+        host=None,
+        port=None,
+        webhook_port=None,
+        data_dir=None,
+        link=None,
+    )
+    cfg = _resolve_config(args)
+    assert cfg.event_subscription_queue_max == 42
+
+
 def test_protocol_all_exports_new_symbols():
     """`__all__` lists the new bot-extension members so star-imports get them."""
     from agentirc import protocol

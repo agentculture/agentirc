@@ -65,7 +65,9 @@ class ServerConfig:
         """Load a ServerConfig from a YAML file.
 
         Recognises top-level ``server`` (host/port/name), ``telemetry``,
-        ``links``, ``webhook_port``, ``data_dir``, and ``system_bots``.
+        ``links``, ``webhook_port``, ``data_dir``, ``system_bots``, and
+        ``event_subscription_queue_max`` (added in 9.5.0a1; consumed by
+        the subscription registry that lands in 9.5.0a3).
         Unknown top-level keys (``supervisor``, ``agents``, ``buffer_size``,
         ``poll_interval``, ``sleep_start``, ``sleep_end``) are silently
         ignored — those belong to culture's broader process supervisor,
