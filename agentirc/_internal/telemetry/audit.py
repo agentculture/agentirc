@@ -313,6 +313,13 @@ def build_audit_record(
 
     See culture/protocol/extensions/audit.md for the field set.
     """
+    # Audit JSONL records the legacy data-only payload (data dict with
+    # nick/channel merged in via setdefault, _-prefixed keys stripped).
+    # This intentionally diverges from the 9.5+ public wire envelope built
+    # by IRCd._build_event_envelope: ops dashboards and downstream log
+    # processors that read the audit JSONL keep their existing field shape;
+    # the 5-field envelope is reserved for the public network surface
+    # (SEVENT payload + IRCv3 event-data tag).
     payload = {k: v for k, v in (event.data or {}).items() if not k.startswith("_")}
     if event.nick:
         payload.setdefault("nick", event.nick)

@@ -14,19 +14,21 @@ import only from these three modules.
 
 > **Bot extension API — phased rollout:**
 >
-> - **9.5.0a1 (current alpha — declarations slice):** `agentirc.protocol`
->   exports the `Event` dataclass, the `EventType` enum (now `StrEnum`),
->   20 per-type `EVENT_TYPE_*` string constants, the
->   `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB` verb constants,
->   and the `BOT_CAP = "agentirc.io/bot"` capability identifier.
+> - **9.5.0a1 (shipped):** `agentirc.protocol` exports the `Event`
+>   dataclass, the `EventType` enum (now `StrEnum`), 20 per-type
+>   `EVENT_TYPE_*` string constants, the `EVENTSUB`/`EVENTUNSUB`/
+>   `EVENT`/`EVENTERR`/`EVENTPUB` verb constants, and the
+>   `BOT_CAP = "agentirc.io/bot"` capability identifier.
 >   `ServerConfig` gains the `event_subscription_queue_max: int = 1024`
->   field. **The symbols are importable; the daemon does not yet handle
->   the verbs and does not advertise `BOT_CAP`** — calling them is a
->   no-op until the behavior slices land.
-> - **9.5.0a2 (planned):** wire-format envelope refactor —
->   `_build_event_payload`/`_encode_event_data` emit the 5-field envelope
->   `{type, channel, nick, data, timestamp}`; federated `SEVENT` shifts
->   to the new shape. Internal change; no new public symbols.
+>   field. **Declarations slice — symbols are importable but inert.**
+> - **9.5.0a2 (current alpha — wire-format slice):** `IRCd._build_event_payload`
+>   replaced by `IRCd._build_event_envelope`. Federated `SEVENT` payload
+>   and the IRCv3 `event-data` tag on `#system` PRIVMSGs now carry the
+>   canonical 5-field envelope `{type, channel, nick, data, timestamp}`.
+>   `ServerLink._handle_sevent` sniffs the shape so 9.5 receivers
+>   tolerate both envelope (9.5+ peers) and legacy data-only (≤9.4
+>   peers); 9.5→9.4 emit breaks until peers upgrade. Internal change;
+>   no new public symbols. See CHANGELOG `[9.5.0a2]` § Notes.
 > - **9.5.0a3 (planned):** bot-CAP behavior, `EVENTSUB`/`EVENTUNSUB`
 >   handlers, the in-memory `SubscriptionRegistry`, and `EVENTPUB`
 >   handler. Daemon starts advertising `BOT_CAP` in `CAP LS` output.

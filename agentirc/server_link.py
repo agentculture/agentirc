@@ -887,25 +887,63 @@ class ServerLink:
         except ValueError:
             return type_str
 
+    @staticmethod
+    def _is_envelope(decoded: dict) -> bool:
+        """Sniff whether a decoded SEVENT payload is a 9.5+ 5-field envelope.
+
+        9.5+ peers emit ``{type, channel, nick, data, timestamp}`` with a
+        nested ``data`` dict. 9.4 and earlier peers emit the type-specific
+        ``data`` dict directly (no outer envelope, no top-level ``type``).
+        Both are valid SEVENT payloads on the wire; this sniff lets a 9.5
+        receiver tolerate either shape so federations can roll forward one
+        peer at a time.
+        """
+        return (
+            isinstance(decoded.get("type"), str)
+            and isinstance(decoded.get("data"), dict)
+        )
+
     async def _handle_sevent(self, msg: Message) -> None:
         """Ingest a generic federated event from a peer.
 
-        Wire format: SEVENT <origin-server> <seq> <type> <channel_or_*> :<b64-json-data>
+        Wire format: SEVENT <origin-server> <seq> <type> <channel_or_*> :<b64-json>
+
+        The base64-JSON payload is the 5-field envelope from 9.5+ peers, or
+        a bare type-specific data dict from ≤9.4 peers (asymmetric tolerance
+        via :meth:`_is_envelope`). Either way we reconstruct an :class:`Event`
+        with all five fields populated, falling back to ``time.time()`` for
+        ``timestamp`` only when the legacy peer didn't provide one.
         """
         if len(msg.params) < 5:
             return
         origin, _seq, type_str, target, b64 = msg.params[:5]
-        channel = None if target == "*" else target
+        verb_channel = None if target == "*" else target
 
         if origin != self.peer_name:
             logger.warning("SEVENT origin %s != peer %s", origin, self.peer_name)
 
-        if channel is not None and not self._check_incoming_trust(channel):
+        if verb_channel is not None and not self._check_incoming_trust(verb_channel):
             return
 
-        data = self._decode_sevent_payload(b64, self.peer_name)
-        if data is None:
+        decoded = self._decode_sevent_payload(b64, self.peer_name)
+        if decoded is None:
             return
+
+        if self._is_envelope(decoded):
+            # 9.5+ envelope. Verb-arg type wins on mismatch (defensive — the
+            # SEVENT line is the canonical type carrier).
+            data = dict(decoded["data"])
+            nick = decoded.get("nick") or f"{SYSTEM_USER_PREFIX}{origin}"
+            channel = decoded.get("channel") if decoded.get("channel") is not None else verb_channel
+            timestamp = decoded.get("timestamp")
+            if not isinstance(timestamp, (int, float)):
+                timestamp = time.time()
+        else:
+            # ≤9.4 legacy: decoded dict IS the data payload.
+            data = dict(decoded)
+            nick = data.get("nick", f"{SYSTEM_USER_PREFIX}{origin}")
+            channel = verb_channel
+            timestamp = time.time()
 
         data["_origin"] = origin
         type_enum = self._parse_event_type(type_str)
@@ -913,8 +951,9 @@ class ServerLink:
         ev = Event(
             type=type_enum,
             channel=channel,
-            nick=data.get("nick", f"{SYSTEM_USER_PREFIX}{origin}"),
+            nick=nick,
             data=data,
+            timestamp=timestamp,
         )
         await self.server.emit_event(ev)
 
@@ -1014,8 +1053,8 @@ class ServerLink:
             else:
                 # If no typed relay exists, fall back to generic SEVENT.
                 # v1 assumes all peers support SEVENT; cap negotiation is deferred — see plan task 12.
-                payload = self.server._build_event_payload(event)
-                encoded = self.server._encode_event_data(payload, event_type_str)
+                envelope = self.server._build_event_envelope(event)
+                encoded = self.server._encode_event_data(envelope, event_type_str)
                 target = event.channel or "*"
                 # Egress trust check: channel-scoped events respect should_relay; global events always relay
                 if event.channel is None or self.should_relay(event.channel):

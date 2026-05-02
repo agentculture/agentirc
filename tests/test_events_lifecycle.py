@@ -24,6 +24,12 @@ from tests.conftest import IRCTestClient
 def _decode_event_payload(lines: str) -> dict:
     """Extract and decode the IRCv3 `event-data=<b64-json>` tag.
 
+    Returns the 5-field envelope ``{type, channel, nick, data, timestamp}``
+    introduced in 9.5.0a2. Pre-9.5 callers asserting on type-specific fields
+    (e.g. ``payload["text"]``, ``payload["room_id"]``) must navigate one
+    level deeper into ``payload["data"]``; ``nick`` and ``channel`` remain
+    top-level.
+
     ``lines`` is multi-line text as returned by ``recv_until``; scan each
     line for the ``@event=...`` tag blob and decode the matching
     ``event-data=`` value. Only tagged PRIVMSG-style lines start with ``@``.
@@ -305,17 +311,18 @@ async def test_room_create_emitted_on_roomcreate(server, make_client):
     assert "event=room.create" in line, f"Expected room.create tag, got: {line!r}"
     assert "testserv-creator created room #research" in line
 
-    # Lock the structured payload fields downstream consumers rely on.
-    payload = _decode_event_payload(line)
-    assert payload["nick"] == "testserv-creator"
-    assert payload["purpose"] == "AI research"
+    # Lock the structured envelope fields downstream consumers rely on.
+    # Envelope (9.5.0a2+): top-level type/channel/nick/data/timestamp;
+    # type-specific fields nested under data.
+    envelope = _decode_event_payload(line)
+    assert envelope["type"] == "room.create"
+    assert envelope["nick"] == "testserv-creator"
+    assert envelope["channel"] == "#research"
+    assert envelope["data"]["purpose"] == "AI research"
     # room_id is generated server-side — shape check only (starts with "R").
-    assert payload["room_id"].startswith(
+    assert envelope["data"]["room_id"].startswith(
         "R"
-    ), f"Expected room_id to start with R, got: {payload['room_id']!r}"
-    # The server enriches the payload with the channel when the event is
-    # channel-scoped (see IRCd._build_event_payload).
-    assert payload["channel"] == "#research"
+    ), f"Expected room_id to start with R, got: {envelope['data']['room_id']!r}"
 
 
 @pytest.mark.asyncio
