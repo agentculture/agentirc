@@ -176,6 +176,55 @@ async def test_eventsub_unknown_filter(server, make_client):
 
 
 @pytest.mark.asyncio
+async def test_eventsub_duplicate_filter_rejected(server, make_client):
+    """Per-spec, each filter parameter appears at most once."""
+    bot = await _make_bot(make_client, "testserv-dupfilt", "dupfilt")
+    await bot.send("EVENTSUB sub1 type=user.join type=user.part")
+    line = await bot.recv_until("EVENTERR")
+    assert "EVENTERR sub1 :duplicate-filter type" in line
+
+
+@pytest.mark.asyncio
+async def test_eventsub_invalid_channel_filter_rejected(server, make_client):
+    """`channel=room` (no `#`) is rejected so subscribers don't silently miss matches."""
+    bot = await _make_bot(make_client, "testserv-noprefix", "noprefix")
+    await bot.send("EVENTSUB sub1 channel=room")
+    line = await bot.recv_until("EVENTERR")
+    assert "EVENTERR sub1 :invalid-channel-filter room" in line
+
+
+@pytest.mark.asyncio
+async def test_eventunsub_cap_gated(server, make_client):
+    """A non-bot client's EVENTUNSUB is rejected with bot-capability-required.
+
+    Regression guard for PR #20 review (Copilot 3176303659): EVENTUNSUB must
+    enforce the same CAP gate as EVENTSUB so the wire contract stays
+    consistent.
+    """
+    c = await make_client("testserv-bareuser", "bareuser")
+    await c.send("EVENTUNSUB sub1")
+    line = await c.recv_until("EVENTERR")
+    assert "EVENTERR sub1 :bot-capability-required" in line
+
+
+@pytest.mark.asyncio
+async def test_eventsub_requires_registration(server, make_client):
+    """An unregistered (no NICK/USER) connection is rejected.
+
+    Regression guard for PR #20 review (Copilot 3176303652): a CAP-only
+    socket must not be able to subscribe before claiming an identity.
+    """
+    # ``make_client()`` without args opens a TCP connection but doesn't
+    # send NICK/USER, so the server still considers the client unregistered.
+    c = await make_client()
+    await c.send("CAP REQ :agentirc.io/bot")
+    await c.recv_until("CAP")
+    await c.send("EVENTSUB sub1 type=*")
+    line = await c.recv_until("EVENTERR")
+    assert "EVENTERR sub1 :not-registered" in line
+
+
+@pytest.mark.asyncio
 async def test_eventsub_disconnect_cleanup(server, make_client):
     """Closing the connection cancels all subscriptions for that client."""
     bot = await _make_bot(make_client, "testserv-leaver", "leaver")
@@ -218,7 +267,11 @@ async def test_subscription_registry_backpressure_drops_sub(server):
 
     registry = SubscriptionRegistry(queue_max=2)
     fake = FakeClient()
-    sub = registry.add(fake, "subA", type_glob="*")
+    # FakeClient duck-types Client (send_raw, nick, server) — the registry
+    # only touches those attributes. Type-ignore on the call sites where
+    # a strict checker (SonarCloud python:S5655) would otherwise flag the
+    # scaffold as a type mismatch.
+    sub = registry.add(fake, "subA", type_glob="*")  # type: ignore[arg-type]
     assert sub is not None
 
     # Cancel the drain task immediately so the queue stays full.
@@ -236,11 +289,10 @@ async def test_subscription_registry_backpressure_drops_sub(server):
     assert len(overflows) == 1
     assert "EVENTERR subA :backpressure-overflow" in overflows[0]
     # Subscription is gone from the registry after the drop.
-    assert registry.get(fake, "subA") is None
+    assert registry.get(fake, "subA") is None  # type: ignore[arg-type]
 
 
-@pytest.mark.asyncio
-async def test_subscription_filter_matches_unit():
+def test_subscription_filter_matches_unit():
     """Unit-level checks for the AND-ed glob/exact filter logic."""
     from agentirc._internal.event_subscriptions import (
         CHANNEL_ANY,

@@ -196,34 +196,35 @@ class SubscriptionRegistry:
 
         server_name = client.server.config.name
 
-        while True:
-            try:
+        try:
+            while True:
                 event = await sub.queue.get()
-            except asyncio.CancelledError:
-                return
+                if sub.dropped:
+                    return
 
-            if sub.dropped:
-                return
-
-            type_wire = str(event.type)
-            target = event.channel if event.channel is not None else "*"
-            envelope = IRCd._build_event_envelope(event)
-            encoded = IRCd._encode_event_data(envelope, type_wire)
-            line = (
-                f":{server_name} {EVENT} {sub.sub_id} {type_wire} "
-                f"{target} {event.nick} :{encoded}"
-            )
-            try:
-                await client.send_raw(line)
-            except Exception:
-                # Connection is gone or send failed; let the disconnect
-                # cleanup path remove this subscription.
-                logger.debug(
-                    "EVENT send to %s sub %s failed; awaiting disconnect cleanup",
-                    getattr(client, "nick", "<?>"),
-                    sub.sub_id,
+                type_wire = str(event.type)
+                target = event.channel if event.channel is not None else "*"
+                envelope = IRCd._build_event_envelope(event)
+                encoded = IRCd._encode_event_data(envelope, type_wire)
+                line = (
+                    f":{server_name} {EVENT} {sub.sub_id} {type_wire} "
+                    f"{target} {event.nick} :{encoded}"
                 )
-                return
+                try:
+                    await client.send_raw(line)
+                except Exception:
+                    # Connection is gone or send failed; let the disconnect
+                    # cleanup path remove this subscription.
+                    logger.debug(
+                        "EVENT send to %s sub %s failed; awaiting disconnect cleanup",
+                        getattr(client, "nick", "<?>"),
+                        sub.sub_id,
+                    )
+                    return
+        except asyncio.CancelledError:
+            # Drain task cancelled by ``remove`` or ``remove_client`` —
+            # propagate so asyncio cleanup runs as normal.
+            raise
 
 
 __all__ = [

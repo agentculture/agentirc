@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Union
 
+from agentirc.protocol import BOT_CAP
+
 if TYPE_CHECKING:
     from agentirc.client import Client
     from agentirc.remote_client import RemoteClient
@@ -53,7 +55,7 @@ class Channel:
             m
             for m in self.members
             if not isinstance(m, (RemoteClient, VirtualClient))
-            and "agentirc.io/bot" not in getattr(m, "caps", frozenset())
+            and BOT_CAP not in getattr(m, "caps", frozenset())
         }
 
     def add(self, client: Client) -> None:
@@ -67,7 +69,7 @@ class Channel:
 
             is_op_eligible = (
                 not isinstance(client, (RemoteClient, VirtualClient))
-                and "agentirc.io/bot" not in getattr(client, "caps", frozenset())
+                and BOT_CAP not in getattr(client, "caps", frozenset())
             )
             if is_op_eligible:
                 self.operators.add(client)
@@ -100,6 +102,6 @@ class Channel:
         # so vanilla IRC clients filter bots from presence panels by
         # checking the ``+`` prefix. Op wins on conflict (above), so an
         # explicitly-opped bot still renders as ``@``.
-        if "agentirc.io/bot" in getattr(client, "caps", frozenset()):
+        if BOT_CAP in getattr(client, "caps", frozenset()):
             return "+"
         return ""
