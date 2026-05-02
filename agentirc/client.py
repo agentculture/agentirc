@@ -1106,11 +1106,6 @@ class Client:
     #      or pulling the full event stream before claiming an identity.
 
     _SUB_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,32}$")
-    # Channel filter accepts: an exact channel name (``#``-prefixed), the
-    # literal ``*`` (any channel including nick-scoped), or empty string
-    # (nick-scoped events only). Anything else is a typo and gets rejected
-    # so subscribers don't silently bind a filter that never matches.
-    _CHANNEL_FILTER_RE = re.compile(r"^(#[^\s,]+|\*|)$")
 
     async def _bot_verb_gate(self, verb_id: str) -> bool:
         """Common bot-CAP + registration gate for EVENTSUB/EVENTUNSUB/EVENTPUB.
@@ -1134,10 +1129,12 @@ class Client:
         for ``EVENTERR <sub-id> :<error_reason>``. Detects unknown filter
         keys, duplicate filter keys (per spec, each parameter appears at
         most once), malformed tokens, and invalid channel-filter format.
+        Per-key validation lives in
+        :data:`agentirc._internal.event_subscriptions.FILTER_HANDLERS`.
         """
         from agentirc._internal.event_subscriptions import (
             CHANNEL_ANY,
-            CHANNEL_NICK_SCOPED_ONLY,
+            FILTER_HANDLERS,
         )
 
         filters: dict = {"type_glob": "*", "channel": CHANNEL_ANY, "nick_glob": "*"}
@@ -1149,19 +1146,12 @@ class Client:
             if key in seen:
                 return filters, f"duplicate-filter {key}"
             seen.add(key)
-            if key == "type":
-                filters["type_glob"] = value or "*"
-            elif key == "channel":
-                if not Client._CHANNEL_FILTER_RE.match(value):
-                    return filters, f"invalid-channel-filter {value}"
-                if value == "":
-                    filters["channel"] = CHANNEL_NICK_SCOPED_ONLY
-                else:
-                    filters["channel"] = value
-            elif key == "nick":
-                filters["nick_glob"] = value or "*"
-            else:
+            handler = FILTER_HANDLERS.get(key)
+            if handler is None:
                 return filters, f"unknown-filter {key}"
+            error = handler(filters, value)
+            if error is not None:
+                return filters, error
         return filters, None
 
     async def _handle_eventsub(self, msg: Message) -> None:

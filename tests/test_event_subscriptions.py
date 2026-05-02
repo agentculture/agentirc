@@ -11,10 +11,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from agentirc.protocol import Event, EventType
+
+if TYPE_CHECKING:
+    from agentirc.client import Client
 
 
 async def _make_bot(make_client, nick: str, user: str):
@@ -256,7 +260,7 @@ async def test_subscription_registry_backpressure_drops_sub(server):
     sent_lines: list[str] = []
 
     class FakeClient:
-        async def send_raw(self, line: str) -> None:
+        async def send_raw(self, line: str) -> None:  # NOSONAR python:S7503: must be async to duck-type Client.send_raw which the registry awaits
             sent_lines.append(line)
 
         @property
@@ -265,13 +269,13 @@ async def test_subscription_registry_backpressure_drops_sub(server):
 
         nick = "testserv-fake"
 
-    registry = SubscriptionRegistry(queue_max=2)
-    fake = FakeClient()
     # FakeClient duck-types Client (send_raw, nick, server) — the registry
-    # only touches those attributes. Type-ignore on the call sites where
-    # a strict checker (SonarCloud python:S5655) would otherwise flag the
-    # scaffold as a type mismatch.
-    sub = registry.add(fake, "subA", type_glob="*")  # type: ignore[arg-type]
+    # only touches those attributes. ``cast`` tells static analysers
+    # (mypy / SonarCloud python:S5655) to treat the scaffold as a Client at
+    # the call sites; it is a no-op at runtime.
+    registry = SubscriptionRegistry(queue_max=2)
+    fake = cast("Client", FakeClient())
+    sub = registry.add(fake, "subA", type_glob="*")
     assert sub is not None
 
     # Cancel the drain task immediately so the queue stays full.
@@ -289,7 +293,7 @@ async def test_subscription_registry_backpressure_drops_sub(server):
     assert len(overflows) == 1
     assert "EVENTERR subA :backpressure-overflow" in overflows[0]
     # Subscription is gone from the registry after the drop.
-    assert registry.get(fake, "subA") is None  # type: ignore[arg-type]
+    assert registry.get(fake, "subA") is None
 
 
 def test_subscription_filter_matches_unit():
