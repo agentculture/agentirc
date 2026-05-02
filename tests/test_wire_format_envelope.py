@@ -24,7 +24,7 @@ import time
 import pytest
 
 from agentirc.ircd import IRCd
-from agentirc.protocol import Event, EventType
+from agentirc.protocol import Event, EventType, SEVENT
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +81,9 @@ def test_envelope_shape():
     assert envelope["channel"] == "#room"
     assert envelope["nick"] == "alice"
     assert envelope["data"] == {"text": "hi"}
-    assert envelope["timestamp"] == 1714568400.0
+    # Use pytest.approx to avoid SonarCloud python:S1244 (float equality);
+    # the value round-trips exactly in IEEE 754 so default tolerance suffices.
+    assert envelope["timestamp"] == pytest.approx(1714568400.0)
 
 
 def test_envelope_round_trip():
@@ -104,7 +106,7 @@ def test_envelope_round_trip():
     assert reconstructed.channel == "#room"
     assert reconstructed.nick == "alice"
     assert reconstructed.data == {"text": "hi"}
-    assert reconstructed.timestamp == 1714568400.0
+    assert reconstructed.timestamp == pytest.approx(1714568400.0)
 
 
 def test_envelope_with_null_channel():
@@ -197,7 +199,7 @@ async def test_handle_sevent_decodes_9_5_envelope(linked_servers):
     )
     msg = Message(
         prefix=None,
-        command="SEVENT",
+        command=SEVENT,
         params=[alpha.config.name, "1", "user.join", "#room", encoded],
     )
     # Pre-create #room on beta so the trust check + emit path don't bail.
@@ -213,8 +215,108 @@ async def test_handle_sevent_decodes_9_5_envelope(linked_servers):
     assert ev.nick == "alice"
     assert ev.data["text"] == "hi"
     # Timestamp from the envelope should round-trip (originating peer's clock).
-    assert ev.timestamp == 1714568400.0
+    assert ev.timestamp == pytest.approx(1714568400.0)
     # Receiver sets _origin to track the originating peer.
+    assert ev.data["_origin"] == alpha.config.name
+
+
+@pytest.mark.asyncio
+async def test_handle_sevent_ignores_envelope_channel_claim(linked_servers):
+    """Verb-arg channel is authoritative; envelope channel claim is ignored.
+
+    Regression guard for PR #18 review (Qodo 3176230784, Copilot 3176232442):
+    a malformed peer must not be able to bypass the trust check by sending
+    target="*" while putting a restricted channel name in the envelope. The
+    receiver always uses the SEVENT verb-arg channel for both the trust
+    check and the resulting Event.channel.
+    """
+    alpha, beta = linked_servers
+
+    envelope = {
+        "type": "user.join",
+        # Peer claims #attack-target in the envelope, but verb-arg is "*".
+        "channel": "#attack-target",
+        "nick": "alice",
+        "data": {"text": "hi"},
+        "timestamp": 1714568400.0,
+    }
+    encoded = base64.b64encode(
+        json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+
+    from agentirc._internal.protocol.message import Message
+
+    alpha_link = next(
+        link for link in beta.links.values() if link.peer_name == alpha.config.name
+    )
+    msg = Message(
+        prefix=None,
+        command=SEVENT,
+        # verb_channel = "*" → no trust check fires, no channel injection.
+        params=[alpha.config.name, "1", "user.join", "*", encoded],
+    )
+
+    initial_event_count = len(beta._event_log)
+    await alpha_link._handle_sevent(msg)
+    assert len(beta._event_log) == initial_event_count + 1
+
+    _, ev = beta._event_log[-1]
+    # Verb-arg "*" mapped to None. Envelope's "#attack-target" is dropped.
+    assert ev.channel is None, (
+        f"Envelope channel claim leaked through trust gate: {ev.channel!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_sevent_strips_underscore_metadata(linked_servers):
+    """`_`-prefixed keys in peer-supplied data are stripped before emit_event.
+
+    Regression guard for PR #18 review (Copilot 3176232430): a peer must not
+    be able to inject `_render` (or any other server-internal `_`-prefixed
+    metadata) via SEVENT and influence local surfacing. The receiver strips
+    every `_`-key from the decoded data before adding its own `_origin`.
+    """
+    alpha, beta = linked_servers
+
+    envelope = {
+        "type": "user.join",
+        "channel": "#room",
+        "nick": "alice",
+        "data": {
+            "text": "hi",
+            "_render": "ATTACKER-CONTROLLED RENDER STRING",
+            "_origin": "spoofed-origin",
+            "_secret_hint": "should-not-survive",
+        },
+        "timestamp": 1714568400.0,
+    }
+    encoded = base64.b64encode(
+        json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+
+    from agentirc._internal.protocol.message import Message
+
+    alpha_link = next(
+        link for link in beta.links.values() if link.peer_name == alpha.config.name
+    )
+    msg = Message(
+        prefix=None,
+        command=SEVENT,
+        params=[alpha.config.name, "1", "user.join", "#room", encoded],
+    )
+    beta.get_or_create_channel("#room")
+
+    initial_event_count = len(beta._event_log)
+    await alpha_link._handle_sevent(msg)
+    assert len(beta._event_log) == initial_event_count + 1
+
+    _, ev = beta._event_log[-1]
+    # `text` (non-underscore) survives; all peer-supplied `_`-keys do not.
+    assert ev.data["text"] == "hi"
+    assert "_render" not in ev.data, "_render injection survived sevent decode"
+    assert "_secret_hint" not in ev.data
+    # `_origin` is set by the receiver to the actual peer name (not the
+    # spoofed value). The peer-supplied `_origin` was stripped first.
     assert ev.data["_origin"] == alpha.config.name
 
 
@@ -243,7 +345,7 @@ async def test_handle_sevent_decodes_legacy_data_only(linked_servers):
     )
     msg = Message(
         prefix=None,
-        command="SEVENT",
+        command=SEVENT,
         params=[alpha.config.name, "1", "user.join", "#room", encoded],
     )
     beta.get_or_create_channel("#room")

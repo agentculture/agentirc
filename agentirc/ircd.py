@@ -302,18 +302,36 @@ class IRCd:
 
     @staticmethod
     def _encode_event_data(envelope: dict, type_wire: str) -> str:
-        """Base64-encode the envelope as canonical JSON; fall back to '{}' on TypeError."""
+        """Base64-encode the envelope as canonical JSON.
+
+        On serialization failure the fallback is a *minimal but well-formed*
+        envelope ``{type, channel, nick, data, timestamp}`` with empty
+        ``data`` and current wall-clock ``timestamp`` — never a bare ``{}``.
+        Subscribers and federation peers depend on the 5-field shape; an
+        empty-dict fallback would fail the receiver's envelope sniff and
+        be misclassified as legacy data-only, which is worse than emitting
+        an event with no type-specific payload.
+        """
         try:
             return base64.b64encode(
                 json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
             ).decode("ascii")
         except (TypeError, ValueError) as exc:
             logger.warning(
-                "Event %s envelope not JSON-serializable, surfacing with empty payload: %s",
+                "Event %s envelope not JSON-serializable, surfacing empty envelope: %s",
                 type_wire,
                 exc,
             )
-            return base64.b64encode(b"{}").decode("ascii")
+            empty_envelope = {
+                "type": type_wire,
+                "channel": envelope.get("channel") if isinstance(envelope, dict) else None,
+                "nick": envelope.get("nick", "") if isinstance(envelope, dict) else "",
+                "data": {},
+                "timestamp": time.time(),
+            }
+            return base64.b64encode(
+                json.dumps(empty_envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            ).decode("ascii")
 
     async def _deliver_to_members(self, channel, msg: Message, type_wire: str) -> None:
         """Send the surfaced PRIVMSG to channel members (skipping VirtualClients)."""

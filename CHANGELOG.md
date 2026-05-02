@@ -14,7 +14,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - `ServerLink._is_envelope(decoded)` — sniff helper that recognises the new envelope shape vs. the legacy data-only dict at decode time. `_handle_sevent` uses it for asymmetric tolerance (see Notes).
-- `tests/test_wire_format_envelope.py` — 10 tests including a golden-file byte-equality lock-in for the canonical JSON encoding (any future change to the encoder that breaks this is a wire-format break and requires a major bump).
+- `agentirc.protocol.SEVENT` — verb-name constant for the federation event-relay verb. Used by the new test suite and the outbound relay path. Other agentirc-side string-literal callsites are tracked separately in [#11](https://github.com/agentculture/agentirc/issues/11).
+- `tests/test_wire_format_envelope.py` — 12 tests including a golden-file byte-equality lock-in for the canonical JSON encoding (any future change to the encoder that breaks this is a wire-format break and requires a major bump), plus regression guards for the trust-bypass and underscore-injection fixes below.
+
+### Security
+
+- **`ServerLink._handle_sevent` now treats the SEVENT verb-arg channel as authoritative.** The previous draft of this PR (pre-review) used the envelope's `channel` field on the receive side, which would have allowed a malformed/malicious peer to bypass `_check_incoming_trust` by sending `target="*"` (no trust check) while putting a restricted channel name in the envelope. The verb-arg channel is what the trust gate already protects, so the receiver now ignores any envelope channel claim and uses `verb_channel` for both the trust check and the resulting `Event.channel`.
+- **Peer-supplied `_`-prefixed keys are stripped from incoming SEVENT data before emit.** `_render` and similar server-internal hints would otherwise let a peer dictate human-readable surfacing on this server. The receiver strips every key starting with `_` from the decoded data before adding its own `_origin` marker.
+
+### Fixed
+
+- **`IRCd._encode_event_data` fallback now produces a valid 5-field envelope instead of `b"{}"`.** A serialization failure used to emit a bare empty dict, which fails the receiver's envelope sniff and is misclassified as legacy data-only — worse than emitting an event with no type-specific payload. The fallback now emits `{type, channel, nick, data: {}, timestamp: time.time()}` so consumers can still parse the shape.
 
 ### Notes
 

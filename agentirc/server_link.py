@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from opentelemetry import trace as otel_trace
 from opentelemetry.context import Context as _OtelContext
 
+from agentirc import protocol
 from agentirc.remote_client import RemoteClient
 from agentirc.skill import Event, EventType
 from agentirc._internal.aio import maybe_await
@@ -932,19 +933,29 @@ class ServerLink:
         if self._is_envelope(decoded):
             # 9.5+ envelope. Verb-arg type wins on mismatch (defensive — the
             # SEVENT line is the canonical type carrier).
-            data = dict(decoded["data"])
+            raw_data = decoded["data"]
             nick = decoded.get("nick") or f"{SYSTEM_USER_PREFIX}{origin}"
-            channel = decoded.get("channel") if decoded.get("channel") is not None else verb_channel
             timestamp = decoded.get("timestamp")
             if not isinstance(timestamp, (int, float)):
                 timestamp = time.time()
         else:
             # ≤9.4 legacy: decoded dict IS the data payload.
-            data = dict(decoded)
-            nick = data.get("nick", f"{SYSTEM_USER_PREFIX}{origin}")
-            channel = verb_channel
+            raw_data = decoded
+            nick = raw_data.get("nick", f"{SYSTEM_USER_PREFIX}{origin}")
             timestamp = time.time()
 
+        # Verb-arg channel is authoritative for routing and trust: the
+        # _check_incoming_trust() above gated on it. Ignore any channel claim
+        # in the envelope — a malformed/malicious peer must not be able to
+        # bypass trust by sending target="*" while putting a restricted
+        # channel name in the envelope.
+        channel = verb_channel
+
+        # Strip incoming `_`-prefixed keys from the peer-supplied data before
+        # we add our own `_origin` marker. `_render` and similar server-side
+        # hints must not be peer-controllable; allowing them would let a
+        # peer dictate the human-readable surfacing on this server.
+        data = {k: v for k, v in raw_data.items() if not k.startswith("_")}
         data["_origin"] = origin
         type_enum = self._parse_event_type(type_str)
 
@@ -1060,7 +1071,7 @@ class ServerLink:
                 if event.channel is None or self.should_relay(event.channel):
                     seq = self.server._seq  # current local seq; peer stores but doesn't re-sequence
                     await self.send_raw(
-                        f":{origin} SEVENT {origin} {seq} {event_type_str} {target} :{encoded}"
+                        f":{origin} {protocol.SEVENT} {origin} {seq} {event_type_str} {target} :{encoded}"
                     )
                     relayed = True
 
