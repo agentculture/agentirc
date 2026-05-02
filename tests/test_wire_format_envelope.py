@@ -23,6 +23,7 @@ import time
 
 import pytest
 
+from agentirc._internal.protocol.message import Message
 from agentirc.ircd import IRCd
 from agentirc.protocol import Event, EventType, SEVENT
 
@@ -49,6 +50,46 @@ _GOLDEN_BASE64 = (
     "eyJjaGFubmVsIjoiI3Jvb20iLCJkYXRhIjp7InRleHQiOiJoaSJ9LCJuaWNrIjoi"
     "YWxpY2UiLCJ0aW1lc3RhbXAiOjE3MTQ1Njg0MDAuMCwidHlwZSI6InVzZXIuam9pbiJ9"
 )
+
+
+# ---------------------------------------------------------------------------
+# Federation-test scaffolding helper
+# ---------------------------------------------------------------------------
+
+async def _send_sevent_and_get_event(
+    linked_servers,
+    payload: dict,
+    *,
+    verb_channel: str = "#room",
+    verb_type: str = "user.join",
+    pre_create_channel: bool = True,
+):
+    """Encode payload as SEVENT, dispatch through the alpha→beta link, return the resulting Event.
+
+    Used by every ``test_handle_sevent_*`` test to eliminate per-test
+    scaffolding (the encode + Message + link-lookup + dispatch + event-fetch
+    boilerplate). The payload may be a 9.5+ envelope or a ≤9.4 legacy data
+    dict; the receiver's ``ServerLink._is_envelope`` sniff handles both.
+    """
+    alpha, beta = linked_servers
+    encoded = base64.b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    alpha_link = next(
+        link for link in beta.links.values() if link.peer_name == alpha.config.name
+    )
+    msg = Message(
+        prefix=None,
+        command=SEVENT,
+        params=[alpha.config.name, "1", verb_type, verb_channel, encoded],
+    )
+    if pre_create_channel and verb_channel != "*":
+        beta.get_or_create_channel(verb_channel)
+    before_count = len(beta._event_log)
+    await alpha_link._handle_sevent(msg)
+    assert len(beta._event_log) == before_count + 1
+    _, ev = beta._event_log[-1]
+    return ev
 
 
 def test_envelope_byte_lock():
@@ -175,11 +216,7 @@ def test_is_envelope_rejects_partial_shapes():
 @pytest.mark.asyncio
 async def test_handle_sevent_decodes_9_5_envelope(linked_servers):
     """A 9.5+ peer's envelope payload reconstructs an Event with all 5 fields."""
-    alpha, beta = linked_servers
-
-    # Construct an envelope-shaped SEVENT payload and feed it through beta's
-    # link from alpha. We synthesize the wire-side message rather than relying
-    # on alpha's emit_event so the test isolates the receive-side decode.
+    alpha, _ = linked_servers
     envelope = {
         "type": "user.join",
         "channel": "#room",
@@ -187,29 +224,8 @@ async def test_handle_sevent_decodes_9_5_envelope(linked_servers):
         "data": {"text": "hi"},
         "timestamp": 1714568400.0,
     }
-    encoded = base64.b64encode(
-        json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    ).decode("ascii")
+    ev = await _send_sevent_and_get_event(linked_servers, envelope)
 
-    from agentirc._internal.protocol.message import Message
-
-    # Find beta's link to alpha (the server-link instance representing alpha).
-    alpha_link = next(
-        link for link in beta.links.values() if link.peer_name == alpha.config.name
-    )
-    msg = Message(
-        prefix=None,
-        command=SEVENT,
-        params=[alpha.config.name, "1", "user.join", "#room", encoded],
-    )
-    # Pre-create #room on beta so the trust check + emit path don't bail.
-    beta.get_or_create_channel("#room")
-
-    initial_event_count = len(beta._event_log)
-    await alpha_link._handle_sevent(msg)
-    assert len(beta._event_log) == initial_event_count + 1
-
-    _, ev = beta._event_log[-1]
     assert str(ev.type) == "user.join"
     assert ev.channel == "#room"
     assert ev.nick == "alice"
@@ -230,8 +246,6 @@ async def test_handle_sevent_ignores_envelope_channel_claim(linked_servers):
     receiver always uses the SEVENT verb-arg channel for both the trust
     check and the resulting Event.channel.
     """
-    alpha, beta = linked_servers
-
     envelope = {
         "type": "user.join",
         # Peer claims #attack-target in the envelope, but verb-arg is "*".
@@ -240,27 +254,11 @@ async def test_handle_sevent_ignores_envelope_channel_claim(linked_servers):
         "data": {"text": "hi"},
         "timestamp": 1714568400.0,
     }
-    encoded = base64.b64encode(
-        json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    ).decode("ascii")
-
-    from agentirc._internal.protocol.message import Message
-
-    alpha_link = next(
-        link for link in beta.links.values() if link.peer_name == alpha.config.name
-    )
-    msg = Message(
-        prefix=None,
-        command=SEVENT,
-        # verb_channel = "*" → no trust check fires, no channel injection.
-        params=[alpha.config.name, "1", "user.join", "*", encoded],
+    # verb_channel="*" → no trust check fires, no channel injection.
+    ev = await _send_sevent_and_get_event(
+        linked_servers, envelope, verb_channel="*", pre_create_channel=False
     )
 
-    initial_event_count = len(beta._event_log)
-    await alpha_link._handle_sevent(msg)
-    assert len(beta._event_log) == initial_event_count + 1
-
-    _, ev = beta._event_log[-1]
     # Verb-arg "*" mapped to None. Envelope's "#attack-target" is dropped.
     assert ev.channel is None, (
         f"Envelope channel claim leaked through trust gate: {ev.channel!r}"
@@ -276,8 +274,7 @@ async def test_handle_sevent_strips_underscore_metadata(linked_servers):
     metadata) via SEVENT and influence local surfacing. The receiver strips
     every `_`-key from the decoded data before adding its own `_origin`.
     """
-    alpha, beta = linked_servers
-
+    alpha, _ = linked_servers
     envelope = {
         "type": "user.join",
         "channel": "#room",
@@ -290,27 +287,8 @@ async def test_handle_sevent_strips_underscore_metadata(linked_servers):
         },
         "timestamp": 1714568400.0,
     }
-    encoded = base64.b64encode(
-        json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    ).decode("ascii")
+    ev = await _send_sevent_and_get_event(linked_servers, envelope)
 
-    from agentirc._internal.protocol.message import Message
-
-    alpha_link = next(
-        link for link in beta.links.values() if link.peer_name == alpha.config.name
-    )
-    msg = Message(
-        prefix=None,
-        command=SEVENT,
-        params=[alpha.config.name, "1", "user.join", "#room", encoded],
-    )
-    beta.get_or_create_channel("#room")
-
-    initial_event_count = len(beta._event_log)
-    await alpha_link._handle_sevent(msg)
-    assert len(beta._event_log) == initial_event_count + 1
-
-    _, ev = beta._event_log[-1]
     # `text` (non-underscore) survives; all peer-supplied `_`-keys do not.
     assert ev.data["text"] == "hi"
     assert "_render" not in ev.data, "_render injection survived sevent decode"
@@ -329,34 +307,15 @@ async def test_handle_sevent_decodes_legacy_data_only(linked_servers):
     sniff, a half-upgraded federation would lose all events from the
     not-yet-upgraded side.
     """
-    alpha, beta = linked_servers
-
+    alpha, _ = linked_servers
     # Legacy shape: bare data dict, no top-level type or data wrapper.
     # 9.4 emitters merged nick into the data dict via setdefault.
     legacy_payload = {"nick": "alice", "channel": "#room", "text": "hi"}
-    encoded = base64.b64encode(
-        json.dumps(legacy_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    ).decode("ascii")
-
-    from agentirc._internal.protocol.message import Message
-
-    alpha_link = next(
-        link for link in beta.links.values() if link.peer_name == alpha.config.name
-    )
-    msg = Message(
-        prefix=None,
-        command=SEVENT,
-        params=[alpha.config.name, "1", "user.join", "#room", encoded],
-    )
-    beta.get_or_create_channel("#room")
 
     before = time.time()
-    initial_event_count = len(beta._event_log)
-    await alpha_link._handle_sevent(msg)
+    ev = await _send_sevent_and_get_event(linked_servers, legacy_payload)
     after = time.time()
 
-    assert len(beta._event_log) == initial_event_count + 1
-    _, ev = beta._event_log[-1]
     assert str(ev.type) == "user.join"
     assert ev.channel == "#room"
     assert ev.nick == "alice"
