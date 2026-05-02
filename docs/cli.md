@@ -35,7 +35,7 @@ set (the *start flags*) plus a per-verb extra:
 | `--host HOST` | `0.0.0.0` | Bind address. |
 | `--port PORT` | `6667` | Bind TCP port. `0` requests an OS-assigned port; in `start` mode the daemon won't write a `.port` file when `--port 0` is used, so `agentirc status` reports only the PID. |
 | `--link SPEC` | none | S2S link, format `name:host:port:password[:trust]`. Repeatable. |
-| `--webhook-port PORT` | `7680` | HTTP port for bot webhooks. Inert until a bot harness is wired in. |
+| `--webhook-port PORT` | `7680` | Accepted for backward compatibility; **not bound by `agentirc`** as of 9.5.0. The field is preserved so culture's `~/.culture/server.yaml` keeps loading unchanged; consumers (e.g. culture) host their own webhook listener if they need one. |
 | `--data-dir PATH` | `~/.culture/data` | Directory for persistent storage (history.db, etc.). |
 | `--config PATH` | `~/.culture/server.yaml` | YAML file to load defaults from. |
 

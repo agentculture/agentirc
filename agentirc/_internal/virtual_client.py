@@ -27,6 +27,13 @@ class VirtualClient:
     in channel.members, NAMES, WHO, and WHOIS transparently.
     """
 
+    # The in-process system bot is treated identically to a real CAP-bot by
+    # the bot-extension code paths (silent JOIN/PART/QUIT broadcasts,
+    # excluded from the auto-op predicate, ``+`` prefix in NAMES, ``B`` flag
+    # in WHO). Class-level attribute so every instance gets the same caps;
+    # individual VirtualClients don't negotiate caps the way real Clients do.
+    caps: frozenset[str] = frozenset({"agentirc.io/bot", "message-tags"})
+
     def __init__(self, nick: str, user: str, server: IRCd):
         self.nick = nick
         self.user = user

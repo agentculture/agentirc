@@ -12,34 +12,47 @@ import only from these three modules.
 | [`agentirc.cli`](#agentirccli) | `main()`, `dispatch(argv) -> int` | Public, semver-tracked |
 | [`agentirc.protocol`](#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names | Public, semver-tracked |
 
-> **Bot extension API — phased rollout:**
->
-> - **9.5.0a1 (shipped):** `agentirc.protocol` exports the `Event`
->   dataclass, the `EventType` enum (now `StrEnum`), 20 per-type
->   `EVENT_TYPE_*` string constants, the `EVENTSUB`/`EVENTUNSUB`/
->   `EVENT`/`EVENTERR`/`EVENTPUB` verb constants, and the
->   `BOT_CAP = "agentirc.io/bot"` capability identifier.
->   `ServerConfig` gains the `event_subscription_queue_max: int = 1024`
->   field. **Declarations slice — symbols are importable but inert.**
-> - **9.5.0a2 (current alpha — wire-format slice):** `IRCd._build_event_payload`
->   replaced by `IRCd._build_event_envelope`. Federated `SEVENT` payload
->   and the IRCv3 `event-data` tag on `#system` PRIVMSGs now carry the
->   canonical 5-field envelope `{type, channel, nick, data, timestamp}`.
->   `ServerLink._handle_sevent` sniffs the shape so 9.5 receivers
->   tolerate both envelope (9.5+ peers) and legacy data-only (≤9.4
->   peers); 9.5→9.4 emit breaks until peers upgrade. Internal change;
->   no new public symbols. See CHANGELOG `[9.5.0a2]` § Notes.
-> - **9.5.0a3 (planned):** bot-CAP behavior, `EVENTSUB`/`EVENTUNSUB`
->   handlers, the in-memory `SubscriptionRegistry`, and `EVENTPUB`
->   handler. Daemon starts advertising `BOT_CAP` in `CAP LS` output.
-> - **9.5.0 (final):** `webhook_port` no longer bound; `cli.md` /
->   `deployment.md` updated; this block flips from "phased rollout" to
->   "current," and the version-history table picks up a 9.5.0 row.
->
-> Wire format and verb syntax are specified in
-> [`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md);
-> a quick reference for bot authors is at [`docs/extension-api.md`](extension-api.md).
-> Tracking issue: [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15).
+**Bot extension API (shipped in 9.5.0):**
+
+- `agentirc.protocol` exports the `Event` dataclass, the `EventType`
+  enum (`StrEnum`), 20 per-type `EVENT_TYPE_*` string constants, the
+  `EVENTSUB` / `EVENTUNSUB` / `EVENT` / `EVENTERR` / `EVENTPUB` verb
+  constants, the `SEVENT` federation verb constant, and the
+  `BOT_CAP = "agentirc.io/bot"` capability identifier.
+- `ServerConfig.event_subscription_queue_max: int = 1024` — per-subscription
+  bounded queue depth; recognised by `ServerConfig.from_yaml` and
+  `agentirc.cli._resolve_config()`.
+- The IRCv3 `agentirc.io/bot` capability gates four behaviours when
+  negotiated via `CAP REQ`: silent JOIN/PART/QUIT broadcasts to other
+  channel members, no auto-op on a fresh-channel first-joiner, `+`
+  prefix in NAMES output, `B` flag in WHO output. Reserved keys in
+  `Event.data` (`_`-prefixed) are stripped at emit time and reconstructed
+  by the receiver — peers cannot inject `_render` etc. across the wire.
+- `EVENTSUB <sub-id> [type=<glob>] [channel=<name>] [nick=<glob>]` opens
+  a streaming subscription whose matching events arrive as
+  `:server EVENT <sub-id> <type> <channel-or-*> <nick> :<base64-json-envelope>`
+  lines. Filters are AND-ed; type and nick accept `fnmatch`-style globs;
+  channel accepts an exact name, `*` (any channel including nick-scoped),
+  or empty (nick-scoped events only). Per-subscription queues default to
+  `event_subscription_queue_max=1024`; on overflow the server emits
+  `EVENTERR <sub-id> :backpressure-overflow` and drops the subscription
+  (the connection itself stays open).
+- `EVENTPUB <type> <channel-or-*> :<base64-json-data>` lets a bot emit
+  a custom-typed event back into the stream. The type must match
+  `EVENT_TYPE_RE` (dotted lowercase, ≥1 dot — single-segment names like
+  `message` and `topic` are reserved for built-ins). The server fills
+  `nick` from the bot's connection nick (not spoofable) and `timestamp`
+  from `time.time()` (so federation peers see consistent clocks).
+- **`webhook_port` is accepted in config but no longer bound.** The
+  field stays in `ServerConfig` for backward compat with culture's
+  `~/.culture/server.yaml`, but `IRCd.start()` no longer instantiates
+  the HTTP listener. Consumers that need webhook→bot dispatch host their
+  own listener (see [`deployment.md`](deployment.md)).
+
+Wire format and verb syntax are specified in
+[`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md);
+a quick reference for bot authors is at [`docs/extension-api.md`](extension-api.md).
+Tracking issue: [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15).
 
 ## Semver contract
 
@@ -272,6 +285,10 @@ there for consistency.
 | 9.2.0 | 2026-05-01 | Real CLI dispatch, `agentirc.protocol`, `agentirc.client`. New verbs: `serve`, `start`, `stop`, `restart`, `status`, `link`, `logs`. |
 | 9.3.0 | 2026-05-01 | Test suite (315 tests, `pytest -n auto` in ~29s) — internal. |
 | 9.4.0 | 2026-05-01 | `ServerConfig.from_yaml(path)` classmethod. CLI flags now overlay YAML config (precedence: CLI > YAML > built-in defaults). Three docs published: `api-stability.md`, `cli.md`, `deployment.md`. New runtime dep: `pyyaml>=6.0`. |
+| 9.4.1 | 2026-05-01 | Docs-only follow-up; functionally identical to 9.4.0. |
+| 9.5.0a1 | 2026-05-02 | **Bot extension API — declarations slice.** Public `agentirc.protocol` exports: `Event`, `EventType` (now `StrEnum`), 20 `EVENT_TYPE_*` constants, `EVENTSUB` / `EVENTUNSUB` / `EVENT` / `EVENTERR` / `EVENTPUB` verb constants, `BOT_CAP`. New `ServerConfig.event_subscription_queue_max: int = 1024`. Symbols importable but inert. |
+| 9.5.0a2 | 2026-05-02 | **Bot extension API — wire-format slice.** SEVENT and IRCv3 `event-data` tag now carry the canonical 5-field envelope `{type, channel, nick, data, timestamp}`. `_handle_sevent` sniffs the shape so 9.5 receivers tolerate ≤9.4 legacy peers (asymmetric: 9.5→9.4 emit breaks until peers upgrade). Added `agentirc.protocol.SEVENT`. Internal-only changes; no new public-API symbols beyond `SEVENT`. |
+| 9.5.0 | 2026-05-02 | **Bot extension API — final.** `agentirc.io/bot` IRCv3 capability gates silent JOIN/PART/QUIT broadcasts, no auto-op on fresh channels, `+` prefix in NAMES, `B` flag in WHO. New IRC verbs: `EVENTSUB` / `EVENTUNSUB` / `EVENTPUB` (handlers + per-subscription bounded queues; `EVENT` / `EVENTERR` server→client). `webhook_port` no longer bound by `IRCd.start()` (field stays for backward compat). Closes [#15](https://github.com/agentculture/agentirc/issues/15). |
 
 ## Distribution
 

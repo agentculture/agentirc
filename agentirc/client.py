@@ -14,6 +14,8 @@ client.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import re
 import time
@@ -24,7 +26,7 @@ from opentelemetry.context import Context as _OtelContext
 from opentelemetry.trace import Span as _OtelSpan
 
 from agentirc._internal.aio import maybe_await
-from agentirc._internal.constants import SYSTEM_USER_PREFIX
+from agentirc._internal.constants import EVENT_TYPE_RE, SYSTEM_USER_PREFIX
 from agentirc._internal.protocol import replies
 from agentirc._internal.protocol.message import Message
 from agentirc._internal.telemetry.audit import utc_iso_timestamp as _utc_iso_timestamp
@@ -311,16 +313,21 @@ class Client:
     def _handle_pong(self, msg: Message) -> None:
         pass  # Client responding to our ping
 
+    # Capabilities advertised in CAP LS and accepted in CAP REQ. Adding
+    # a new cap here is a minor bump per docs/api-stability.md; removing
+    # one is a major bump.
+    _SUPPORTED_CAPS: frozenset[str] = frozenset({"message-tags", "agentirc.io/bot"})
+
     async def _handle_cap(self, msg: Message) -> None:
         sub = msg.params[0].upper() if msg.params else ""
         if sub == "LS":
+            cap_list = " ".join(sorted(self._SUPPORTED_CAPS))
             await self.send_raw(
-                f":{self.server.config.name} CAP {self.nick or '*'} LS :message-tags"
+                f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}"
             )
         elif sub == "REQ":
             requested = msg.params[1].split() if len(msg.params) >= 2 else []
-            supported = {"message-tags"}
-            if all(cap in supported for cap in requested):
+            if all(cap in self._SUPPORTED_CAPS for cap in requested):
                 self.caps.update(requested)
                 await self.send_raw(
                     f":{self.server.config.name} CAP {self.nick or '*'}"
@@ -457,10 +464,16 @@ class Client:
             channel.add(self)
             self.channels.add(channel)
 
-            # Notify all channel members (including self)
-            join_msg = Message(prefix=self.prefix, command="JOIN", params=[channel_name])
-            for member in [*channel.members]:
-                await member.send(join_msg)
+            # Notify all channel members (including self).
+            # Bot-CAP clients skip the broadcast entirely — the user.join
+            # event still fires below, so EVENTSUB subscribers see the join,
+            # but no human-visible JOIN line hits other channel members.
+            # (Channel membership IS added regardless; topic + NAMES below
+            # still go to the joining client so it knows the join succeeded.)
+            if "agentirc.io/bot" not in self.caps:
+                join_msg = Message(prefix=self.prefix, command="JOIN", params=[channel_name])
+                for member in [*channel.members]:
+                    await member.send(join_msg)
 
             # Send topic if set
             if channel.topic:
@@ -497,9 +510,12 @@ class Client:
                 return
 
             part_params = [channel_name, reason] if reason else [channel_name]
-            part_msg = Message(prefix=self.prefix, command="PART", params=part_params)
-            for member in [*channel.members]:
-                await member.send(part_msg)
+            # Bot-CAP clients skip the broadcast — symmetrical with the
+            # silent JOIN behaviour. The user.part event still fires.
+            if "agentirc.io/bot" not in self.caps:
+                part_msg = Message(prefix=self.prefix, command="PART", params=part_params)
+                for member in [*channel.members]:
+                    await member.send(part_msg)
 
             await self.server.emit_event(
                 Event(
@@ -958,6 +974,11 @@ class Client:
 
     def _build_who_flags(self, member, channel) -> str:
         flags = "H"
+        # Bot-CAP clients get a `B` flag in the user-modes column so vanilla
+        # IRC clients can filter bots from presence panels by checking for
+        # `B` (agentirc-extension flag, composes with the standard H/A flags).
+        if "agentirc.io/bot" in getattr(member, "caps", frozenset()):
+            flags += "B"
         if channel and channel.is_operator(member):
             flags += "@"
         elif channel and channel.is_voiced(member):
@@ -1052,11 +1073,14 @@ class Client:
 
         notified: set[Client] = set()
         channel_names = [ch.name for ch in self.channels]
-        for channel in [*self.channels]:
-            for member in [*channel.members]:
-                if member is not self and member not in notified:
-                    await member.send(quit_msg)
-                    notified.add(member)
+        # Bot-CAP clients skip the broadcast — symmetrical with the silent
+        # JOIN/PART behaviour. The user.quit event still fires below.
+        if "agentirc.io/bot" not in self.caps:
+            for channel in [*self.channels]:
+                for member in [*channel.members]:
+                    if member is not self and member not in notified:
+                        await member.send(quit_msg)
+                        notified.add(member)
 
         await self.server.emit_event(
             Event(
@@ -1068,3 +1092,113 @@ class Client:
         )
 
         raise ConnectionError("Client quit")
+
+    # --- Bot extension verbs (9.5.0) ---
+    # Spec: docs/superpowers/specs/2026-05-01-bot-extension-api-design.md
+    # § Decision B (EVENTSUB/EVENTUNSUB) and § Decision E (EVENTPUB).
+    # All three require the ``agentirc.io/bot`` capability; without it,
+    # the server replies ``EVENTERR <id> :bot-capability-required`` and
+    # nothing else happens.
+
+    _SUB_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,32}$")
+
+    async def _handle_eventsub(self, msg: Message) -> None:
+        sub_id = msg.params[0] if msg.params else "?"
+        if "agentirc.io/bot" not in self.caps:
+            await self.send_raw(f"EVENTERR {sub_id} :bot-capability-required")
+            return
+        if not msg.params:
+            await self.send_raw("EVENTERR ? :missing-sub-id")
+            return
+        if not self._SUB_ID_RE.match(sub_id):
+            await self.send_raw(f"EVENTERR {sub_id} :invalid-sub-id")
+            return
+
+        from agentirc._internal.event_subscriptions import (
+            CHANNEL_ANY,
+            CHANNEL_NICK_SCOPED_ONLY,
+        )
+
+        type_glob = "*"
+        channel = CHANNEL_ANY
+        nick_glob = "*"
+        for token in msg.params[1:]:
+            if "=" not in token:
+                await self.send_raw(f"EVENTERR {sub_id} :invalid-filter {token}")
+                return
+            key, value = token.split("=", 1)
+            if key == "type":
+                type_glob = value or "*"
+            elif key == "channel":
+                # `channel=` (empty value) → only nick-scoped events match.
+                # `channel=*` → any channel including None.
+                # `channel=#room` → exact match.
+                if value == "":
+                    channel = CHANNEL_NICK_SCOPED_ONLY
+                else:
+                    channel = value
+            elif key == "nick":
+                nick_glob = value or "*"
+            else:
+                await self.send_raw(f"EVENTERR {sub_id} :unknown-filter {key}")
+                return
+
+        sub = self.server.subscription_registry.add(
+            self,
+            sub_id,
+            type_glob=type_glob,
+            channel=channel,
+            nick_glob=nick_glob,
+        )
+        if sub is None:
+            await self.send_raw(f"EVENTERR {sub_id} :sub-id-in-use")
+            return
+
+    async def _handle_eventunsub(self, msg: Message) -> None:
+        if not msg.params:
+            return
+        sub_id = msg.params[0]
+        # Silent on success — no more EVENT lines for this sub-id is the signal.
+        self.server.subscription_registry.remove(self, sub_id)
+
+    async def _handle_eventpub(self, msg: Message) -> None:
+        type_str = msg.params[0] if msg.params else "?"
+        if "agentirc.io/bot" not in self.caps:
+            await self.send_raw(f"EVENTERR {type_str} :bot-capability-required")
+            return
+        if len(msg.params) < 3:
+            await self.send_raw(f"EVENTERR {type_str} :invalid-eventpub-syntax")
+            return
+        type_str, target, b64 = msg.params[0], msg.params[1], msg.params[2]
+        if not EVENT_TYPE_RE.match(type_str):
+            await self.send_raw(f"EVENTERR {type_str} :invalid-type")
+            return
+
+        channel = None if target == "*" else target
+        if channel is not None and channel not in self.server.channels:
+            await self.send_raw(f"EVENTERR {type_str} :no-such-channel")
+            return
+
+        try:
+            data = json.loads(base64.b64decode(b64))
+        except (ValueError, TypeError):
+            await self.send_raw(f"EVENTERR {type_str} :invalid-payload")
+            return
+        if not isinstance(data, dict):
+            await self.send_raw(f"EVENTERR {type_str} :invalid-payload")
+            return
+
+        # Strip `_`-prefixed keys (server-internal metadata like `_render`,
+        # `_origin`). nick and timestamp are server-set so bots cannot spoof
+        # the actor or wall-clock — peers across federation see consistent
+        # values.
+        data = {k: v for k, v in data.items() if not k.startswith("_")}
+
+        ev = Event(
+            type=type_str,
+            channel=channel,
+            nick=self.nick,
+            data=data,
+            timestamp=time.time(),
+        )
+        await self.server.emit_event(ev)
