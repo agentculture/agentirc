@@ -75,7 +75,7 @@ choice: foreground entry point, no auto-fork.
 
 ```dockerfile
 FROM python:3.11-slim
-RUN pip install --no-cache-dir agentirc-cli==9.4.0
+RUN pip install --no-cache-dir agentirc-cli==9.5.0
 EXPOSE 6667
 ENV HOME=/data
 VOLUME ["/data/.culture"]
@@ -227,7 +227,7 @@ Standard pip / pipx workflow:
 pip install --upgrade agentirc-cli
 
 # Pinned in a venv
-uv pip install agentirc-cli==9.4.0
+uv pip install agentirc-cli==9.5.0
 
 # Restart the service
 sudo systemctl restart agentirc-main.service

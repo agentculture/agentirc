@@ -221,13 +221,12 @@ Re-exported from `agentirc._internal.protocol.replies`. About 33 names:
 Re-exported from `agentirc._internal.telemetry.context`:
 `TRACEPARENT_TAG`, `TRACESTATE_TAG`, `EVENT_TAG_TYPE`, `EVENT_TAG_DATA`.
 
-### Reserved for 9.5.0: bot extension surface
+### Bot extension surface (shipped in 9.5.0)
 
-These additions are **specified but not yet implemented**. They will land
-together as a single minor bump in 9.5.0 — see the design spec at
+Shipped in 9.5.0 as a single minor bump. The design spec at
 [`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md)
-for rationale, federation behavior, and acceptance criteria, and
-[`docs/extension-api.md`](extension-api.md) for the bot-author quick
+records rationale, federation behavior, and acceptance criteria;
+[`docs/extension-api.md`](extension-api.md) is the bot-author quick
 reference.
 
 - **Event verbs:** `EVENTSUB`, `EVENTUNSUB`, `EVENT`, `EVENTERR`, `EVENTPUB`. Subscribers stream events with filter syntax (`type=`/`channel=`/`nick=` AND-ed globs); `EVENTPUB` lets a bot emit its own typed events back into the stream (server-side validation of `type` against `EVENT_TYPE_RE`; `nick` and `timestamp` derived server-side, not trusted from the client).
@@ -248,7 +247,7 @@ reference.
 The `ServerConfig` additions (one new field
 `event_subscription_queue_max: int = 1024`) and the `webhook_port`
 binding-removal are described under
-[`agentirc.config`](#agentircconfig) once 9.5.0 lands.
+[`agentirc.config`](#agentircconfig).
 
 ### Wire-format quirks (preserved verbatim)
 
