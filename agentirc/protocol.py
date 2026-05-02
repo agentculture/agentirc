@@ -1,6 +1,6 @@
-"""Public protocol surface for agentirc — verbs, numerics, and tags.
+"""Public protocol surface for agentirc — verbs, numerics, tags, and the bot extension API.
 
-Semver-tracked module. Three categories of constants live here:
+Semver-tracked module. Five categories of public symbols live here:
 
 1. **Verb names** — IRC command verbs as bare uppercase tokens. Mostly
    RFC 2812 (PRIVMSG, JOIN, QUIT, ...), plus agentirc skill verbs
@@ -14,6 +14,16 @@ Semver-tracked module. Three categories of constants live here:
    consumers don't reach into the underscore namespace.
 3. **Message tag names** — IRCv3 tag keys for traceparent/tracestate
    and agentirc-specific event tags.
+4. **Event types and the Event dataclass** — :class:`EventType`
+   (a :class:`enum.StrEnum` of 20 dotted-lowercase wire strings) and
+   :class:`Event` (a frozen-shape dataclass). Plus 20 ``EVENT_TYPE_*``
+   per-type string constants for callers that prefer bare strings over
+   enum-coercion at JSON boundaries. Added in 9.5.0a1 as part of the
+   bot extension API.
+5. **Bot extension verbs and capability** — ``EVENTSUB``, ``EVENTUNSUB``,
+   ``EVENT``, ``EVENTERR``, ``EVENTPUB`` verb constants and
+   ``BOT_CAP = "agentirc.io/bot"``. Reserved in 9.5.0a1; daemon
+   behavior wires up in 9.5.0a3 / 9.5.0 final.
 
 Existing call sites under ``agentirc.ircd``, ``agentirc.server_link``
 and the skills modules still use inline string literals. Migrating them
@@ -30,6 +40,11 @@ clients and federation. They need a coordinated cross-repo bump.
 """
 
 from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Numeric reply codes (re-exported from the internal module)
@@ -164,6 +179,90 @@ ROOMETAEND = "ROOMETAEND"  # SIC: typo preserved for wire compat (ROOMMETAEND ta
 ROOMETASET = "ROOMETASET"  # SIC: typo preserved for wire compat (ROOMMETASET target)
 
 
+# ---------------------------------------------------------------------------
+# Bot extension API (9.5.0)
+# ---------------------------------------------------------------------------
+# Public Event dataclass + EventType enum, per-type string constants, the
+# EVENTSUB / EVENTUNSUB / EVENT / EVENTERR / EVENTPUB verb names, and the
+# bot-CAP token. See docs/superpowers/specs/2026-05-01-bot-extension-api-design.md
+# for the wire format and verb syntax. Behavior wiring lands in 9.5.0a2/a3;
+# 9.5.0a1 ships these symbols only.
+
+# `EventType` is `StrEnum` so `EventType.JOIN == "user.join"` is True at JSON
+# boundaries. Adding a new member is a minor bump; renaming or removing one
+# is a major bump.
+
+
+class EventType(StrEnum):
+    MESSAGE = "message"
+    JOIN = "user.join"
+    PART = "user.part"
+    QUIT = "user.quit"
+    TOPIC = "topic"
+    ROOMMETA = "room.meta"
+    TAGS = "tags.update"
+    ROOMARCHIVE = "room.archive"
+    THREAD_CREATE = "thread.create"
+    THREAD_MESSAGE = "thread.message"
+    THREAD_CLOSE = "thread.close"
+    AGENT_CONNECT = "agent.connect"
+    AGENT_DISCONNECT = "agent.disconnect"
+    CONSOLE_OPEN = "console.open"
+    CONSOLE_CLOSE = "console.close"
+    SERVER_WAKE = "server.wake"
+    SERVER_SLEEP = "server.sleep"
+    SERVER_LINK = "server.link"
+    SERVER_UNLINK = "server.unlink"
+    ROOM_CREATE = "room.create"
+
+
+@dataclass
+class Event:
+    # `type` is widened to `EventType | str` so federation peers can deliver
+    # event types this version doesn't recognise without raising. Subscribers
+    # must tolerate unknown types (forward-compat).
+    type: EventType | str
+    channel: str | None
+    nick: str
+    data: dict[str, Any] = field(default_factory=dict)
+    timestamp: float = field(default_factory=time.time)
+
+
+# Per-type string constants — parallel to `EventType` for callers that prefer
+# bare strings (e.g. comparing JSON-decoded `type` field without enum-coercing).
+EVENT_TYPE_MESSAGE = "message"
+EVENT_TYPE_USER_JOIN = "user.join"
+EVENT_TYPE_USER_PART = "user.part"
+EVENT_TYPE_USER_QUIT = "user.quit"
+EVENT_TYPE_TOPIC = "topic"
+EVENT_TYPE_ROOM_META = "room.meta"
+EVENT_TYPE_TAGS_UPDATE = "tags.update"
+EVENT_TYPE_ROOM_ARCHIVE = "room.archive"
+EVENT_TYPE_THREAD_CREATE = "thread.create"
+EVENT_TYPE_THREAD_MESSAGE = "thread.message"
+EVENT_TYPE_THREAD_CLOSE = "thread.close"
+EVENT_TYPE_AGENT_CONNECT = "agent.connect"
+EVENT_TYPE_AGENT_DISCONNECT = "agent.disconnect"
+EVENT_TYPE_CONSOLE_OPEN = "console.open"
+EVENT_TYPE_CONSOLE_CLOSE = "console.close"
+EVENT_TYPE_SERVER_WAKE = "server.wake"
+EVENT_TYPE_SERVER_SLEEP = "server.sleep"
+EVENT_TYPE_SERVER_LINK = "server.link"
+EVENT_TYPE_SERVER_UNLINK = "server.unlink"
+EVENT_TYPE_ROOM_CREATE = "room.create"
+
+# Bot extension verbs.
+EVENTSUB = "EVENTSUB"
+EVENTUNSUB = "EVENTUNSUB"
+EVENT = "EVENT"
+EVENTERR = "EVENTERR"
+EVENTPUB = "EVENTPUB"
+
+# Bot-CAP token. Vendored namespace per IRCv3 conventions, prevents collision
+# with hypothetical bare-`bot` caps from non-agentirc IRC servers.
+BOT_CAP = "agentirc.io/bot"
+
+
 __all__ = [
     # Numerics
     "ERR_ALREADYREGISTRED",
@@ -256,4 +355,33 @@ __all__ = [
     "STAGS",
     "STHREAD",
     "STOPIC",
+    # Bot extension API (9.5.0)
+    "BOT_CAP",
+    "EVENT",
+    "EVENTERR",
+    "EVENTPUB",
+    "EVENTSUB",
+    "EVENTUNSUB",
+    "Event",
+    "EventType",
+    "EVENT_TYPE_AGENT_CONNECT",
+    "EVENT_TYPE_AGENT_DISCONNECT",
+    "EVENT_TYPE_CONSOLE_CLOSE",
+    "EVENT_TYPE_CONSOLE_OPEN",
+    "EVENT_TYPE_MESSAGE",
+    "EVENT_TYPE_ROOM_ARCHIVE",
+    "EVENT_TYPE_ROOM_CREATE",
+    "EVENT_TYPE_ROOM_META",
+    "EVENT_TYPE_SERVER_LINK",
+    "EVENT_TYPE_SERVER_SLEEP",
+    "EVENT_TYPE_SERVER_UNLINK",
+    "EVENT_TYPE_SERVER_WAKE",
+    "EVENT_TYPE_TAGS_UPDATE",
+    "EVENT_TYPE_THREAD_CLOSE",
+    "EVENT_TYPE_THREAD_CREATE",
+    "EVENT_TYPE_THREAD_MESSAGE",
+    "EVENT_TYPE_TOPIC",
+    "EVENT_TYPE_USER_JOIN",
+    "EVENT_TYPE_USER_PART",
+    "EVENT_TYPE_USER_QUIT",
 ]

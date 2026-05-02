@@ -1,47 +1,20 @@
 from __future__ import annotations
 
-import time
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+# Event and EventType moved to agentirc.protocol in 9.5.0a1 as part of the
+# bot extension API public surface. This module keeps re-exporting them so
+# internal call sites and any pre-9.5 vendored consumers keep working; the
+# re-export is removed in 9.6.0 once Phase A2 confirms no consumer relies on
+# this path.
+from agentirc.protocol import Event, EventType
+
+__all__ = ["Event", "EventType", "Skill"]
 
 if TYPE_CHECKING:
     from agentirc.client import Client
     from agentirc.ircd import IRCd
     from agentirc._internal.protocol.message import Message
-
-
-class EventType(Enum):
-    MESSAGE = "message"
-    JOIN = "user.join"
-    PART = "user.part"
-    QUIT = "user.quit"
-    TOPIC = "topic"
-    ROOMMETA = "room.meta"
-    TAGS = "tags.update"
-    ROOMARCHIVE = "room.archive"
-    THREAD_CREATE = "thread.create"
-    THREAD_MESSAGE = "thread.message"
-    THREAD_CLOSE = "thread.close"
-    # Lifecycle + link events introduced by mesh-events feature.
-    AGENT_CONNECT = "agent.connect"
-    AGENT_DISCONNECT = "agent.disconnect"
-    CONSOLE_OPEN = "console.open"
-    CONSOLE_CLOSE = "console.close"
-    SERVER_WAKE = "server.wake"
-    SERVER_SLEEP = "server.sleep"
-    SERVER_LINK = "server.link"
-    SERVER_UNLINK = "server.unlink"
-    ROOM_CREATE = "room.create"
-
-
-@dataclass
-class Event:
-    type: EventType
-    channel: str | None
-    nick: str
-    data: dict[str, Any] = field(default_factory=dict)
-    timestamp: float = field(default_factory=time.time)
 
 
 class Skill:

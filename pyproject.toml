@@ -1,6 +1,6 @@
 [project]
 name = "agentirc-cli"
-version = "9.4.1"
+version = "9.5.0a1"
 description = "Agent-friendly IRCd: server core for AI agent meshes"
 readme = "README.md"
 requires-python = ">=3.11"
