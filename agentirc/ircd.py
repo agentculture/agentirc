@@ -275,31 +275,63 @@ class IRCd:
     _NO_SURFACE_TYPES = NO_SURFACE_EVENT_TYPES
 
     @staticmethod
-    def _build_event_payload(event: Event) -> dict:
-        """Build the public event payload, enriched with canonical actor/channel."""
-        payload = {k: v for k, v in event.data.items() if not k.startswith("_")}
-        # Emitters that only set Event.nick (not data['nick']) still get a
-        # correct render + payload thanks to setdefault.
-        if event.nick:
-            payload.setdefault("nick", event.nick)
-        if event.channel:
-            payload.setdefault("channel", event.channel)
-        return payload
+    def _build_event_envelope(event: Event) -> dict:
+        """Build the public 5-field event envelope.
+
+        Shape (semver-stable as of 9.5.0a2)::
+
+            {
+                "type": str,            # wire-form event type, e.g. "user.join"
+                "channel": str | None,  # channel name or None
+                "nick": str,            # actor's nickname (empty for purely-server events)
+                "data": dict,           # type-specific payload, _-prefixed keys stripped
+                "timestamp": float,     # Unix epoch seconds with sub-second precision
+            }
+
+        See ``docs/superpowers/specs/2026-05-01-bot-extension-api-design.md``
+        § Decision A for the rationale and federation-interop story.
+        """
+        type_wire = event.type.value if hasattr(event.type, "value") else str(event.type)
+        return {
+            "type": type_wire,
+            "channel": event.channel,
+            "nick": event.nick,
+            "data": {k: v for k, v in event.data.items() if not k.startswith("_")},
+            "timestamp": event.timestamp,
+        }
 
     @staticmethod
-    def _encode_event_data(payload: dict, type_wire: str) -> str:
-        """Base64-encode the payload as JSON; fall back to '{}' on TypeError."""
+    def _encode_event_data(envelope: dict, type_wire: str) -> str:
+        """Base64-encode the envelope as canonical JSON.
+
+        On serialization failure the fallback is a *minimal but well-formed*
+        envelope ``{type, channel, nick, data, timestamp}`` with empty
+        ``data`` and current wall-clock ``timestamp`` — never a bare ``{}``.
+        Subscribers and federation peers depend on the 5-field shape; an
+        empty-dict fallback would fail the receiver's envelope sniff and
+        be misclassified as legacy data-only, which is worse than emitting
+        an event with no type-specific payload.
+        """
         try:
             return base64.b64encode(
-                json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
             ).decode("ascii")
         except (TypeError, ValueError) as exc:
             logger.warning(
-                "Event %s payload not JSON-serializable, surfacing with empty payload: %s",
+                "Event %s envelope not JSON-serializable, surfacing empty envelope: %s",
                 type_wire,
                 exc,
             )
-            return base64.b64encode(b"{}").decode("ascii")
+            empty_envelope = {
+                "type": type_wire,
+                "channel": envelope.get("channel") if isinstance(envelope, dict) else None,
+                "nick": envelope.get("nick", "") if isinstance(envelope, dict) else "",
+                "data": {},
+                "timestamp": time.time(),
+            }
+            return base64.b64encode(
+                json.dumps(empty_envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            ).decode("ascii")
 
     async def _deliver_to_members(self, channel, msg: Message, type_wire: str) -> None:
         """Send the surfaced PRIVMSG to channel members (skipping VirtualClients)."""
@@ -352,9 +384,17 @@ class IRCd:
         origin_server = event.data.get("_origin") or self.config.name
         system_nick = f"{SYSTEM_USER_PREFIX}{origin_server}"
 
-        payload = self._build_event_payload(event)
-        encoded = self._encode_event_data(payload, type_wire)
-        body = event.data.get("_render") or render_event(type_wire, payload, event.channel)
+        envelope = self._build_event_envelope(event)
+        encoded = self._encode_event_data(envelope, type_wire)
+        # Render templates expect the type-specific data dict (with nick/channel
+        # merged in for backward compat with the pre-9.5 render-function shape),
+        # not the envelope. Reconstruct the legacy data shape for render only.
+        render_data = dict(envelope["data"])
+        if event.nick:
+            render_data.setdefault("nick", event.nick)
+        if event.channel:
+            render_data.setdefault("channel", event.channel)
+        body = event.data.get("_render") or render_event(type_wire, render_data, event.channel)
 
         msg = Message(
             tags={EVENT_TAG_TYPE: type_wire, EVENT_TAG_DATA: encoded},

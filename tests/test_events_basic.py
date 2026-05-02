@@ -168,8 +168,15 @@ async def test_event_data_is_base64_json(server, make_client):
         tags = line[at_idx + 1 : space_idx]
     data_piece = [p for p in tags.split(";") if p.startswith("event-data=")][0]
     b64 = data_piece.split("=", 1)[1]
-    decoded = json.loads(base64.b64decode(b64))
-    assert decoded["nick"] == "testserv-bob"
+    envelope = json.loads(base64.b64decode(b64))
+    # Envelope (9.5.0a2+): top-level nick is the event actor (event.nick,
+    # the system user emitting on behalf of the agent); data carries the
+    # type-specific payload, including the agent's own nick.
+    assert envelope["type"] == "agent.connect"
+    assert envelope["nick"] == "system-testserv"
+    assert envelope["data"]["nick"] == "testserv-bob"
+    assert envelope["channel"] is None
+    assert isinstance(envelope["timestamp"], (int, float))
 
 
 @pytest.mark.asyncio

@@ -104,7 +104,7 @@ in the trailing parameter. Decode with any JSON parser.
 | `type` | string | yes | One of the canonical event-type strings (see vocabulary below). Unknown types are tolerated — forward-compat. |
 | `channel` | string-or-null | yes | Channel name for channel-scoped events, `null` otherwise. |
 | `nick` | string | yes | Actor's nickname, or empty string for purely-server-emitted events. |
-| `data` | object | yes | Type-specific payload. Always an object. Keys starting with `_` are reserved metadata (e.g. `_origin` is the originating server name across federation links). |
+| `data` | object | yes | Type-specific payload. Always an object. Subscribers may observe `_`-prefixed metadata keys (most notably `_origin`, the originating server name across federation links). Such keys are **not transmitted** by the originating server — the encoder strips them at emit time, and the receiving server reconstructs `_origin` at decode time from the SEVENT verb args. Peers cannot inject `_render` or other server-internal hints across the federation seam. |
 | `timestamp` | number | yes | Unix epoch seconds with sub-second precision. |
 
 JSON encoding is canonical: keys sorted lexicographically, separators `","`

@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.5.0a2] - 2026-05-02
+
+### Changed
+
+- **Wire format: SEVENT payload and IRCv3 `event-data` tag now carry the 5-field envelope** `{type, channel, nick, data, timestamp}`. Both the federation seam (`SEVENT` between linked servers) and the human-visible `#system` PRIVMSG `event-data` tag emit the new shape via `IRCd._build_event_envelope` + `IRCd._encode_event_data`. Type-specific keys (e.g. `text`, `room_id`, `purpose`) now nest under `data`; `nick` and `channel` remain at the top level. See `docs/superpowers/specs/2026-05-01-bot-extension-api-design.md` § Decision A for the rationale.
+- `IRCd._build_event_payload` is replaced by `IRCd._build_event_envelope` (internal — no public API impact). Old name removed; the only two callsites (`_surface_event_privmsg` and `ServerLink.relay_event`'s SEVENT fallback) updated in the same commit.
+
+### Added
+
+- `ServerLink._is_envelope(decoded)` — sniff helper that recognises the new envelope shape vs. the legacy data-only dict at decode time. `_handle_sevent` uses it for asymmetric tolerance (see Notes).
+- `agentirc.protocol.SEVENT` — verb-name constant for the federation event-relay verb. Used by the new test suite and the outbound relay path. Other agentirc-side string-literal callsites are tracked separately in [#11](https://github.com/agentculture/agentirc/issues/11).
+- `tests/test_wire_format_envelope.py` — 12 tests including a golden-file byte-equality lock-in for the canonical JSON encoding (any future change to the encoder that breaks this is a wire-format break and requires a major bump), plus regression guards for the trust-bypass and underscore-injection fixes below.
+
+### Security
+
+- **`ServerLink._handle_sevent` now treats the SEVENT verb-arg channel as authoritative.** The previous draft of this PR (pre-review) used the envelope's `channel` field on the receive side, which would have allowed a malformed/malicious peer to bypass `_check_incoming_trust` by sending `target="*"` (no trust check) while putting a restricted channel name in the envelope. The verb-arg channel is what the trust gate already protects, so the receiver now ignores any envelope channel claim and uses `verb_channel` for both the trust check and the resulting `Event.channel`.
+- **Peer-supplied `_`-prefixed keys are stripped from incoming SEVENT data before emit.** `_render` and similar server-internal hints would otherwise let a peer dictate human-readable surfacing on this server. The receiver strips every key starting with `_` from the decoded data before adding its own `_origin` marker.
+
+### Fixed
+
+- **`IRCd._encode_event_data` fallback now produces a valid 5-field envelope instead of `b"{}"`.** A serialization failure used to emit a bare empty dict, which fails the receiver's envelope sniff and is misclassified as legacy data-only — worse than emitting an event with no type-specific payload. The fallback now emits `{type, channel, nick, data: {}, timestamp: time.time()}` so consumers can still parse the shape.
+
+### Notes
+
+- **Federation interop story.** A 9.5 daemon's `_handle_sevent` sniffs the decoded payload: if it has a top-level `type` (string) and `data` (dict), treat as 9.5+ envelope; otherwise treat as ≤9.4 legacy data-only and reconstruct an `Event` from the SEVENT verb args + the bare data dict. This gives 9.5 receivers asymmetric tolerance — they read traffic from both upgraded and pre-9.5 peers — so federations can roll forward one peer at a time. The reverse direction (9.5 emit → 9.4 receive) does **not** work; 9.4 daemons have no sniff and will fail to find expected `data` fields. Operators must either upgrade all peers in lockstep, or roll one at a time and accept that 9.5-emitted events drop on still-9.4 peers until those peers also upgrade. This matches the migration cost the spec calls out.
+- **Audit JSONL is unchanged.** `agentirc/_internal/telemetry/audit.py:build_audit_record` continues to record the legacy data-only payload (data dict with `nick`/`channel` merged in via `setdefault`, `_`-prefixed keys stripped). Ops dashboards and downstream log processors that read the audit JSONL keep their existing field shape; the 5-field envelope is reserved for the public network surface (SEVENT payload + IRCv3 `event-data` tag).
+- **Audit timestamp on legacy peers.** When `_handle_sevent` decodes a legacy payload from a ≤9.4 peer, no originating timestamp is available; the receiver assigns `time.time()` to the reconstructed `Event.timestamp`. 9.5+ peers preserve the originating timestamp.
+- This is the **wire-format slice** of the bot extension API. The next slice (9.5.0a3) wires the bot CAP behavior (`agentirc.io/bot`), the `EVENTSUB`/`EVENTUNSUB`/`EVENTPUB` handlers, and the `SubscriptionRegistry`. 9.5.0 final adds `webhook_port` unbinding and flips `docs/api-stability.md` to "current".
+- Tracks [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15).
+
 ## [9.5.0a1] - 2026-05-02
 
 ### Added
