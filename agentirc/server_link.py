@@ -15,7 +15,7 @@ from agentirc import protocol
 from agentirc.remote_client import RemoteClient
 from agentirc.skill import Event, EventType
 from agentirc._internal.aio import maybe_await
-from agentirc._internal.virtual_client import VirtualClient
+from agentirc.virtual_client import VirtualClient
 from agentirc._internal.constants import SYSTEM_USER_PREFIX
 from agentirc._internal.protocol.message import Message
 from agentirc._internal.telemetry import context_from_traceparent, current_traceparent

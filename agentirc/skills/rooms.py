@@ -349,7 +349,7 @@ class RoomsSkill(Skill):
     async def _handle_tags_added(self, channel, added_tags: set) -> None:
         """Invite local agents whose tags match newly added room tags."""
         from agentirc.remote_client import RemoteClient
-        from agentirc._internal.virtual_client import VirtualClient
+        from agentirc.virtual_client import VirtualClient
 
         for client in [*self.server.clients.values()]:
             if isinstance(client, (RemoteClient, VirtualClient)):

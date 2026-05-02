@@ -11,6 +11,8 @@ import only from these three modules.
 | [`agentirc.config`](#agentircconfig) | `ServerConfig`, `LinkConfig`, `TelemetryConfig` | Public, semver-tracked |
 | [`agentirc.cli`](#agentirccli) | `main()`, `dispatch(argv) -> int` | Public, semver-tracked |
 | [`agentirc.protocol`](#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names | Public, semver-tracked |
+| [`agentirc.ircd`](#agentircircd) | `IRCd` (constructor + `start`/`stop`/`emit_event`/`subscription_registry`/`clients`/`channels`/`config`/`system_client`) | Public, semver-tracked (since 9.6.0) |
+| [`agentirc.virtual_client`](#agentircvirtual_client) | `VirtualClient` | Public, semver-tracked (since 9.6.0) |
 
 **Bot extension API (shipped in 9.5.0):**
 
@@ -54,6 +56,106 @@ Wire format and verb syntax are specified in
 a quick reference for bot authors is at [`docs/extension-api.md`](extension-api.md).
 Tracking issue: [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15).
 
+## Embedding agentirc in-process
+
+For consumers that need to host the IRCd inside their own asyncio
+process — rather than running `agentirc serve` as a subprocess and
+talking IRC over a TCP socket — `agentirc.ircd.IRCd` plus
+`agentirc.virtual_client.VirtualClient` form the public embedding API
+(promoted from internal in 9.6.0; see
+[#22](https://github.com/agentculture/agentirc/issues/22)).
+
+Co-hosted bots register against the same `IRCd` instance and inherit
+the `agentirc.io/bot` capability semantics (silent JOIN/PART/QUIT
+broadcasts, no auto-op on a fresh channel, `+` prefix in NAMES, `B`
+flag in WHO) automatically — they don't perform a CAP REQ handshake
+because they have no socket to negotiate over. This is the same
+mechanism the bundled `#system` welcome bot uses
+(`ircd.system_client`).
+
+```python
+import asyncio
+
+from agentirc.config import ServerConfig
+from agentirc.ircd import IRCd
+from agentirc.virtual_client import VirtualClient
+
+
+async def main() -> None:
+    config = ServerConfig(name="myhost", host="127.0.0.1", port=6667)
+    ircd = IRCd(config)
+    await ircd.start()
+
+    # Register an in-process bot. Inserting into ircd.clients makes
+    # the nick resolvable for DMs / WHO / NAMES; join_channel adds
+    # it to a channel's member set.
+    bot = VirtualClient(nick="mybot", user="bot", server=ircd)
+    ircd.clients[bot.nick] = bot
+    await bot.join_channel("#general")
+    await bot.send_to_channel("#general", "hello!")
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await ircd.stop()
+
+
+asyncio.run(main())
+```
+
+### Public surface on `IRCd`
+
+| Member | Stability |
+|---|---|
+| `IRCd(config: ServerConfig)` | Constructor — accepts a `ServerConfig`; does not bind sockets. |
+| `await ircd.start()` | Registers default skills, restores rooms, bootstraps `#system`, binds the IRC socket on `config.host:config.port`. Idempotent only across distinct instances; do not call twice on one. |
+| `await ircd.stop()` | Graceful shutdown: emits `server.sleep`, closes peer links, flushes audit. |
+| `await ircd.emit_event(event)` | Fan-out to subscriptions (EVENTSUB), peers (SEVENT), bots, and the `#system` PRIVMSG surface. Same path the wire-level `EVENTPUB` verb takes. |
+| `ircd.subscription_registry` | `SubscriptionRegistry` for in-process equivalents of `EVENTSUB` — register a callback-style subscription without speaking the wire protocol. |
+| `ircd.clients: dict[str, Client \| VirtualClient]` | Nick → client mapping. Embedders register an in-process bot by inserting `ircd.clients[bot.nick] = bot`. |
+| `ircd.channels: dict[str, Channel]` | Channel name → `Channel`. Read via the duck-typed member methods; the `Channel` type itself stays internal so its private API can evolve. |
+| `ircd.config: ServerConfig` | The `ServerConfig` passed to the constructor. Treat as read-only after `start()`. |
+| `ircd.system_client: VirtualClient \| None` | The bootstrap `#system` bot. `None` before `start()`; populated after. |
+
+Other attributes on `IRCd` (`bot_manager`, `links`, `remote_clients`,
+`_seq`, the `_handle_*` methods, etc.) remain implementation detail
+and may change without a major bump.
+
+### `agentirc.virtual_client`
+
+```python
+class VirtualClient:
+    caps: frozenset[str] = frozenset({"agentirc.io/bot", "message-tags"})
+
+    def __init__(self, nick: str, user: str, server: IRCd) -> None: ...
+
+    async def join_channel(self, channel_name: str, *, emit_event: bool = True) -> None: ...
+    async def part_channel(self, channel_name: str) -> None: ...
+    async def send_to_channel(self, channel_name: str, text: str) -> None: ...
+    async def broadcast_to_channel(self, channel_name: str, text: str) -> None: ...
+    async def send_dm(self, target_nick: str, text: str) -> None: ...
+```
+
+`VirtualClient` duck-types the same interface as `Client` /
+`RemoteClient` so it appears transparently in `channel.members`, NAMES,
+WHO, and WHOIS. The class-level `caps` frozenset includes `BOT_CAP`, so
+membership in any channel automatically inherits the silent-JOIN /
+no-auto-op / `+`-prefix / `B`-flag treatment without an over-the-wire
+CAP REQ.
+
+`broadcast_to_channel` differs from `send_to_channel` in that it does
+not require the bot to be a member of the channel — useful for
+event-triggered bots (e.g. a welcome bot) that want to respond to
+events without persistently joining.
+
+### `agentirc.ircd`
+
+The `IRCd` class is exported from the `agentirc.ircd` module.
+Importing it (`from agentirc.ircd import IRCd`) initialises telemetry
+lazily inside the constructor — not at import time — so the module is
+safe to import in dependency-injection contexts that defer
+configuration.
+
 ## Semver contract
 
 Following [SemVer 2.0](https://semver.org/):
@@ -69,13 +171,19 @@ Following [SemVer 2.0](https://semver.org/):
   the public surface; documentation-only changes; dependency-version
   bumps that don't break import compatibility.
 
-Internal modules (`agentirc.ircd`, `agentirc.server_link`,
-`agentirc.channel`, `agentirc.events`, `agentirc.room_store`,
-`agentirc.thread_store`, `agentirc.history_store`, `agentirc.skill`,
-`agentirc.skills.*`, `agentirc.client`, `agentirc.remote_client`, and
-everything under `agentirc._internal.*`) may be refactored — including
-renamed, split, or removed — in any minor or patch release. Don't import
-from them.
+Internal modules (`agentirc.server_link`, `agentirc.channel`,
+`agentirc.events`, `agentirc.room_store`, `agentirc.thread_store`,
+`agentirc.history_store`, `agentirc.skill`, `agentirc.skills.*`,
+`agentirc.client`, `agentirc.remote_client`, and everything under
+`agentirc._internal.*`) may be refactored — including renamed, split,
+or removed — in any minor or patch release. Don't import from them.
+
+`agentirc.ircd.IRCd` and `agentirc.virtual_client.VirtualClient` were
+promoted to the public surface in 9.6.0 (see
+[Embedding agentirc in-process](#embedding-agentirc-in-process)).
+The legacy import path `agentirc._internal.virtual_client.VirtualClient`
+still resolves but emits `DeprecationWarning`; it will be removed in
+10.0.0.
 
 ## `agentirc.config`
 
@@ -290,6 +398,7 @@ there for consistency.
 | 9.5.0a1 | 2026-05-02 | **Bot extension API — declarations slice.** Public `agentirc.protocol` exports: `Event`, `EventType` (now `StrEnum`), 20 `EVENT_TYPE_*` constants, `EVENTSUB` / `EVENTUNSUB` / `EVENT` / `EVENTERR` / `EVENTPUB` verb constants, `BOT_CAP`. New `ServerConfig.event_subscription_queue_max: int = 1024`. Symbols importable but inert. |
 | 9.5.0a2 | 2026-05-02 | **Bot extension API — wire-format slice.** SEVENT and IRCv3 `event-data` tag now carry the canonical 5-field envelope `{type, channel, nick, data, timestamp}`. `_handle_sevent` sniffs the shape so 9.5 receivers tolerate ≤9.4 legacy peers (asymmetric: 9.5→9.4 emit breaks until peers upgrade). Added `agentirc.protocol.SEVENT`. Internal-only changes; no new public-API symbols beyond `SEVENT`. |
 | 9.5.0 | 2026-05-02 | **Bot extension API — final.** `agentirc.io/bot` IRCv3 capability gates silent JOIN/PART/QUIT broadcasts, no auto-op on fresh channels, `+` prefix in NAMES, `B` flag in WHO. New IRC verbs: `EVENTSUB` / `EVENTUNSUB` / `EVENTPUB` (handlers + per-subscription bounded queues; `EVENT` / `EVENTERR` server→client). `webhook_port` no longer bound by `IRCd.start()` (field stays for backward compat). Closes [#15](https://github.com/agentculture/agentirc/issues/15). |
+| 9.6.0 | 2026-05-02 | **Embedding API.** Promote `agentirc.ircd.IRCd` and `agentirc.virtual_client.VirtualClient` to the public surface so consumers can host an IRCd in-process and register in-process bots against it. Documents `IRCd.{start, stop, emit_event, subscription_registry, clients, channels, config, system_client}` as the in-process embedding contract. `agentirc._internal.virtual_client.VirtualClient` continues to resolve via a transitional re-export that emits `DeprecationWarning`; removal scheduled for 10.0.0. Closes [#22](https://github.com/agentculture/agentirc/issues/22). |
 
 ## Distribution
 
