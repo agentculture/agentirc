@@ -235,8 +235,10 @@ reference.
   silent JOIN/PART/QUIT broadcasts, no auto-op on channel creation,
   `+` prefix in NAMES output, `B` flag in WHO output, authorized to
   issue `EVENTSUB`.
-- **Event dataclass and enum:** `Event` and `EventType` (currently
-  internal in `agentirc.skill`). Promoted to public for Python consumers.
+- **Event dataclass and enum:** `Event` and `EventType` are public from
+  `agentirc.protocol` since 9.5.0; `agentirc.skill` re-exports both for
+  backward compatibility through the 9.x line (removal scheduled for
+  10.0.0). Python consumers should import from `agentirc.protocol`.
   Wire format — not the Python class names — is the contract; non-Python
   bots pin against the JSON shape documented in `extension-api.md`.
 - **Per-type string constants:** `EVENT_TYPE_MESSAGE`,

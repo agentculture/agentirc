@@ -259,7 +259,7 @@ Cutover tracking issue:
 Issues and PRs welcome at
 [`agentculture/agentirc`](https://github.com/agentculture/agentirc).
 Dev setup: `uv venv && uv pip install -e ".[dev]"`, then `pytest -n auto`
-(the suite runs ~315 tests in ~30s on default workers).
+(the suite runs in roughly 30s on default workers).
 
 ## License
 
