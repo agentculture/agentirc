@@ -1,6 +1,6 @@
 [project]
 name = "agentirc-cli"
-version = "9.5.0"
+version = "9.6.0"
 description = "Agent-friendly IRCd: server core for AI agent meshes"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -148,13 +148,25 @@ sha256 = "17262e10e4cb1d3fa1db56c7b966e33757d4581fe961789d8f1f7197f3328c02"
 schema = 2
 source = "https://github.com/agentculture/culture/blob/df50942/culture/bots/virtual_client.py"
 version = "df50942"
-target = "agentirc/_internal/virtual_client.py"
+target = "agentirc/virtual_client.py"
 cited = "2026-04-30"
-notes = "Vendored verbatim with imports rewritten: from culture.agentirc.skill to from agentirc.skill, from culture.protocol.message to from agentirc._internal.protocol.message, from culture.agentirc.remote_client (lazy) to from agentirc.remote_client."
+notes = "Vendored verbatim with imports rewritten: from culture.agentirc.skill to from agentirc.skill, from culture.protocol.message to from agentirc._internal.protocol.message, from culture.agentirc.remote_client (lazy) to from agentirc.remote_client. Promoted to public API in 9.6.0 (#22) — moved from agentirc/_internal/virtual_client.py to agentirc/virtual_client.py with no edits to the class body. The legacy import path remains available via agentirc/_internal/virtual_client.py as a deprecation re-export (see agentirc-internal-virtual-client-shim entry)."
 
 [tool.citation.packages.culture-virtual-client.files."virtual_client.py"]
 status = "paraphrase"
 sha256 = "5e90a9e0ba5cd95651167b71f4cf3d2b5c4f18f809cb061f345ff3a81cf66969"
+
+[tool.citation.packages.agentirc-internal-virtual-client-shim]
+schema = 2
+source = "https://github.com/agentculture/agentirc/issues/22"
+version = "9.6.0"
+target = "agentirc/_internal/virtual_client.py"
+cited = "2026-05-02"
+notes = "Deprecation re-export of agentirc.virtual_client.VirtualClient at the legacy _internal path. Emits DeprecationWarning on import. Removal scheduled for 10.0.0. Synthesised in agentirc; no upstream culture file."
+
+[tool.citation.packages.agentirc-internal-virtual-client-shim.files."virtual_client.py"]
+status = "synthesize"
+sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 [tool.citation.packages.culture-pidfile]
 schema = 2

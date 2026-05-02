@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.6.0] - 2026-05-02
+
+Closes [agentculture/agentirc#22](https://github.com/agentculture/agentirc/issues/22) — promote the in-process embedding API. Unblocks [agentculture/culture#308](https://github.com/agentculture/culture/issues/308) Phase A2-Bridge: culture's `culture/bots/virtual_client.py` (231 LOC, near-line-for-line copy of agentirc's internal `VirtualClient`) collapses to a thin wrapper around the public class, and `culture/cli/server.py:_run_server` can construct an `agentirc.ircd.IRCd` directly instead of going through the `agentirc serve` subprocess.
+
+### Added
+
+- **`agentirc.virtual_client.VirtualClient`** is now public, semver-tracked. `from agentirc.virtual_client import VirtualClient` is the canonical import. Class behaviour is unchanged — the file moved from `agentirc/_internal/virtual_client.py` to `agentirc/virtual_client.py` with no edits to the class body.
+- **`agentirc.ircd.IRCd`** is now public, semver-tracked. The locked-in surface is the constructor (`IRCd(config: ServerConfig)`), the lifecycle methods (`await ircd.start()`, `await ircd.stop()`), `await ircd.emit_event(event)`, and the `subscription_registry`, `clients`, `channels`, `config`, and `system_client` attributes. Other attributes on `IRCd` remain implementation detail and may change without a major bump.
+- **Embedding worked example** in `docs/api-stability.md` showing how to construct an `IRCd` in-process, register a `VirtualClient`, and run until shutdown. Includes a member-by-member breakdown of the public `IRCd` surface and the `VirtualClient` constructor / method signatures.
+
+### Deprecated
+
+- **`agentirc._internal.virtual_client.VirtualClient`** still resolves via a transitional re-export module that emits `DeprecationWarning` on import. Removal is scheduled for 10.0.0. All in-tree call sites (`ircd.py`, `server_link.py`, `channel.py`, `skills/rooms.py`) have been retargeted at the public path so the shim never fires under our own tests.
+
+### Notes
+
+- This release is purely additive at the Python level. No protocol changes, no CLI changes, no behaviour changes. The wire surface (the `agentirc.io/bot` CAP, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB` verbs, the canonical 5-field envelope) is identical to 9.5.0 and stays byte-locked.
+- Citation manifest updated: `culture-virtual-client` now targets `agentirc/virtual_client.py`. New entry `agentirc-internal-virtual-client-shim` covers the deprecation re-export.
+
 ## [9.5.0] - 2026-05-02
 
 Closes [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15) — out-of-process bot extension API. Unblocks [agentculture/culture#308](https://github.com/agentculture/culture/issues/308) Phase A2 (bot rewrite against the public API).

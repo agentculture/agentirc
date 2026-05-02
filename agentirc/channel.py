@@ -49,7 +49,7 @@ class Channel:
         op — a human joining later does.
         """
         from agentirc.remote_client import RemoteClient
-        from agentirc._internal.virtual_client import VirtualClient
+        from agentirc.virtual_client import VirtualClient
 
         return {
             m
@@ -65,7 +65,7 @@ class Channel:
         # the next human becomes op.
         if not self._local_members():
             from agentirc.remote_client import RemoteClient
-            from agentirc._internal.virtual_client import VirtualClient
+            from agentirc.virtual_client import VirtualClient
 
             is_op_eligible = (
                 not isinstance(client, (RemoteClient, VirtualClient))

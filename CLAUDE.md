@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Current state: bootstrap closed; bot extension API shipped (9.5.0 released)
+## Current state: bootstrap closed; bot extension API + in-process embedding API shipped (9.6.0 released)
 
-This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/agentculture/culture). The bootstrap is closed; 9.0.0 through 9.5.0 are live on PyPI. The most recent ship is the out-of-process bot extension API (9.5.0, closed [#15](https://github.com/agentculture/agentirc/issues/15)). The repo currently contains:
+This repo is the agentirc server-core extraction out of the sibling project [`culture`](https://github.com/agentculture/culture). The bootstrap is closed; 9.0.0 through 9.6.0 are live on PyPI. The most recent ship is the in-process embedding API (9.6.0, closed [#22](https://github.com/agentculture/agentirc/issues/22)) — promoting `agentirc.ircd.IRCd` and `agentirc.virtual_client.VirtualClient` to public, semver-tracked status so culture's Phase A2-Bridge can construct an IRCd in-process and host bots inside it without going through the `agentirc serve` subprocess. The previous ship was the out-of-process bot extension API (9.5.0, closed [#15](https://github.com/agentculture/agentirc/issues/15)). The repo currently contains:
 
 - **Server-core** (`agentirc/{ircd,server_link,channel,events,skill,remote_client,…}.py`, `agentirc/skills/{rooms,threads,history,icon}.py`) — vendored from `culture@df50942` via the `cite-don't-copy` pattern (see `[tool.citation]` in `pyproject.toml`).
 - **Client transport** (`agentirc/client.py`) — vendored from `culture/agentirc/client.py` in PR-B2.
@@ -13,7 +13,8 @@ This repo is the agentirc server-core extraction out of the sibling project [`cu
 - **Public protocol** (`agentirc/protocol.py`) — verb name constants, numerics, IRCv3 tag names. Since 9.5.0 also exports the bot extension surface: `Event` dataclass, `EventType` (`StrEnum`), 20 `EVENT_TYPE_*` constants, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB` verb constants, `SEVENT` federation verb, and `BOT_CAP = "agentirc.io/bot"`. Wire-format quirks (`ROOMETAEND`, `ROOMETASET` typos, `ERR_NOSUCHCHANNEL` semantic misuse, `STHREAD` verb collapse) preserved verbatim — they need coordinated cross-repo bumps to fix.
 - **Bot extension API (9.5.0)** — IRCv3 `agentirc.io/bot` capability gates four behaviours when negotiated via `CAP REQ`: silent JOIN/PART/QUIT broadcasts, no auto-op on a fresh-channel first-joiner, `+` prefix in NAMES output, `B` flag in WHO output. `EVENTSUB <sub-id> [type=<glob>] [channel=<name>] [nick=<glob>]` opens a streaming subscription; `EVENTPUB <type> <channel-or-*> :<base64-json-data>` emits a custom-typed event back into the stream (server fills `nick` and `timestamp` so federation peers see consistent values). Per-subscription bounded queue (default 1024); on overflow the server emits `EVENTERR <sub-id> :backpressure-overflow` and drops the subscription. Quick reference at [`docs/extension-api.md`](docs/extension-api.md); design spec at [`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](docs/superpowers/specs/2026-05-01-bot-extension-api-design.md).
 - **Test suite** — 36 tests vendored from `culture@df50942` (~6.5kloc) plus agentirc-native tests in `tests/test_config_loader.py` and `tests/test_wire_format_envelope.py` (the 9.5.0a2 golden-file lock-in). `pytest -n auto` in ~30s on default workers. Three telemetry tests (`test_bot_event_dispatch_span`, `test_bot_run_span`, `test_metrics_bots`) and `test_welcome_bot` stay in culture because they depend on the real `BotManager`.
-- **Internal support** (`agentirc/_internal/`) — `aio`, `constants`, `protocol/`, `telemetry/`, `virtual_client`, `pidfile`, `cli_shared/`, `bots/` stubs (scheduled for removal in 9.6.0 once Phase A2 confirms no consumer imports them), `event_subscriptions/` (added 9.5.0).
+- **In-process embedding API (9.6.0)** — `agentirc.ircd.IRCd` and `agentirc.virtual_client.VirtualClient` promoted to the public surface. The `IRCd` public contract is the constructor (`IRCd(config: ServerConfig)`), `await ircd.start()`/`stop()`, `await ircd.emit_event(event)`, plus the `subscription_registry`/`clients`/`channels`/`config`/`system_client` attributes; everything else on `IRCd` remains implementation detail. `VirtualClient` moved from `agentirc/_internal/virtual_client.py` to `agentirc/virtual_client.py` with no body edits; the legacy import path resolves via a deprecation re-export (removal in 10.0.0). Worked example + member breakdown live in [`docs/api-stability.md`](docs/api-stability.md#embedding-agentirc-in-process). Same wire surface as 9.5.0; no protocol changes.
+- **Internal support** (`agentirc/_internal/`) — `aio`, `constants`, `protocol/`, `telemetry/`, `pidfile`, `cli_shared/`, `bots/` stubs, `event_subscriptions/` (added 9.5.0). The `_internal/virtual_client.py` module remains as a deprecation re-export of the now-public `agentirc.virtual_client.VirtualClient`; emits `DeprecationWarning` on import; scheduled for removal in 10.0.0.
 - **Bootstrap docs** (PR-B4, 9.4.0) — `docs/api-stability.md` (3 public modules + semver contract), `docs/cli.md` (verb table, flag reference, exit codes, YAML/CLI precedence, agentirc-vs-culture diff table), `docs/deployment.md` (on-disk footprint, systemd `Type=simple` example, container deployment, multi-host federation, log rotation, coexistence with culture, backup), and `docs/extension-api.md` (bot-author quick reference, added 9.5.0). Public-facing `README.md` rewritten for issue [#19](https://github.com/agentculture/agentirc/issues/19).
 
 End-to-end verified: `agentirc start --port <p>` boots a real IRCd, TCP NICK/USER handshake returns `001 RPL_WELCOME`, `agentirc stop` shuts cleanly. `agentirc serve --config server.yaml --port 9999` correctly overlays CLI flag on YAML. `pip install agentirc-cli==9.5.0` from real PyPI in a clean venv produces both `agentirc` and `agentirc-cli` binaries; both reach the same `agentirc.cli:main` entry point. Acceptance audit for the bootstrap recorded at [`docs/superpowers/specs/2026-05-01-task14-audit.md`](docs/superpowers/specs/2026-05-01-task14-audit.md). Culture-side cutover unblocked via [agentculture/culture#308](https://github.com/agentculture/culture/issues/308).
@@ -60,13 +61,15 @@ When migrating tests, the rule is: pure server tests come here, transport tests 
 
 ## Public API contract (semver-tracked)
 
-Only three modules are public. Everything else is internal and may be refactored without a major bump.
+Five modules are public. Everything else is internal and may be refactored without a major bump.
 
-| Module | Members |
-|---|---|
-| `agentirc.config` | `ServerConfig`, `LinkConfig`, `TelemetryConfig` |
-| `agentirc.cli` | `main()`, `dispatch(argv) -> int` |
-| `agentirc.protocol` | verb name constants, numeric reply codes, extension tag names |
+| Module | Members | Since |
+|---|---|---|
+| `agentirc.config` | `ServerConfig`, `LinkConfig`, `TelemetryConfig` | 9.0.0 |
+| `agentirc.cli` | `main()`, `dispatch(argv) -> int` | 9.2.0 |
+| `agentirc.protocol` | verb name constants, numeric reply codes, extension tag names; bot extension surface (`Event`, `EventType`, `EVENT_TYPE_*`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB`/`SEVENT` verbs, `BOT_CAP`) | 9.2.0 (extended 9.5.0) |
+| `agentirc.ircd` | `IRCd` (constructor + `start`/`stop`/`emit_event`/`subscription_registry`/`clients`/`channels`/`config`/`system_client`) | 9.6.0 |
+| `agentirc.virtual_client` | `VirtualClient` | 9.6.0 |
 
 `agentirc.cli.dispatch(argv)` is the function `culture`'s `culture server` shim calls — it must accept the exact same flag set, exit codes, and stderr formatting that `culture server` produces today. Do not "improve" CLI ergonomics during the bootstrap; that breaks the transparency contract culture relies on. `dispatch()` returns `int` on successful command dispatch and lets argparse's `SystemExit` propagate on `--help`/`--version`/parse-errors per Python convention; in-process callers (i.e. culture's shim) must catch `SystemExit` themselves or use `subprocess`.
 

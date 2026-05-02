@@ -15,7 +15,7 @@ from agentirc.channel import Channel
 from agentirc.config import ServerConfig
 from agentirc.events import NO_SURFACE_EVENT_TYPES, render_event
 from agentirc.skill import Event, EventType, Skill
-from agentirc._internal.virtual_client import VirtualClient
+from agentirc.virtual_client import VirtualClient
 from agentirc._internal.constants import (
     EVENT_TAG_DATA,
     EVENT_TAG_TYPE,
