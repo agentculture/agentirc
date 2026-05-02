@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from agentirc.protocol import BOT_CAP
 from agentirc.skill import Event, EventType
 from agentirc._internal.protocol.message import Message
 
@@ -26,6 +27,17 @@ class VirtualClient:
     Duck-types the same interface as Client/RemoteClient so it works
     in channel.members, NAMES, WHO, and WHOIS transparently.
     """
+
+    # The in-process system bot is treated identically to a real CAP-bot
+    # everywhere: external code paths (``Channel._local_members``,
+    # ``Channel.get_prefix``, ``Client._build_who_flags``) read this attr
+    # via ``getattr(member, "caps", ...)`` and apply the no-auto-op,
+    # ``+``-prefix, and ``B``-flag rules; the methods on this class
+    # (``join_channel``/``part_channel``) check it themselves to suppress
+    # their own JOIN/PART broadcasts to other channel members. Class-level
+    # so every instance gets the same caps; VirtualClients don't negotiate
+    # caps the way real Clients do.
+    caps: frozenset[str] = frozenset({BOT_CAP, "message-tags"})
 
     def __init__(self, nick: str, user: str, server: IRCd):
         self.nick = nick
@@ -63,14 +75,19 @@ class VirtualClient:
         # Ensure bot is never auto-promoted to operator
         channel.operators.discard(self)
 
-        join_msg = Message(
-            prefix=self.prefix,
-            command="JOIN",
-            params=[channel_name],
-        )
-        for member in [*channel.members]:
-            if member is not self:
-                await member.send(join_msg)
+        # Bot-CAP clients (the entire VirtualClient class) skip the
+        # per-member JOIN broadcast — silent presence to other members.
+        # Channel membership above is already added; the user.join event
+        # below still fires so EVENTSUB subscribers see it.
+        if BOT_CAP not in self.caps:
+            join_msg = Message(
+                prefix=self.prefix,
+                command="JOIN",
+                params=[channel_name],
+            )
+            for member in [*channel.members]:
+                if member is not self:
+                    await member.send(join_msg)
 
         if emit_event:
             await self.server.emit_event(
@@ -83,14 +100,17 @@ class VirtualClient:
         if not channel or self not in channel.members:
             return
 
-        part_msg = Message(
-            prefix=self.prefix,
-            command="PART",
-            params=[channel_name],
-        )
-        for member in [*channel.members]:
-            if member is not self:
-                await member.send(part_msg)
+        # Symmetric with join_channel — bot-CAP clients skip the per-member
+        # PART broadcast. The user.part event below still fires.
+        if BOT_CAP not in self.caps:
+            part_msg = Message(
+                prefix=self.prefix,
+                command="PART",
+                params=[channel_name],
+            )
+            for member in [*channel.members]:
+                if member is not self:
+                    await member.send(part_msg)
 
         await self.server.emit_event(
             Event(

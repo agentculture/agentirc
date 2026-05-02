@@ -64,8 +64,16 @@ class IRCd:
         self._stopped = asyncio.Event()
         self._background_tasks: set[asyncio.Task] = set()
         # Bots
-        self.bot_manager = None  # set in start() if webhook_port configured
+        self.bot_manager = None  # set in start()
         self.system_client: VirtualClient | None = None
+        # Bot extension subscriptions (9.5.0): bots that negotiated
+        # ``agentirc.io/bot`` and issued EVENTSUB receive matching events
+        # via this registry's per-subscription bounded queues.
+        from agentirc._internal.event_subscriptions import SubscriptionRegistry
+
+        self.subscription_registry = SubscriptionRegistry(
+            queue_max=self.config.event_subscription_queue_max,
+        )
 
     async def start(self) -> None:
         logger.info("Registering default skills...")
@@ -89,9 +97,12 @@ class IRCd:
         )
         logger.info("Server awake on %s", self.config.name)
 
-        # Initialize bot manager and webhook HTTP listener
+        # Initialize bot manager. As of 9.5.0, ``webhook_port`` is no longer
+        # bound by agentirc — consumers (e.g. culture) host their own webhook
+        # listener if they need one. The field stays in ``ServerConfig`` so
+        # culture's ``~/.culture/server.yaml`` keeps loading unchanged; we
+        # just don't act on it. See docs/cli.md and docs/deployment.md.
         from agentirc._internal.bots.bot_manager import BotManager
-        from agentirc._internal.bots.http_listener import HttpListener
 
         logger.info("Loading bots...")
         self.bot_manager = BotManager(self)
@@ -108,26 +119,6 @@ class IRCd:
             self.config.host,
             self.config.port,
         )
-
-        self._http_listener = HttpListener(
-            self.bot_manager,
-            "127.0.0.1",
-            self.config.webhook_port,
-        )
-        try:
-            logger.info(
-                "Starting webhook listener on port %d...",
-                self.config.webhook_port,
-            )
-            await self._http_listener.start()
-        except OSError:
-            # Port unavailable (e.g. in tests using port 0 that got
-            # assigned an in-use ephemeral port). Non-fatal — bots
-            # still work, just without the HTTP endpoint.
-            logger.warning(
-                "Could not start webhook listener on port %d",
-                self.config.webhook_port,
-            )
 
         logger.info("Server ready")
 
@@ -251,6 +242,7 @@ class IRCd:
             if not origin_tag:
                 await self._relay_to_peers(event)
             await self._dispatch_to_bots(event)
+            await self.subscription_registry.dispatch(event)
             await self._surface_event_privmsg(event)
 
         render_ms = (time.perf_counter() - render_started) * 1000.0
@@ -447,11 +439,10 @@ class IRCd:
                 )
             except Exception:
                 logger.exception("failed to emit server.sleep")
-            # Stop bots and HTTP listener
+            # Stop bots. (As of 9.5.0, agentirc no longer owns the webhook
+            # HTTP listener — consumers host their own.)
             if self.bot_manager:
                 await self.bot_manager.stop_all()
-            if hasattr(self, "_http_listener") and self._http_listener:
-                await self._http_listener.stop()
             for skill in self.skills:
                 await skill.stop()
             # Cancel all pending retry tasks
@@ -667,6 +658,11 @@ class IRCd:
             channel.remove(client)
             if not channel.members and not channel.persistent:
                 del self.channels[channel.name]
+
+        # Cancel any EVENTSUB subscriptions owned by this client.
+        # Drain tasks would otherwise keep references and try to send to a
+        # closed StreamWriter on the next event.
+        self.subscription_registry.remove_client(client)
 
         nick = client.nick or "<unknown>"
         await self._emit_disconnect_events(nick, getattr(client, "modes", set()))

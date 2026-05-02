@@ -163,8 +163,16 @@ ignores keys it doesn't own (`supervisor`, `agents`, `webhooks`,
 `buffer_size`, `poll_interval`, `sleep_start`, `sleep_end`, and the
 `server.archived*` fields culture uses for its server-archival
 tracking). Culture's loader treats agentirc-only keys (`links`,
-`webhook_port`, `data_dir`, `system_bots`) symmetrically. So one
+`webhook_port`, `data_dir`, `system_bots`,
+`event_subscription_queue_max`) symmetrically. So one
 `server.yaml` can drive both daemons.
+
+**As of 9.5.0, `agentirc` does not bind `webhook_port`.** The field
+stays in `ServerConfig` so existing `~/.culture/server.yaml` files
+keep loading without errors, but `IRCd.start()` no longer
+instantiates an HTTP listener. Consumers that need webhook→bot
+dispatch (notably culture) host their own listener. The field will
+be removed in a future major bump (10.0.0).
 
 ## Log rotation
 

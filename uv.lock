@@ -10,7 +10,7 @@ resolution-markers = [
 
 [[package]]
 name = "agentirc-cli"
-version = "9.5.0a2"
+version = "9.5.0"
 source = { editable = "." }
 dependencies = [
     { name = "opentelemetry-api" },

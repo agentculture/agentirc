@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.5.0] - 2026-05-02
+
+Closes [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15) — out-of-process bot extension API. Unblocks [agentculture/culture#308](https://github.com/agentculture/culture/issues/308) Phase A2 (bot rewrite against the public API).
+
+### Added
+
+- **IRCv3 `agentirc.io/bot` capability.** Advertised in `CAP LS` output. When negotiated via `CAP REQ`, gates four behaviours: silent JOIN/PART/QUIT broadcasts (other channel members see nothing), no auto-op on a fresh-channel first-joiner, `+` prefix in NAMES output, `B` flag in WHO output. Channel membership is added normally; events still fire (subscribers see them via `EVENTSUB`).
+- **`EVENTSUB` / `EVENTUNSUB` / `EVENT` / `EVENTERR` IRC verbs** for streaming events to bots out-of-process. `EVENTSUB <sub-id> [type=<glob>] [channel=<name>] [nick=<glob>]`: filters AND-ed; `type` and `nick` accept `fnmatch`-style globs; `channel` accepts an exact name, `*`, or empty (nick-scoped only). Multiple concurrent subscriptions per client are allowed. Wire format: `:server EVENT <sub-id> <type> <channel-or-*> <nick> :<base64-json-envelope>` carrying the canonical 5-field envelope. Per-subscription bounded queue (default 1024); on overflow the server emits `EVENTERR <sub-id> :backpressure-overflow` and drops the subscription (connection stays open). Subscriptions die on client disconnect.
+- **`EVENTPUB` IRC verb** for bots to emit custom-typed events back into the stream. `EVENTPUB <type> <channel-or-*> :<base64-json-data>`. Type validated against `EVENT_TYPE_RE` (dotted lowercase, ≥1 dot — single-segment names like `message` and `topic` are reserved for built-in vocabulary). Server fills `nick` from the bot's connection nick (not spoofable) and `timestamp` from `time.time()` so federation peers see consistent clocks. `_`-prefixed keys are stripped from the payload before emit.
+- New internal module `agentirc._internal.event_subscriptions` with the `Subscription` dataclass and `SubscriptionRegistry`. `IRCd.subscription_registry` exposes the registry; `IRCd.emit_event` dispatches every event through it.
+- `agentirc.protocol.SEVENT` verb constant (added in 9.5.0a2; reaffirmed here).
+
+### Changed
+
+- **`webhook_port` is no longer bound by `IRCd.start()`.** The field stays in `ServerConfig` so culture's `~/.culture/server.yaml` keeps loading unchanged, but `agentirc` no longer instantiates the HTTP listener. Consumers that need webhook→bot dispatch host their own listener (see `docs/deployment.md`). No deprecation warning at runtime — the docs change is sufficient.
+- `Channel.add()` no longer auto-ops bot-CAP clients (real or `VirtualClient`). A bot joining an empty channel stays unprivileged; the next human becomes op.
+- `Channel.get_prefix()` returns `+` for bot-CAP members in NAMES output.
+- `Client._build_who_flags()` adds the `B` flag for bot-CAP members in WHO output (composes with `H` and `@`/`+`).
+- `VirtualClient` gains a class-level `caps = frozenset({"agentirc.io/bot", "message-tags"})` so the in-process system bot is treated identically to a real CAP-bot.
+- `Client._handle_cap` `CAP LS` reply now lists supported caps from a class-level `_SUPPORTED_CAPS` frozenset (centralised; removing a cap is a major bump).
+- `agentirc/_internal/bots/http_listener.py` module docstring notes the no-op stub is scheduled for removal in 9.6.0.
+
+### Notes
+
+- This is the **final slice** of the bot extension API. `9.5.0a1` shipped the public `agentirc.protocol` declarations; `9.5.0a2` switched the federation wire format to the 5-field envelope; this release wires the actual behaviour.
+- **Federation interop unchanged from 9.5.0a2.** 9.4→9.5 federation works (sniff tolerance); 9.5→9.4 emit breaks until peers upgrade.
+- The `agentirc.skill.{Event, EventType}` re-export shim from 9.5.0a1 stays through the 9.x line; removal is scheduled for 10.0.0.
+- The `agentirc/_internal/bots/` synthesize stubs (`bot_manager.py`, `http_listener.py`) stay through the 9.5.x cycle; removal is scheduled for 9.6.0 once Phase A2 confirms no consumer imports them.
+
 ## [9.5.0a2] - 2026-05-02
 
 ### Changed

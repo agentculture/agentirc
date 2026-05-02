@@ -14,6 +14,8 @@ client.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import re
 import time
@@ -24,7 +26,7 @@ from opentelemetry.context import Context as _OtelContext
 from opentelemetry.trace import Span as _OtelSpan
 
 from agentirc._internal.aio import maybe_await
-from agentirc._internal.constants import SYSTEM_USER_PREFIX
+from agentirc._internal.constants import EVENT_TYPE_RE, SYSTEM_USER_PREFIX
 from agentirc._internal.protocol import replies
 from agentirc._internal.protocol.message import Message
 from agentirc._internal.telemetry.audit import utc_iso_timestamp as _utc_iso_timestamp
@@ -36,6 +38,7 @@ from agentirc._internal.telemetry.context import (
 )
 from agentirc._internal.telemetry.context import inject_traceparent as _inject_traceparent
 from agentirc.channel import Channel
+from agentirc.protocol import BOT_CAP, EVENTERR
 from agentirc.skill import Event, EventType
 
 # OTEL instrumentation name. Kept verbatim ("culture.agentirc") because
@@ -311,16 +314,21 @@ class Client:
     def _handle_pong(self, msg: Message) -> None:
         pass  # Client responding to our ping
 
+    # Capabilities advertised in CAP LS and accepted in CAP REQ. Adding
+    # a new cap here is a minor bump per docs/api-stability.md; removing
+    # one is a major bump.
+    _SUPPORTED_CAPS: frozenset[str] = frozenset({"message-tags", BOT_CAP})
+
     async def _handle_cap(self, msg: Message) -> None:
         sub = msg.params[0].upper() if msg.params else ""
         if sub == "LS":
+            cap_list = " ".join(sorted(self._SUPPORTED_CAPS))
             await self.send_raw(
-                f":{self.server.config.name} CAP {self.nick or '*'} LS :message-tags"
+                f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}"
             )
         elif sub == "REQ":
             requested = msg.params[1].split() if len(msg.params) >= 2 else []
-            supported = {"message-tags"}
-            if all(cap in supported for cap in requested):
+            if all(cap in self._SUPPORTED_CAPS for cap in requested):
                 self.caps.update(requested)
                 await self.send_raw(
                     f":{self.server.config.name} CAP {self.nick or '*'}"
@@ -457,10 +465,16 @@ class Client:
             channel.add(self)
             self.channels.add(channel)
 
-            # Notify all channel members (including self)
-            join_msg = Message(prefix=self.prefix, command="JOIN", params=[channel_name])
-            for member in [*channel.members]:
-                await member.send(join_msg)
+            # Notify all channel members (including self).
+            # Bot-CAP clients skip the broadcast entirely — the user.join
+            # event still fires below, so EVENTSUB subscribers see the join,
+            # but no human-visible JOIN line hits other channel members.
+            # (Channel membership IS added regardless; topic + NAMES below
+            # still go to the joining client so it knows the join succeeded.)
+            if BOT_CAP not in self.caps:
+                join_msg = Message(prefix=self.prefix, command="JOIN", params=[channel_name])
+                for member in [*channel.members]:
+                    await member.send(join_msg)
 
             # Send topic if set
             if channel.topic:
@@ -497,9 +511,12 @@ class Client:
                 return
 
             part_params = [channel_name, reason] if reason else [channel_name]
-            part_msg = Message(prefix=self.prefix, command="PART", params=part_params)
-            for member in [*channel.members]:
-                await member.send(part_msg)
+            # Bot-CAP clients skip the broadcast — symmetrical with the
+            # silent JOIN behaviour. The user.part event still fires.
+            if BOT_CAP not in self.caps:
+                part_msg = Message(prefix=self.prefix, command="PART", params=part_params)
+                for member in [*channel.members]:
+                    await member.send(part_msg)
 
             await self.server.emit_event(
                 Event(
@@ -958,6 +975,11 @@ class Client:
 
     def _build_who_flags(self, member, channel) -> str:
         flags = "H"
+        # Bot-CAP clients get a `B` flag in the user-modes column so vanilla
+        # IRC clients can filter bots from presence panels by checking for
+        # `B` (agentirc-extension flag, composes with the standard H/A flags).
+        if BOT_CAP in getattr(member, "caps", frozenset()):
+            flags += "B"
         if channel and channel.is_operator(member):
             flags += "@"
         elif channel and channel.is_voiced(member):
@@ -1052,11 +1074,14 @@ class Client:
 
         notified: set[Client] = set()
         channel_names = [ch.name for ch in self.channels]
-        for channel in [*self.channels]:
-            for member in [*channel.members]:
-                if member is not self and member not in notified:
-                    await member.send(quit_msg)
-                    notified.add(member)
+        # Bot-CAP clients skip the broadcast — symmetrical with the silent
+        # JOIN/PART behaviour. The user.quit event still fires below.
+        if BOT_CAP not in self.caps:
+            for channel in [*self.channels]:
+                for member in [*channel.members]:
+                    if member is not self and member not in notified:
+                        await member.send(quit_msg)
+                        notified.add(member)
 
         await self.server.emit_event(
             Event(
@@ -1068,3 +1093,139 @@ class Client:
         )
 
         raise ConnectionError("Client quit")
+
+    # --- Bot extension verbs (9.5.0) ---
+    # Spec: docs/superpowers/specs/2026-05-01-bot-extension-api-design.md
+    # § Decision B (EVENTSUB/EVENTUNSUB) and § Decision E (EVENTPUB).
+    # All three require:
+    #   1. The ``agentirc.io/bot`` capability — without it, the server
+    #      replies ``EVENTERR <id> :bot-capability-required``.
+    #   2. A registered connection (post-NICK/USER) — without it, the
+    #      server replies ``EVENTERR <id> :not-registered``. This guards
+    #      against anonymous sockets injecting events with ``nick=None``
+    #      or pulling the full event stream before claiming an identity.
+
+    _SUB_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,32}$")
+
+    async def _bot_verb_gate(self, verb_id: str) -> bool:
+        """Common bot-CAP + registration gate for EVENTSUB/EVENTUNSUB/EVENTPUB.
+
+        Sends the appropriate ``EVENTERR`` and returns ``False`` on
+        rejection; returns ``True`` if the caller may proceed.
+        """
+        if BOT_CAP not in self.caps:
+            await self.send_raw(f"{EVENTERR} {verb_id} :bot-capability-required")
+            return False
+        if not self._registered:
+            await self.send_raw(f"{EVENTERR} {verb_id} :not-registered")
+            return False
+        return True
+
+    @staticmethod
+    def _parse_eventsub_filters(tokens: list[str]) -> tuple[dict, str | None]:
+        """Parse EVENTSUB filter tokens. Returns (filters, error_reason).
+
+        ``error_reason`` is ``None`` on success; otherwise a string suitable
+        for ``EVENTERR <sub-id> :<error_reason>``. Detects unknown filter
+        keys, duplicate filter keys (per spec, each parameter appears at
+        most once), malformed tokens, and invalid channel-filter format.
+        Per-key validation lives in
+        :data:`agentirc._internal.event_subscriptions.FILTER_HANDLERS`.
+        """
+        from agentirc._internal.event_subscriptions import (
+            CHANNEL_ANY,
+            FILTER_HANDLERS,
+        )
+
+        filters: dict = {"type_glob": "*", "channel": CHANNEL_ANY, "nick_glob": "*"}
+        seen: set[str] = set()
+        for token in tokens:
+            if "=" not in token:
+                return filters, f"invalid-filter {token}"
+            key, value = token.split("=", 1)
+            if key in seen:
+                return filters, f"duplicate-filter {key}"
+            seen.add(key)
+            handler = FILTER_HANDLERS.get(key)
+            if handler is None:
+                return filters, f"unknown-filter {key}"
+            error = handler(filters, value)
+            if error is not None:
+                return filters, error
+        return filters, None
+
+    async def _handle_eventsub(self, msg: Message) -> None:
+        sub_id = msg.params[0] if msg.params else "?"
+        if not await self._bot_verb_gate(sub_id):
+            return
+        if not msg.params:
+            await self.send_raw(f"{EVENTERR} ? :missing-sub-id")
+            return
+        if not self._SUB_ID_RE.match(sub_id):
+            await self.send_raw(f"{EVENTERR} {sub_id} :invalid-sub-id")
+            return
+
+        filters, error = self._parse_eventsub_filters(msg.params[1:])
+        if error is not None:
+            await self.send_raw(f"{EVENTERR} {sub_id} :{error}")
+            return
+
+        sub = self.server.subscription_registry.add(self, sub_id, **filters)
+        if sub is None:
+            await self.send_raw(f"{EVENTERR} {sub_id} :sub-id-in-use")
+
+    async def _handle_eventunsub(self, msg: Message) -> None:
+        sub_id = msg.params[0] if msg.params else "?"
+        if not await self._bot_verb_gate(sub_id):
+            return
+        if not msg.params:
+            return
+        # Silent on success — no more EVENT lines for this sub-id is the signal.
+        self.server.subscription_registry.remove(self, sub_id)
+
+    async def _handle_eventpub(self, msg: Message) -> None:
+        type_str = msg.params[0] if msg.params else "?"
+        if not await self._bot_verb_gate(type_str):
+            return
+        if len(msg.params) < 3:
+            await self.send_raw(f"{EVENTERR} {type_str} :invalid-eventpub-syntax")
+            return
+        type_str, target, b64 = msg.params[0], msg.params[1], msg.params[2]
+        if not EVENT_TYPE_RE.match(type_str):
+            await self.send_raw(f"{EVENTERR} {type_str} :invalid-type")
+            return
+
+        channel = None if target == "*" else target
+        if channel is not None and channel not in self.server.channels:
+            await self.send_raw(f"{EVENTERR} {type_str} :no-such-channel")
+            return
+
+        # ``base64.b64decode`` can raise ``binascii.Error`` (a subclass of
+        # ``ValueError``) for malformed input AND a few unrelated errors
+        # for non-ASCII; ``json.loads`` raises ``json.JSONDecodeError`` (a
+        # subclass of ``ValueError``). The unhandled-exception path would
+        # tear down the connection task, so catch broadly.
+        try:
+            data = json.loads(base64.b64decode(b64))
+        except Exception:
+            await self.send_raw(f"{EVENTERR} {type_str} :invalid-payload")
+            return
+        if not isinstance(data, dict):
+            await self.send_raw(f"{EVENTERR} {type_str} :invalid-payload")
+            return
+
+        # Strip `_`-prefixed keys (server-internal metadata like `_render`,
+        # `_origin`). nick and timestamp are server-set so bots cannot spoof
+        # the actor or wall-clock — peers across federation see consistent
+        # values. ``self.nick`` is guaranteed non-None by the registration
+        # gate above, but coerce defensively.
+        data = {k: v for k, v in data.items() if not k.startswith("_")}
+
+        ev = Event(
+            type=type_str,
+            channel=channel,
+            nick=self.nick or "",
+            data=data,
+            timestamp=time.time(),
+        )
+        await self.server.emit_event(ev)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Union
 
+from agentirc.protocol import BOT_CAP
+
 if TYPE_CHECKING:
     from agentirc.client import Client
     from agentirc.remote_client import RemoteClient
@@ -40,18 +42,36 @@ class Channel:
         return self.room_id is not None
 
     def _local_members(self) -> set[Client]:
-        """Return only local (non-remote, non-virtual) members."""
+        """Return only local (non-remote, non-virtual, non-bot-CAP) members.
+
+        Used as the auto-op eligibility predicate by :meth:`add`. Bot-CAP
+        clients are excluded so a bot joining an empty channel never becomes
+        op — a human joining later does.
+        """
         from agentirc.remote_client import RemoteClient
         from agentirc._internal.virtual_client import VirtualClient
 
-        return {m for m in self.members if not isinstance(m, (RemoteClient, VirtualClient))}
+        return {
+            m
+            for m in self.members
+            if not isinstance(m, (RemoteClient, VirtualClient))
+            and BOT_CAP not in getattr(m, "caps", frozenset())
+        }
 
     def add(self, client: Client) -> None:
-        # Only grant op to the first LOCAL joiner
+        # Only grant op to the first LOCAL joiner. Bot-CAP clients
+        # (real or VirtualClient) are excluded — they never auto-op,
+        # so a bot joining an empty channel stays unprivileged and
+        # the next human becomes op.
         if not self._local_members():
             from agentirc.remote_client import RemoteClient
+            from agentirc._internal.virtual_client import VirtualClient
 
-            if not isinstance(client, RemoteClient):
+            is_op_eligible = (
+                not isinstance(client, (RemoteClient, VirtualClient))
+                and BOT_CAP not in getattr(client, "caps", frozenset())
+            )
+            if is_op_eligible:
                 self.operators.add(client)
         self.members.add(client)
 
@@ -76,5 +96,12 @@ class Channel:
         if client in self.operators:
             return "@"
         if client in self.voiced:
+            return "+"
+        # Bot-CAP clients render with the voice prefix in NAMES output —
+        # the closest standard IRC mode for "non-disruptive participant",
+        # so vanilla IRC clients filter bots from presence panels by
+        # checking the ``+`` prefix. Op wins on conflict (above), so an
+        # explicitly-opped bot still renders as ``@``.
+        if BOT_CAP in getattr(client, "caps", frozenset()):
             return "+"
         return ""
