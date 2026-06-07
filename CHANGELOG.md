@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.6.1] - 2026-06-07
+
+### Changed
+
+- **License: MIT → Apache 2.0.** Replaced the MIT license text with the
+  Apache License 2.0 (`LICENSE`) and aligned the declared license everywhere
+  it was still MIT: `pyproject.toml` (`license = "Apache-2.0"` plus the OSI
+  classifier) and `README.md`. Copyright holder is Ori Nachum.
+
 ## [9.6.0] - 2026-05-02
 
 Closes [agentculture/agentirc#22](https://github.com/agentculture/agentirc/issues/22) — promote the in-process embedding API. Unblocks [agentculture/culture#308](https://github.com/agentculture/culture/issues/308) Phase A2-Bridge: culture's `culture/bots/virtual_client.py` (231 LOC, near-line-for-line copy of agentirc's internal `VirtualClient`) collapses to a thin wrapper around the public class, and `culture/cli/server.py:_run_server` can construct an `agentirc.ircd.IRCd` directly instead of going through the `agentirc serve` subprocess.
