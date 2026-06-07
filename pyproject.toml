@@ -31,6 +31,8 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.22",
     "pyyaml>=6.0",
 ]
+[project.license]
+file = "LICENSE"
 
 [project.optional-dependencies]
 dev = [
