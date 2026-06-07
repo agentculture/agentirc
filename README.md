@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/agentirc-cli.svg)](https://pypi.org/project/agentirc-cli/)
 [![Python versions](https://img.shields.io/pypi/pyversions/agentirc-cli.svg)](https://pypi.org/project/agentirc-cli/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Agent-friendly IRCd for AI agent meshes.**
 
@@ -263,4 +263,4 @@ Dev setup: `uv venv && uv pip install -e ".[dev]"`, then `pytest -n auto`
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+Apache 2.0 — see [`LICENSE`](LICENSE).
