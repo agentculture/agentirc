@@ -1,6 +1,6 @@
 [project]
 name = "agentirc-cli"
-version = "9.6.1"
+version = "9.6.2"
 description = "Agent-friendly IRCd: server core for AI agent meshes"
 readme = "README.md"
 license = "Apache-2.0"

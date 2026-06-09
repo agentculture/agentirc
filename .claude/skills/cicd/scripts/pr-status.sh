@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pr-status.sh — one-shot status overview for a PR.
+# pr-status.sh — one-shot status overview for a Steward PR.
 #
 # Combines five things review feedback usually scatters across:
 #   1. PR state (open / merged / closed) + branch + author
@@ -34,8 +34,11 @@ PR_NUMBER="${1:?Usage: pr-status.sh [--repo OWNER/REPO] [--sonar-key KEY] PR_NUM
 if [[ -z "$REPO" ]]; then
     REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
+# Sonar key precedence: explicit --sonar-key flag > SONAR_PROJECT_KEY env >
+# `<owner>_<repo>` derivation. Mirrors pr-comments.sh so SKILL.md's claim
+# that the env var works for both scripts is true.
 if [[ -z "$SONAR_KEY" ]]; then
-    SONAR_KEY="${REPO%%/*}_${REPO##*/}"
+    SONAR_KEY="${SONAR_PROJECT_KEY:-${REPO%%/*}_${REPO##*/}}"
 fi
 
 # ── 1. PR header ──────────────────────────────────────────────────────────
@@ -157,5 +160,4 @@ if [[ "$INLINE_PENDING" -gt 0 ]]; then
 fi
 
 echo
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-echo "(For full comment bodies: bash \"$SCRIPT_DIR/pr-comments.sh\" $PR_NUMBER)"
+echo "(For full comment bodies: agex pr read --agent claude-code $PR_NUMBER)"

@@ -14,7 +14,7 @@ spec — that comes first.
 
 1. **Bootstrap first.** Follow `docs/superpowers/specs/2026-04-30-bootstrap-design.md` and `CLAUDE.md` until `pip install agentirc-cli==9.0.0` produces a working `agentirc` binary and `agentirc serve` is byte-indistinguishable from `culture server start`. Nothing in this onboarding doc supersedes that.
 2. **Sibling-pattern compliance.** Once the package, tests, and CI exist, work through the artifact checklist below until `steward doctor ../agentirc` passes.
-3. **Vendor skills.** Copy in the recommended skills (next section), one PR per skill, smallest blast radius first (`version-bump`, `run-tests`, `pr-review`).
+3. **Vendor skills.** Copy in the recommended skills (next section), one PR per skill, smallest blast radius first (`version-bump`, `run-tests`, `cicd`).
 4. **Self-audit.** Run `steward doctor` (single-repo mode) after each landed PR. Treat findings as a queue.
 
 ## Skill manifest
@@ -32,14 +32,15 @@ etc.). When upstream changes, re-sync explicitly — there is no auto-sync.
 
 Land these in roughly this order. The first three unblock the rest of
 the workflow (you can't open clean PRs without `version-bump` and
-`pr-review`, and you shouldn't claim "tests pass" without `run-tests`).
+`cicd`, and you shouldn't claim "tests pass" without `run-tests`).
 
 | Skill | Upstream | Purpose | Notes for agentirc |
 |---|---|---|---|
 | `version-bump` | `../steward/.claude/skills/version-bump/` | Bump semver in `pyproject.toml`, prepend Keep-a-Changelog entry. Required on every PR. | Pure Python, no per-repo customization needed. Start the changelog at `9.0.0` (per CLAUDE.md "Versioning"). |
 | `run-tests` | `../steward/.claude/skills/run-tests/` | `pytest -n auto` with coverage. | Coverage source resolves from `[tool.coverage.run]` in `pyproject.toml`, so the script works once that section exists. |
-| `pr-review` | `../steward/.claude/skills/pr-review/` | Branch → commit → push → PR → wait for automated reviewers → triage / fix / reply / resolve threads. | Steward owns the canonical workflow. Includes the portability lint that `steward doctor` also runs. |
-| `gh-issues` | `../steward/.claude/skills/gh-issues/` | Fetch GitHub issues with full body + comments via `gh`. | Auto-detects the repo. |
+| `cicd` | `../steward/.claude/skills/cicd/` | Delegates `lint`/`open`/`read`/`reply`/`delta` to `agex pr` (from `agentculture/agex-cli`); keeps two steward extensions `status`/`await` (SonarCloud quality gate + hotspots + unresolved-thread tally). | Steward owns the canonical workflow. Portability lint runs via `.claude/skills/cicd/scripts/portability-lint.sh` (CI calls it directly; no `agex` needed in CI). Renamed from `pr-review` in steward 0.7.0. |
+| `communicate` | `../steward/.claude/skills/communicate/` | Cross-repo GitHub issue post/comment/fetch + Culture mesh messaging, backed by `agtag`. | agentirc vendors the 4 primitive scripts only (no broadcast template — that is steward-supplier-only). Absorbed `gh-issues` (steward 0.9.1); fetch capability now lives in `communicate/scripts/fetch-issues.sh`. |
+| `gh-issues` | `../steward/.claude/skills/gh-issues/` | Fetch GitHub issues with full body + comments via `gh`. | Auto-detects the repo. **Absorbed into `communicate` in steward 0.9.1** — its fetch capability now lives in `communicate/scripts/fetch-issues.sh`. Retain this row for historical reference. |
 | `notebooklm` | `../steward/.claude/skills/notebooklm/` | Generate GitHub blob URLs for repo docs (NotebookLM ingestion). | Auto-detects branch + remote. |
 | `sonarclaude` | `../steward/.claude/skills/sonarclaude/` | Query SonarCloud — quality gate, issues, hotspots, metrics. Supports `accept` flow with mandatory rationale. | Set `$SONAR_PROJECT` once the project is registered, or pass `--project KEY`. |
 | `pypi-maintainer` | `../steward/.claude/skills/pypi-maintainer/` | Switch a PyPI install between production / TestPyPI dev builds / local editable checkout. | Required because this repo publishes a package and PR builds go to TestPyPI as `.dev<run>`. |

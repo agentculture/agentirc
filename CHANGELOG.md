@@ -4,6 +4,50 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.6.2] - 2026-06-10
+
+Resync the vendored steward skills. Closes
+[#24](https://github.com/agentculture/agentirc/issues/24) (cicd) and
+[#25](https://github.com/agentculture/agentirc/issues/25) (communicate).
+
+### Changed
+
+- **Vendored skill `pr-review` → `cicd`.** Re-synced from
+  `../steward/.claude/skills/cicd/`. The skill is now a thin layer over
+  `agex pr` (in `agentculture/agex-cli`): `workflow.sh` delegates
+  `lint`/`open`/`read`/`reply`/`delta` to `agex pr <verb>` and keeps two
+  extensions — `status` (SonarCloud quality gate + hotspots +
+  unresolved-thread tally + deploy-preview URL) and `await` (`read --wait`
+  then `status`, non-zero exit on Sonar ERROR or unresolved threads). The
+  in-skill delegating verbs now require `agex` on `PATH`; **CI is
+  unaffected** — `.github/workflows/tests.yml` runs
+  `cicd/scripts/portability-lint.sh --all` directly, no `agex` needed.
+  Signature resolution moved from a hard-coded `- Claude` literal to
+  `_resolve-nick.sh`, which (no `culture.yaml` present) falls back to the
+  repo basename → `- agentirc (Claude)`, matching the workspace posting
+  convention.
+
+### Added
+
+- **Vendored skill `communicate`** (new), from
+  `../steward/.claude/skills/communicate/`. Cross-repo GitHub issue
+  post/comment/fetch + Culture mesh messaging, backed by `agtag` (>=0.1).
+  agentirc vendors the four primitive scripts only (`post-issue.sh`,
+  `post-comment.sh`, `fetch-issues.sh`, `mesh-message.sh`); the broadcast
+  template + `steward announce-skill-update` verb are steward-supplier-only
+  and intentionally omitted (recorded in the SKILL.md frontmatter per the
+  AgentCulture vendoring policy).
+
+### Removed
+
+- **`cicd/scripts/pr-sonar.sh`, `pr-batch.sh`, `pr-comments.sh`** (the old
+  `pr-review` self-contained toolkit scripts). Replaced upstream by
+  `agex pr` verbs and steward's `pr-status.sh` + `workflow.sh status`
+  (which subsumes `pr-sonar.sh`'s SonarCloud findings + hotspots). This
+  makes follow-up [#10](https://github.com/agentculture/agentirc/issues/10)
+  (backport `pr-sonar.sh` to steward) effectively obsolete — steward grew
+  the equivalent independently.
+
 ## [9.6.1] - 2026-06-07
 
 ### Changed

@@ -6,28 +6,39 @@ set -euo pipefail
 
 REPO=""
 RESOLVE=false
+PRINT_BODY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --repo) REPO="$2"; shift 2 ;;
         --resolve) RESOLVE=true; shift ;;
+        --print-body) PRINT_BODY=true; shift ;;
         *) break ;;
     esac
 done
 
-PR_NUMBER="${1:?Usage: pr-reply.sh [--repo OWNER/REPO] [--resolve] PR_NUMBER COMMENT_ID \"body\"}"
+PR_NUMBER="${1:?Usage: pr-reply.sh [--repo OWNER/REPO] [--resolve] [--print-body] PR_NUMBER COMMENT_ID \"body\"}"
 COMMENT_ID="${2:?Missing COMMENT_ID}"
 BODY="${3:?Missing reply body}"
 
-if [[ -z "$REPO" ]]; then
+if [[ "$PRINT_BODY" != true && -z "$REPO" ]]; then
     REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
 
-# Append signature only if the body isn't already signed.
-if ! printf '%s' "$BODY" | grep -qE '(^|\n)[[:space:]]*-[[:space:]]+Claude[[:space:]]*$'; then
+# Sign with the agent's nick. Resolved per invocation so siblings that
+# vendor this skill pick up their own culture.yaml suffix automatically.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NICK="$("$SCRIPT_DIR/_resolve-nick.sh")"
+SIG="- ${NICK} (Claude)"
+if ! printf '%s' "$BODY" | grep -qFx -- "$SIG"; then
     BODY="${BODY}
 
-- Claude"
+${SIG}"
+fi
+
+if [[ "$PRINT_BODY" == true ]]; then
+    printf '%s\n' "$BODY"
+    exit 0
 fi
 
 # Post reply

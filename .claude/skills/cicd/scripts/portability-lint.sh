@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Portability lint: catch path leaks and per-user config dependencies in
-# committed docs/configs before they ship in a PR.
+# committed docs/configs before they ship in a PR. Steward's recurring bug
+# class.
 #
 # Usage: portability-lint.sh [--all]
 #   default: lint files modified vs HEAD (staged + unstaged)

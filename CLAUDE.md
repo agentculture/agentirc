@@ -21,7 +21,7 @@ End-to-end verified: `agentirc start --port <p>` boots a real IRCd, TCP NICK/USE
 
 **Outstanding follow-ups (non-blocking; the bootstrap itself is closed):**
 - **Cross-repo wire-format fixes (Track A)** — [#7](https://github.com/agentculture/agentirc/issues/7) (`ROOMETAEND`/`ROOMETASET` typos), [#8](https://github.com/agentculture/agentirc/issues/8) (`ERR_NOSUCHCHANNEL` overload), [#9](https://github.com/agentculture/agentirc/issues/9) (`STHREAD` verb collapse). Each requires culture-side change first then agentirc bump.
-- **Steward backport** — [#10](https://github.com/agentculture/agentirc/issues/10). Port the 9.3.0 `pr-sonar.sh` + `workflow.sh sonar` wiring upstream so other workspace projects pick it up via re-vendoring.
+- **Steward backport** — [#10](https://github.com/agentculture/agentirc/issues/10). **Obsolete as of 9.6.2.** The original ask was to port the 9.3.0 `pr-sonar.sh` + `workflow.sh sonar` wiring upstream; the `pr-review`→`cicd` resync (9.6.2) removed `pr-sonar.sh` because steward grew the equivalent independently (`pr-status.sh` + `workflow.sh status`, surfaced via the `cicd` skill). Close #10.
 - **Optional callsite sweep** — [#11](https://github.com/agentculture/agentirc/issues/11). Replace inline IRC verb / numeric-reply string literals in `ircd.py`/`server_link.py`/`skills/*.py` with `agentirc.protocol.<NAME>` imports. Pure refactor.
 - **A2 bot-fixtured tests (low-priority)** — [#12](https://github.com/agentculture/agentirc/issues/12). Currently in culture; could be migrated to agentirc via subprocess-fixture rewrite if culture's coverage drifts.
 
@@ -149,7 +149,8 @@ Markdown linting follows the user's global markdownlint config (no committed `.m
 
 Per `docs/steward/onboarding.md`, agent skills live under `.claude/skills/<name>/`, vendored cite-don't-import from `../steward/.claude/skills/<name>/`. Already vendored:
 
-- `pr-review` — branch / commit / push / PR / wait for Qodo+Copilot / triage / fix / reply / resolve. Includes a portability lint (run via `.claude/skills/pr-review/scripts/workflow.sh lint`) and an alignment-delta check for sibling-project drift.
+- `cicd` — delegates `lint`/`open`/`read`/`reply`/`delta` to `agex pr` (from `agentculture/agex-cli`) and keeps two steward extensions: `status` (SonarCloud quality gate + hotspots + unresolved-thread tally) and `await` (read --wait + status with non-zero exit on Sonar ERROR or unresolved threads). Portability lint runs via `.claude/skills/cicd/scripts/portability-lint.sh` (CI runs it directly; no `agex` needed in CI). Requires `agex` on PATH for the delegating verbs.
+- `communicate` — cross-repo GitHub issue post/comment/fetch + Culture mesh messaging, backed by `agtag`. agentirc vendors the four primitive scripts only (no broadcast template — that is steward-supplier-only).
 
 Per-machine paths for these skills go in `.claude/skills.local.yaml` (gitignored). The committed `.claude/skills.local.yaml.example` documents the schema. When upstream skills change, re-sync explicitly — there is no auto-sync.
 
