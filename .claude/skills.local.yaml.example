@@ -1,7 +1,7 @@
 # Per-machine config for vendored skills. Copy to skills.local.yaml (gitignored)
 # and adjust paths to match your local checkout layout.
 #
-# Used by .claude/skills/pr-review/scripts/workflow.sh delta to dump each
+# Used by .claude/skills/cicd/scripts/workflow.sh delta to dump each
 # sibling project's CLAUDE.md / culture.yaml when this PR touches
 # alignment-relevant files (CLAUDE.md, .claude/skills/).
 

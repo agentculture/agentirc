@@ -204,8 +204,10 @@ Outstanding follow-ups are tracked in GitHub issues:
     `ERR_NOSUCHCHANNEL` (403) semantic misuse.
   - [#9](https://github.com/agentculture/agentirc/issues/9) `STHREAD` verb
     collapse split.
-- [#10](https://github.com/agentculture/agentirc/issues/10) — backport the
-  `pr-sonar.sh` + `workflow.sh sonar` wiring upstream to `steward`.
+- [#10](https://github.com/agentculture/agentirc/issues/10) — ~~backport the
+  `pr-sonar.sh` + `workflow.sh sonar` wiring upstream to `steward`~~. Obsolete
+  as of 9.6.2: the `pr-review`→`cicd` resync removed `pr-sonar.sh` (steward grew
+  the equivalent independently in `pr-status.sh` + `workflow.sh status`).
 - [#11](https://github.com/agentculture/agentirc/issues/11) — sweep
   inline IRC verb / numeric-reply string literals to use
   `agentirc.protocol.<NAME>` constants. Pure refactor.
