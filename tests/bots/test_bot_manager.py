@@ -211,3 +211,47 @@ class _StrType:
 
     def __init__(self, value: str) -> None:
         self.value = value
+
+
+def _free_tcp_port() -> int:
+    """Grab an OS-assigned free port, then release it for the listener to bind."""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+@pytest.mark.asyncio
+async def test_start_skips_listener_when_webhook_port_unset(server, bots_dir):
+    """BotManager.start() binds no HTTP listener when webhook_port is 0.
+
+    Preserves the 9.5.0 default (don't bind) for configs that never used
+    webhooks. The server fixture uses webhook_port=0.
+    """
+    manager = BotManager(server)
+    assert server.config.webhook_port == 0
+    await manager.start()
+    try:
+        assert manager._http_listener is None
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_binds_listener_when_webhook_port_configured(server, bots_dir):
+    """BotManager.start() binds the aiohttp listener when webhook_port > 0.
+
+    Regression for the "webhook listener never starts" finding: under
+    standalone operation start() must give webhook-trigger bots HTTP ingress.
+    """
+    server.config.webhook_port = _free_tcp_port()
+    manager = BotManager(server)
+    await manager.start()
+    try:
+        assert manager._http_listener is not None
+    finally:
+        await manager.stop()
+        assert manager._http_listener is None

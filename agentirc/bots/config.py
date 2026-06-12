@@ -16,6 +16,25 @@ logger = logging.getLogger(__name__)
 BOTS_DIR = Path(os.path.expanduser("~/.culture/bots"))
 BOT_CONFIG_FILE = "bot.yaml"
 
+
+def validate_bot_name(name: str) -> bool:
+    """Return True if *name* is safe to use as a single on-disk path segment.
+
+    Bot names are turned into filesystem paths (``BOTS_DIR / name``) by the
+    CLI and the manager. An attacker-supplied name containing path separators
+    or ``..`` could escape ``BOTS_DIR`` and read/write arbitrary files as the
+    agentirc process user (e.g. via ``save_bot_config`` creating parent dirs).
+    A name is safe iff it is a non-empty single path component that is neither
+    ``.`` nor ``..`` and introduces no separator on any platform.
+    """
+    if not name or name in (".", ".."):
+        return False
+    if "/" in name or "\\" in name or "\x00" in name:
+        return False
+    # Reject anything that is not exactly its own basename (catches "a/b",
+    # "../x", absolute paths, drive-relative names, etc.).
+    return Path(name).name == name
+
 # Dedup state: each config file that uses top-level `fires_event` should emit
 # the canonical-location notice at most once per process. Keyed by resolved
 # path (not bot name) so configs that happen to share a name still each get a

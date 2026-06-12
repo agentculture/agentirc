@@ -95,7 +95,7 @@
       "honesty_conditions": [
         {
           "id": "h9",
-          "text": "no file under culture/bots/system/ is vendored, no backend SDK is added to pyproject deps, and BOTS_DIR default still resolves under ~/.culture",
+          "text": "no file under culture/bots/system/ is vendored, no backend SDK is added to pyproject deps, and BOTS_DIR default still resolves under ~/.culture/bots",
           "status": "confirmed"
         }
       ],

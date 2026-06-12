@@ -25,7 +25,14 @@ import argparse
 import sys
 import time
 
-from agentirc.bots.config import BOT_CONFIG_FILE, BOTS_DIR, BotConfig, load_bot_config, save_bot_config
+from agentirc.bots.config import (
+    BOT_CONFIG_FILE,
+    BOTS_DIR,
+    BotConfig,
+    load_bot_config,
+    save_bot_config,
+    validate_bot_name,
+)
 
 NAME = "bot"
 
@@ -85,6 +92,13 @@ def dispatch(args: argparse.Namespace) -> int:
             "Usage: agentirc bot {create|start|stop|list|inspect|archive|unarchive}",
             file=sys.stderr,
         )
+        return 1
+
+    # Reject path-traversal in the bot name before any verb turns it into a
+    # filesystem path (BOTS_DIR / name). Verbs without a name (e.g. list) skip.
+    name = getattr(args, "name", None)
+    if name is not None and not validate_bot_name(name):
+        print(f"Invalid bot name: {name!r}", file=sys.stderr)
         return 1
 
     handlers = {
@@ -209,7 +223,7 @@ def _load_and_filter_bots(args: argparse.Namespace) -> list:
     return bots
 
 
-def _bot_list(args: argparse.Namespace) -> int:
+def _bot_list(args: argparse.Namespace) -> int:  # NOSONAR S3516: returns int (0) to satisfy the dispatch contract shared by all bot verbs; listing has no failure exit path.
     if not BOTS_DIR.is_dir():
         print("No bots configured.")
         return 0

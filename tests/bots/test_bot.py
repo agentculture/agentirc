@@ -43,7 +43,7 @@ def test_bot_module_has_no_culture_imports():
         if line.strip().startswith(("from culture", "import culture"))
     ]
     assert import_lines == [], (
-        f"bot.py has forbidden culture imports:\n" + "\n".join(import_lines)
+        "bot.py has forbidden culture imports:\n" + "\n".join(import_lines)
     )
 
 

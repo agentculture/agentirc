@@ -22,7 +22,7 @@ slug: `agentirc-9-7-0-ships-an-embedded-bot-framework-bot` · status: `exported`
 
 - covers: c4, h9
 - acceptance:
-  - BotConfig loads a valid YAML bot spec; BOTS_DIR default resolves under ~/.culture; malformed YAML rejected without partial state
+  - BotConfig loads a valid YAML bot spec; BOTS_DIR default resolves under ~/.culture/bots; malformed YAML rejected without partial state
 
 ### t4 — Vendor bot-host virtual_client subclass -> agentirc/bots/virtual_client.py (paraphrase)
 

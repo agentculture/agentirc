@@ -31,7 +31,7 @@
 - the _internal/bots stubs and culture/bots/* line counts are verifiable in the two repos at cutover time
 - docs/api-stability.md documents the agentirc.bots install/register API with a worked example
 - filter_dsl.evaluate runs against real agentirc Event objects in a test, and the bot host resolves agentirc.virtual_client.VirtualClient as its base
-- no file under culture/bots/system/ is vendored, no backend SDK is added to pyproject deps, and BOTS_DIR default still resolves under ~/.culture
+- no file under culture/bots/system/ is vendored, no backend SDK is added to pyproject deps, and BOTS_DIR default still resolves under ~/.culture/bots
 - a clean-venv install test imports agentirc.bots and the DSL/template/lifecycle tests run green in agentirc CI
 
 ## Success signals

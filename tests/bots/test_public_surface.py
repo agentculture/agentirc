@@ -124,8 +124,8 @@ def test_internal_botmanager_is_real_class():
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             mod = importlib.import_module(mod_name)
-            stub_BotManager = mod.BotManager
-        assert stub_BotManager is real_BotManager, (
+            stub_bot_manager = mod.BotManager
+        assert stub_bot_manager is real_BotManager, (
             "_internal BotManager must be the real class from agentirc.bots.bot_manager"
         )
     finally:
@@ -145,8 +145,8 @@ def test_internal_httplistener_is_real_class():
         with warnings.catch_warnings(record=True):
             warnings.simplefilter("always")
             mod = importlib.import_module(mod_name)
-            stub_HttpListener = mod.HttpListener
-        assert stub_HttpListener is real_HttpListener, (
+            stub_http_listener = mod.HttpListener
+        assert stub_http_listener is real_HttpListener, (
             "_internal HttpListener must be the real class from agentirc.bots.http_listener"
         )
     finally:

@@ -210,7 +210,7 @@ def test_bot_start_existing_bot_returns_0(bots_dir, capsys):
     """``agentirc bot start <name>`` returns 0 for an existing bot."""
     _dispatch("bot", "create", "mybot", "--owner", "ori")
     capsys.readouterr()
-    bot_name = list(bots_dir.iterdir())[0].name
+    bot_name = next(iter(bots_dir.iterdir())).name
 
     rc = _dispatch("bot", "start", bot_name)
     assert rc == 0
@@ -220,7 +220,7 @@ def test_bot_stop_existing_bot_returns_0(bots_dir, capsys):
     """``agentirc bot stop <name>`` returns 0 for an existing bot."""
     _dispatch("bot", "create", "mybot", "--owner", "ori")
     capsys.readouterr()
-    bot_name = list(bots_dir.iterdir())[0].name
+    bot_name = next(iter(bots_dir.iterdir())).name
 
     rc = _dispatch("bot", "stop", bot_name)
     assert rc == 0
@@ -241,3 +241,32 @@ def test_bot_stop_missing_bot_returns_1(bots_dir, capsys):
     """``agentirc bot stop <name>`` returns 1 when the bot doesn't exist."""
     rc = _dispatch("bot", "stop", "ghost-bot")
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Security — bot-name path traversal is rejected before any path is built
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "evil",
+    ["../evil", "../../etc/passwd", "a/b", "..", ".", "", "foo/../bar", "x\\y"],
+)
+def test_bot_create_rejects_path_traversal_names(bots_dir, evil, capsys):
+    """A name that is not a single safe path segment is refused with exit 1.
+
+    Regression for the path-traversal finding: bot names become ``BOTS_DIR /
+    name``, so ``../`` or separators must never reach the filesystem layer.
+    """
+    rc = _dispatch("bot", "create", evil, "--owner", "ori")
+    assert rc == 1
+    assert "Invalid bot name" in capsys.readouterr().err
+    # Nothing was written outside (or inside) the bots dir.
+    assert list(bots_dir.iterdir()) == []
+
+
+def test_bot_inspect_rejects_path_traversal_names(bots_dir, capsys):
+    """Read verbs reject traversal names too (no arbitrary file reads)."""
+    rc = _dispatch("bot", "inspect", "../../secret")
+    assert rc == 1
+    assert "Invalid bot name" in capsys.readouterr().err

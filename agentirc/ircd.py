@@ -98,17 +98,19 @@ class IRCd:
         )
         logger.info("Server awake on %s", self.config.name)
 
-        # Initialize bot manager. As of 9.5.0, ``webhook_port`` is no longer
-        # bound by agentirc — consumers (e.g. culture) host their own webhook
-        # listener if they need one. The field stays in ``ServerConfig`` so
-        # culture's ``~/.culture/server.yaml`` keeps loading unchanged; we
-        # just don't act on it. See docs/cli.md and docs/deployment.md.
+        # Initialize and start the bot manager. ``BotManager.start()`` is the
+        # full lifecycle entrypoint: it loads bots, discovers system bots, and
+        # (since 9.7.0, reversing the 9.5.0 deferral) binds the webhook HTTP
+        # listener when ``webhook_port`` is configured — so webhook-trigger
+        # bots have HTTP ingress under standalone ``agentirc serve``. When
+        # ``webhook_port`` is unset/0 no listener is bound, preserving 9.5.0
+        # behaviour for configs that never used webhooks. See docs/cli.md and
+        # docs/deployment.md.
         from agentirc.bots.bot_manager import BotManager
 
         logger.info("Loading bots...")
         self.bot_manager = BotManager(self)
-        await self.bot_manager.load_bots()
-        self.bot_manager.load_system_bots()
+        await self.bot_manager.start()
 
         logger.info(
             "Binding IRC socket on %s:%d...",
@@ -440,10 +442,11 @@ class IRCd:
                 )
             except Exception:
                 logger.exception("failed to emit server.sleep")
-            # Stop bots. (As of 9.5.0, agentirc no longer owns the webhook
-            # HTTP listener — consumers host their own.)
+            # Stop bots and the webhook HTTP listener. ``BotManager.stop()``
+            # tears down the listener (bound in ``start()`` since 9.7.0) before
+            # stopping the bots, mirroring the lifecycle ``IRCd.start()`` drives.
             if self.bot_manager:
-                await self.bot_manager.stop_all()
+                await self.bot_manager.stop()
             for skill in self.skills:
                 await skill.stop()
             # Cancel all pending retry tasks

@@ -74,6 +74,11 @@ class BotManager:
             self.load_system_bots()
 
             webhook_port = self.server.config.webhook_port
+            if not webhook_port or webhook_port <= 0:
+                # No webhook port configured → no HTTP ingress. Preserves the
+                # 9.5.0 default (don't bind) while 9.7.0 honours a configured
+                # webhook_port for full webhook-trigger-bot parity.
+                return
             self._http_listener = HttpListener(self, "127.0.0.1", webhook_port)
             try:
                 await self._http_listener.start()
@@ -185,7 +190,7 @@ class BotManager:
             "nick": event.nick,
             "data": dict(event.data),
         }
-        for bot in list(self.bots.values()):
+        for bot in list(self.bots.values()):  # NOSONAR S7504: defensive copy — _dispatch_to_bot awaits, so a concurrent load_bots/stop_all must not mutate self.bots mid-iteration.
             if self._matches_event(bot, ctx):
                 await self._dispatch_to_bot(bot, ctx)
 

@@ -65,7 +65,7 @@
     {
       "id": "h9",
       "kind": "honesty",
-      "text": "no file under culture/bots/system/ is vendored, no backend SDK is added to pyproject deps, and BOTS_DIR default still resolves under ~/.culture"
+      "text": "no file under culture/bots/system/ is vendored, no backend SDK is added to pyproject deps, and BOTS_DIR default still resolves under ~/.culture/bots"
     },
     {
       "id": "c7",
@@ -142,7 +142,7 @@
       "origin": "llm",
       "status": "confirmed",
       "acceptance_criteria": [
-        "BotConfig loads a valid YAML bot spec; BOTS_DIR default resolves under ~/.culture; malformed YAML rejected without partial state"
+        "BotConfig loads a valid YAML bot spec; BOTS_DIR default resolves under ~/.culture/bots; malformed YAML rejected without partial state"
       ],
       "deps": [],
       "covers": [
