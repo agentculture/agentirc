@@ -3,11 +3,11 @@
 Paraphrase of ``culture.bots.bot_manager`` (import paths rewritten only).
 Two boundary-forced adaptations versus the upstream copy:
 
-- The webhook HTTP listener (``culture.bots.http_listener.HttpListener``)
-  is a culture concern; agentirc ships only a no-op stub at
-  ``agentirc._internal.bots.http_listener``. ``start()``/``stop()`` import
-  that stub so a standalone IRCd embedding still gets the same crash-safe
-  load/teardown semantics without binding a real webhook port.
+- The webhook HTTP listener (``agentirc.bots.http_listener.HttpListener``)
+  is now the real aiohttp-backed listener vendored from culture. ``start()``/
+  ``stop()`` import it so a standalone IRCd embedding gets a real webhook
+  endpoint; the no-op stub at ``agentirc._internal.bots.http_listener`` is
+  retained only for backward-compat imports (scheduled for removal in 10.0.0).
 - System-bot discovery (``culture.bots.system.discover_system_bots``) ships
   inside the culture package, not agentirc. ``load_system_bots()`` imports
   it lazily and no-ops cleanly if ``agentirc.bots.system`` is absent, so the
@@ -42,7 +42,7 @@ _FILTER_ERRORS = (FilterParseError, TypeError)
 if TYPE_CHECKING:
     from agentirc.ircd import IRCd
 
-    from agentirc._internal.bots.http_listener import HttpListener
+    from agentirc.bots.http_listener import HttpListener
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class BotManager:
         bots are torn down before the exception propagates so the caller
         doesn't see a half-started state.
         """
-        from agentirc._internal.bots.http_listener import HttpListener
+        from agentirc.bots.http_listener import HttpListener
 
         try:
             await self.load_bots()
