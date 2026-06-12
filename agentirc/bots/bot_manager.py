@@ -149,9 +149,22 @@ class BotManager:
                         logger.exception("Bot %s has invalid filter, skipping", config.name)
                         continue
                 bot = Bot(config, self.server)
+                # Insert before start() so a self-emitted join during
+                # ``bot.start()`` re-enters on_event with the bot visible and
+                # the _starting guard short-circuits double-start. On failure
+                # we must NOT leave a dead bot (or clobber a previously-loaded
+                # working one) in the registry — restore/remove below.
+                previous = self.bots.get(config.name)
                 self.bots[config.name] = bot
-                with self._starting_guard(bot):
-                    await bot.start()
+                try:
+                    with self._starting_guard(bot):
+                        await bot.start()
+                except Exception:
+                    if previous is not None:
+                        self.bots[config.name] = previous
+                    else:
+                        self.bots.pop(config.name, None)
+                    raise
                 logger.info("Loaded bot %s", config.name)
             except Exception:
                 logger.exception("Failed to load bot from %s", bot_dir)

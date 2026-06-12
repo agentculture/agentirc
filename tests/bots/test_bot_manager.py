@@ -255,3 +255,48 @@ async def test_start_binds_listener_when_webhook_port_configured(server, bots_di
     finally:
         await manager.stop()
         assert manager._http_listener is None
+
+
+@pytest.mark.asyncio
+async def test_load_bots_leaves_no_dead_entry_when_start_fails(server, bots_dir, monkeypatch):
+    """A bot whose start() raises must not remain in the registry.
+
+    Regression: load_bots() inserted the bot before awaiting start() and the
+    error handler logged but never removed it, leaving a dead, inactive entry.
+    """
+    _write_bot(bots_dir)
+
+    async def _boom(self):
+        raise RuntimeError("nick collision")
+
+    monkeypatch.setattr(bot_mod.Bot, "start", _boom)
+
+    manager = BotManager(server)
+    await manager.load_bots()  # error is caught + logged, not raised
+    try:
+        assert manager.get_bot(_BOT_NICK) is None
+        assert _BOT_NICK not in manager.bots
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_load_bots_failure_does_not_clobber_existing_bot(server, bots_dir, monkeypatch):
+    """A failed reload must preserve a previously-loaded working bot."""
+    _write_bot(bots_dir)
+    manager = BotManager(server)
+
+    sentinel = object()
+    manager.bots[_BOT_NICK] = sentinel  # stand-in for an already-working bot
+
+    async def _boom(self):
+        raise RuntimeError("nick collision")
+
+    monkeypatch.setattr(bot_mod.Bot, "start", _boom)
+
+    await manager.load_bots()
+    try:
+        assert manager.bots[_BOT_NICK] is sentinel
+    finally:
+        manager.bots.pop(_BOT_NICK, None)
+        await manager.stop()
