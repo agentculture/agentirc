@@ -107,15 +107,18 @@ multi-host federation.
 
 ## Public API and stability
 
-Three modules form the **public, semver-tracked surface**. Everything else
+Six modules form the **public, semver-tracked surface**. Everything else
 under `agentirc.*` is internal and may be refactored — including renamed,
 split, or removed — in any minor or patch release.
 
-| Module | Members |
-|---|---|
-| [`agentirc.config`](docs/api-stability.md#agentircconfig) | `ServerConfig`, `LinkConfig`, `TelemetryConfig`, `ServerConfig.from_yaml(path)` |
-| [`agentirc.cli`](docs/api-stability.md#agentirccli) | `main()`, `dispatch(argv) -> int` |
-| [`agentirc.protocol`](docs/api-stability.md#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names, the bot extension surface (`Event`, `EventType`, `EVENT_TYPE_*`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB`/`SEVENT`, `BOT_CAP`) |
+| Module | Members | Since |
+|---|---|---|
+| [`agentirc.config`](docs/api-stability.md#agentircconfig) | `ServerConfig`, `LinkConfig`, `TelemetryConfig`, `ServerConfig.from_yaml(path)` | 9.0.0 |
+| [`agentirc.cli`](docs/api-stability.md#agentirccli) | `main()`, `dispatch(argv) -> int` | 9.2.0 |
+| [`agentirc.protocol`](docs/api-stability.md#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names, the bot extension surface (`Event`, `EventType`, `EVENT_TYPE_*`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB`/`SEVENT`, `BOT_CAP`) | 9.2.0 |
+| [`agentirc.ircd`](docs/api-stability.md#embedding-agentirc-in-process) | `IRCd` (constructor + `start`/`stop`/`emit_event` + core attributes) | 9.6.0 |
+| [`agentirc.virtual_client`](docs/api-stability.md#embedding-agentirc-in-process) | `VirtualClient` | 9.6.0 |
+| [`agentirc.bots`](docs/api-stability.md#botconfig-yaml-schema) | `BotManager`, `Bot`, `BotConfig` — embedded YAML-spec'd bots (see [`docs/bots.md`](docs/bots.md)) | 9.7.0 |
 
 `agentirc.cli.dispatch(argv)` is the in-process integration surface — it is
 what culture's `culture server` shim calls today. It returns `int` on
@@ -184,11 +187,31 @@ behavior) and
 [`docs/api-stability.md#bot-extension-surface-shipped-in-950`](docs/api-stability.md#bot-extension-surface-shipped-in-950)
 for the wire contract.
 
-**Operational note.** As of 9.5.0, `agentirc` no longer binds `webhook_port`
-even when set in YAML — the field stays in `ServerConfig` for backward
-compatibility with culture's `~/.culture/server.yaml`, but consumers that
-need webhook→bot dispatch host their own HTTP listener (notably culture).
-The field will be removed in 10.0.0.
+## Embedded bots (since 9.7.0)
+
+Distinct from the out-of-process extension API above, `agentirc.bots` is an
+**in-process** bot framework: deterministic, YAML-spec'd automations that run as
+`VirtualClient` presences inside the IRCd (no separate process). A bot reacts to
+an event filter or an HTTP webhook and replies with a Jinja2-templated message.
+
+```bash
+agentirc bot create pinger --owner ori \
+  --trigger event \
+  --event-filter "type == 'user.message' and channel == '#general'" \
+  --channels '#general' --template 'pong {{event.nick}}'
+```
+
+Bots live under `~/.culture/bots/<name>/bot.yaml` and load when the server
+starts. See **[`docs/bots.md`](docs/bots.md)** for the authoring guide (CLI +
+hand-written YAML, the two trigger types, the filter DSL, templates) and
+[`docs/api-stability.md`](docs/api-stability.md#botconfig-yaml-schema) for
+embedding a `BotManager` onto a running `IRCd`.
+
+**Operational note.** Since 9.7.0, `IRCd.start()` binds the webhook listener
+when `webhook_port` is set (>0), giving webhook-triggered bots HTTP ingress
+under standalone `agentirc serve`; when `webhook_port` is unset/0 nothing is
+bound (preserving the 9.5.0 default). The field stays in `ServerConfig` for
+backward compatibility with culture's `~/.culture/server.yaml`.
 
 ## Current state and roadmap
 

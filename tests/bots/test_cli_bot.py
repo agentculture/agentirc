@@ -270,3 +270,59 @@ def test_bot_inspect_rejects_path_traversal_names(bots_dir, capsys):
     rc = _dispatch("bot", "inspect", "../../secret")
     assert rc == 1
     assert "Invalid bot name" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Event-triggered bot creation (since 9.8.0)
+# ---------------------------------------------------------------------------
+
+
+def _read_yaml(bots_dir, bot_name):
+    import yaml
+
+    return yaml.safe_load(
+        (bots_dir / bot_name / "bot.yaml").read_text()
+    )
+
+
+def test_bot_create_event_writes_filter(bots_dir, capsys):
+    """``--trigger event --event-filter ...`` writes an event bot spec."""
+    rc = _dispatch(
+        "bot", "create", "pinger", "--owner", "ori",
+        "--trigger", "event",
+        "--event-filter", "type == 'user.message' and channel == '#general'",
+        "--channels", "#general", "--template", "pong {{event.nick}}",
+    )
+    assert rc == 0
+    spec = _read_yaml(bots_dir, "ori-pinger")
+    assert spec["trigger"]["type"] == "event"
+    assert spec["trigger"]["filter"] == "type == 'user.message' and channel == '#general'"
+
+
+def test_bot_create_event_requires_filter(bots_dir, capsys):
+    """``--trigger event`` without a filter is rejected."""
+    rc = _dispatch("bot", "create", "nofilter", "--owner", "ori", "--trigger", "event")
+    assert rc == 1
+    assert "requires --event-filter" in capsys.readouterr().err
+    assert list(bots_dir.iterdir()) == []
+
+
+def test_bot_create_event_rejects_bad_filter(bots_dir, capsys):
+    """An --event-filter that doesn't compile is rejected at create time."""
+    rc = _dispatch(
+        "bot", "create", "badfilter", "--owner", "ori",
+        "--trigger", "event", "--event-filter", "type == =",
+    )
+    assert rc == 1
+    assert "invalid --event-filter" in capsys.readouterr().err
+    assert list(bots_dir.iterdir()) == []
+
+
+def test_bot_create_webhook_rejects_event_filter(bots_dir, capsys):
+    """--event-filter only applies to event triggers."""
+    rc = _dispatch(
+        "bot", "create", "wh", "--owner", "ori",
+        "--trigger", "webhook", "--event-filter", "type == 'x.y'",
+    )
+    assert rc == 1
+    assert "only applies to --trigger event" in capsys.readouterr().err
