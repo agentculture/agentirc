@@ -113,6 +113,26 @@ class IRCTestClient:
             pass
 
 
+@pytest.fixture(autouse=True)
+def _isolate_bots_dir(tmp_path, monkeypatch):
+    """Point the bot loader at an empty per-test dir.
+
+    Since 9.7.0 ``IRCd.start()`` wires the *real* ``BotManager``, whose
+    ``load_bots()`` reads the module-level ``BOTS_DIR`` (default
+    ``~/.culture/bots``). Without this isolation every IRCd-spawning test
+    would load the developer's actual bots and pollute channel state
+    (op autopromotion, NAMES, SEVENT relay). This restores the sandbox the
+    upstream culture conftest applied; it became dead weight when agentirc
+    shipped no-op bot stubs and load-bearing again now that the real
+    BotManager is vendored. ``BOTS_DIR`` is imported by-name into three
+    modules, so all three references are patched.
+    """
+    empty = tmp_path / "bots"
+    empty.mkdir(exist_ok=True)
+    for mod in ("agentirc.bots.config", "agentirc.bots.bot", "agentirc.bots.bot_manager"):
+        monkeypatch.setattr(f"{mod}.BOTS_DIR", empty, raising=False)
+
+
 @pytest_asyncio.fixture
 async def server(tmp_path):
     config = ServerConfig(
