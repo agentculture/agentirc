@@ -311,6 +311,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("version", help="Print agentirc version")
 
+    from agentirc.bots.cli import register as _register_bot_verb
+    _register_bot_verb(sub)
+
     return parser
 
 
@@ -730,6 +733,12 @@ def _server_logs(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _bot_dispatch(args: argparse.Namespace) -> int:
+    """Route to agentirc.bots.cli.dispatch and return an int exit code."""
+    from agentirc.bots.cli import dispatch as _bot_cli_dispatch
+    return _bot_cli_dispatch(args)
+
+
 _HANDLERS = {
     "serve": _server_serve,
     "start": _server_start,
@@ -738,6 +747,7 @@ _HANDLERS = {
     "status": _server_status,
     "link": _server_link,
     "logs": _server_logs,
+    "bot": _bot_dispatch,
 }
 
 
