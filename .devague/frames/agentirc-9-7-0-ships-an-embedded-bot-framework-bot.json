@@ -1,0 +1,211 @@
+{
+  "slug": "agentirc-9-7-0-ships-an-embedded-bot-framework-bot",
+  "title": "agentirc 9.7.0 ships an embedded bot framework: BotManager + Bot + filter DSL + template engine + YAML bot config live in agentirc/bots/, tested here, so culture can replace its in-tree culture/bots/* with thin forwards in a single cutover PR with no functionality gap",
+  "schema_version": 1,
+  "status": "exported",
+  "created": "2026-06-12T11:19:28Z",
+  "updated": "2026-06-12T11:27:23Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "agentirc 9.7.0 ships an embedded bot framework: BotManager + Bot + filter DSL + template engine + YAML bot config live in agentirc/bots/, tested here, so culture can replace its in-tree culture/bots/* with thin forwards in a single cutover PR with no functionality gap",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "agentirc-cli 9.7.0 is published to PyPI with the bot framework importable, and culture's cutover PR replaces culture/bots/* with forwards while keeping its suite green",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c2",
+      "kind": "audience",
+      "text": "culture (the immediate consumer wiring its IRCd to install BotManager + forwarding culture bot CLI verbs) and any standalone agentirc embedder wanting deterministic YAML chatops bots inside their IRCd",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "culture's cutover PR consumes the published agentirc API (installs BotManager + forwards CLI) without reimplementing bot logic",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c3",
+      "kind": "before_state",
+      "text": "the bot framework lives only in culture/bots/* (~1340 lines incl config.py); agentirc ships only no-op BotManager/http_listener stubs in _internal/bots/; culture cannot slim its front door because deleting bots would lose functionality",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "the _internal/bots stubs and culture/bots/* line counts are verifiable in the two repos at cutover time",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c4",
+      "kind": "after_state",
+      "text": "manager + Bot + filter_dsl + template_engine + config (YAML BotConfig) live in agentirc, are unit-tested here (filter DSL + template engine edge cases especially), and a documented public API lets an embedder install a BotManager onto a running IRCd and register YAML-spec'd bots",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "docs/api-stability.md documents the agentirc.bots install/register API with a worked example",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c5",
+      "kind": "why_it_matters",
+      "text": "the bot brain is already bound to agentirc protocol types (filter DSL evaluates Event/EventType; bot host subclasses agentirc.virtual_client.VirtualClient) \u2014 bots have no coherent life without an IRCd, so the framework belongs here, not in culture or a third package",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "filter_dsl.evaluate runs against real agentirc Event objects in a test, and the bot host resolves agentirc.virtual_client.VirtualClient as its base",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c6",
+      "kind": "boundary",
+      "text": "NOT in scope: porting culture's system bots (culture/bots/system/*), any LLM/agent-backend bot harness (forbidden by the dependency boundary), and renaming on-disk artifacts (BOTS_DIR stays ~/.culture/bots for culture continuity)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "no file under culture/bots/system/ is vendored, no backend SDK is added to pyproject deps, and BOTS_DIR default still resolves under ~/.culture/bots",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c7",
+      "kind": "success_signal",
+      "text": "pip install agentirc-cli==9.7.0 in a clean venv imports the bot framework; pytest covers filter DSL + template engine + manager lifecycle; culture's cutover PR replaces culture/bots/* with re-export shims and its test suite stays green",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "a clean-venv install test imports agentirc.bots and the DSL/template/lifecycle tests run green in agentirc CI",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "the real BotManager must satisfy the existing _internal/bots stub contract (__init__(server), async load_bots, load_system_bots, get_bot(nick), async on_event(event), async stop_all) because IRCd.start() already calls these methods",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "an IRCd booted in-process with a BotManager installed loads a YAML bot, dispatches a matching Event to it, and the bot replies \u2014 exercised by a test",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "vendored via cite-don't-copy: each moved file gets a [tool.citation] entry (quote/paraphrase/synthesize) with source URL + sha256; culture.bots.* imports rewrite to agentirc.bots.*; bot.py's culture.constants.EVENT_TYPE_RE rewrites to agentirc._internal.constants",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "cite check passes after the move and the new [tool.citation] entries resolve against real culture source SHAs",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "no imports back into culture: git grep '^(from|import) culture' over agentirc/ must stay empty after the move",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "CI's git grep portability check returns nothing for 'from culture'/'import culture' across agentirc/ and tests/",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c11",
+      "kind": "decision",
+      "text": "version bump is minor (9.7.0): the move is additive \u2014 a new public bot subsystem and CLI verbs, no breaking change to the five existing public modules",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c12",
+      "kind": "decision",
+      "text": "Webhook: port http_listener.py too \u2014 add aiohttp + opentelemetry-instrumentation-aiohttp-server deps, reversing the 9.5.0 deferral; bots ship with full webhook-ingress parity",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c13",
+      "kind": "decision",
+      "text": "Placement: agentirc/bots/ is a PUBLIC, semver-tracked subsystem (6th public surface); embedders import agentirc.bots.BotManager / Bot; _internal/bots stubs become re-export shims or are removed; public API table in CLAUDE.md + docs/api-stability.md gains an agentirc.bots row",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c14",
+      "kind": "decision",
+      "text": "CLI: ship 'agentirc bot create/start/stop/list/inspect/archive/unarchive' verbs in 9.7.0, ported from culture/cli/bot.py, so culture bot can become a thin forward to agentirc.cli.dispatch",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": []
+    }
+  ],
+  "open_vagueness": []
+}

@@ -1,6 +1,6 @@
 [project]
 name = "agentirc-cli"
-version = "9.6.2"
+version = "9.7.0"
 description = "Agent-friendly IRCd: server core for AI agent meshes"
 readme = "README.md"
 license = "Apache-2.0"
@@ -29,7 +29,10 @@ dependencies = [
     "opentelemetry-api>=1.22",
     "opentelemetry-sdk>=1.22",
     "opentelemetry-exporter-otlp-proto-grpc>=1.22",
+    "opentelemetry-instrumentation-aiohttp-server>=0.43b0",
+    "aiohttp>=3.9",
     "pyyaml>=6.0",
+    "jinja2>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -491,3 +494,51 @@ sha256 = "ce2de77e1002758976e7ac50bd61cbc8a551e128b285eb01e4a1cf23ce3aa148"
 [tool.citation.packages.culture-tests-telemetry.files."test_tracing.py"]
 status = "paraphrase"
 sha256 = "1847662286c1d15848ae3624f61c88f78f1f5d16ab30af3e77981c94e9e5c86d"
+
+[tool.citation.packages.culture-bots]
+schema = 2
+source = "https://github.com/agentculture/culture/tree/df50942/culture/bots"
+version = "df50942"
+target = "agentirc/bots/"
+cited = "2026-06-12"
+notes = "Bot framework absorbed into public agentirc.bots subsystem (9.7.0, #33). template_engine.py and filter_dsl.py vendored verbatim (quote). config.py, virtual_client.py, bot.py, bot_manager.py, http_listener.py vendored with import rewrites (paraphrase): from culture.agentirc.* to agentirc.*, from culture.bots.* to agentirc.bots.*, from culture._internal.* to agentirc._internal.*. cli.py sourced from culture/cli/bot.py with import rewrites and CLI surface adaptation (paraphrase)."
+
+[tool.citation.packages.culture-bots.files."template_engine.py"]
+status = "quote"
+sha256 = "3c25796ae1efbc12dea3afd0f14ea13d2da5d50b7f0152f381a09f9e064c372f"
+
+[tool.citation.packages.culture-bots.files."filter_dsl.py"]
+status = "quote"
+sha256 = "01a3c4576f35898271a6c25db74831ee95f6710b752df5d822d9534e8bce5841"
+
+[tool.citation.packages.culture-bots.files."config.py"]
+status = "paraphrase"
+sha256 = "6565bf4b1c2e100c8de8cd86576e6d236a1f000b384d77d05eefb3b89b5f4acb"
+
+[tool.citation.packages.culture-bots.files."virtual_client.py"]
+status = "paraphrase"
+sha256 = "fa7384bc4a1d64fda18919576d319b83c8bf23602d6638ae1a4ce994b16054df"
+
+[tool.citation.packages.culture-bots.files."bot.py"]
+status = "paraphrase"
+sha256 = "914d700942016f14a0b20dd1f5913dee6e86ad92d61d77d7d96c2d462cb1f8c1"
+
+[tool.citation.packages.culture-bots.files."bot_manager.py"]
+status = "paraphrase"
+sha256 = "0eeff536805cd5c0f3f37f50ff5fe776f2aa31f4a809b5bc10a02923402a3f84"
+
+[tool.citation.packages.culture-bots.files."http_listener.py"]
+status = "paraphrase"
+sha256 = "dcce54f69281725f63cfdf0e5ea17c9ff6937ba6aa3943fd5185b2452f2f1ec3"
+
+[tool.citation.packages.culture-bots-cli]
+schema = 2
+source = "https://github.com/agentculture/culture/blob/df50942/culture/cli/bot.py"
+version = "df50942"
+target = "agentirc/bots/"
+cited = "2026-06-12"
+notes = "Bot CLI verbs extracted from culture/cli/bot.py and adapted as agentirc/bots/cli.py. Import rewrites: from culture.bots.* to agentirc.bots.*, from culture.agentirc.config to agentirc.config. CLI surface shaped to integrate with agentirc's top-level argparse dispatch."
+
+[tool.citation.packages.culture-bots-cli.files."cli.py"]
+status = "paraphrase"
+sha256 = "1c6e1897d293f82ba43a0af12fffb735199e5588afb90506698cbda9c0198f7a"

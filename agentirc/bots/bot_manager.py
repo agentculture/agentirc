@@ -1,0 +1,347 @@
+"""BotManager — central registry for bot lifecycle and webhook dispatch.
+
+Paraphrase of ``culture.bots.bot_manager`` (import paths rewritten only).
+Two boundary-forced adaptations versus the upstream copy:
+
+- The webhook HTTP listener (``agentirc.bots.http_listener.HttpListener``)
+  is now the real aiohttp-backed listener vendored from culture. ``start()``/
+  ``stop()`` import it so a standalone IRCd embedding gets a real webhook
+  endpoint; the no-op stub at ``agentirc._internal.bots.http_listener`` is
+  retained only for backward-compat imports (scheduled for removal in 10.0.0).
+- System-bot discovery (``culture.bots.system.discover_system_bots``) ships
+  inside the culture package, not agentirc. ``load_system_bots()`` imports
+  it lazily and no-ops cleanly if ``agentirc.bots.system`` is absent, so the
+  stub contract (``load_system_bots() -> None``) holds in a standalone
+  deployment while culture's runtime override can still supply real system
+  bots.
+
+No logic was refactored — only import paths and the two guards above.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import contextmanager
+from typing import TYPE_CHECKING
+
+from opentelemetry import trace as _otel_trace
+
+from agentirc.bots.bot import Bot
+from agentirc.bots.config import (
+    BOT_CONFIG_FILE,
+    BOTS_DIR,
+    BotConfig,
+    load_bot_config,
+    save_bot_config,
+)
+from agentirc.bots.filter_dsl import FilterParseError, compile_filter, evaluate
+
+_FILTER_ERRORS = (FilterParseError, TypeError)
+
+if TYPE_CHECKING:
+    from agentirc.ircd import IRCd
+
+    from agentirc.bots.http_listener import HttpListener
+
+logger = logging.getLogger(__name__)
+
+
+class BotManager:
+    """Loads, starts, stops, and dispatches webhooks to bots."""
+
+    def __init__(self, server: IRCd):
+        self.server = server
+        self.bots: dict[str, Bot] = {}  # name -> Bot
+        self._http_listener: HttpListener | None = None
+
+    async def start(self) -> None:
+        """Load configured bots and start the webhook HTTP listener.
+
+        Owned by ``BotManager`` after Phase A2 — agentirc 9.5+ stopped
+        binding ``webhook_port`` itself; consumers (culture) host the
+        listener now. Called by the embedding host after ``ircd.start()``
+        completes and the host has assigned itself to ``ircd.bot_manager``.
+
+        Crash-safe: if any step after ``load_bots`` raises, already-loaded
+        bots are torn down before the exception propagates so the caller
+        doesn't see a half-started state.
+        """
+        from agentirc.bots.http_listener import HttpListener
+
+        try:
+            await self.load_bots()
+            self.load_system_bots()
+
+            webhook_port = self.server.config.webhook_port
+            if not webhook_port or webhook_port <= 0:
+                # No webhook port configured → no HTTP ingress. Preserves the
+                # 9.5.0 default (don't bind) while 9.7.0 honours a configured
+                # webhook_port for full webhook-trigger-bot parity.
+                return
+            self._http_listener = HttpListener(self, "127.0.0.1", webhook_port)
+            try:
+                await self._http_listener.start()
+            except OSError as exc:
+                # Port unavailable (e.g. tests using port 0 that got an
+                # in-use ephemeral port). Non-fatal — bots still work,
+                # just without the HTTP endpoint. Surface the underlying
+                # errno so operators can distinguish EADDRINUSE / EACCES /
+                # other bind failures without re-running with a debugger.
+                logger.warning(
+                    "Could not start webhook listener on port %d: %s",
+                    webhook_port,
+                    exc,
+                )
+                self._http_listener = None
+        except Exception:
+            # Tear down anything already loaded so we don't leak running
+            # bots or a half-bound listener up to the caller.
+            await self.stop()
+            raise
+
+    async def stop(self) -> None:
+        """Stop all bots and the webhook HTTP listener."""
+        if self._http_listener is not None:
+            try:
+                await self._http_listener.stop()
+            except Exception:
+                logger.exception("Failed to stop webhook listener")
+            self._http_listener = None
+        await self.stop_all()
+
+    @staticmethod
+    @contextmanager
+    def _starting_guard(bot: Bot):
+        """Mark ``bot`` as starting so a re-entrant ``_try_start_bot`` short-circuits.
+
+        Set before awaiting ``Bot.start()`` and cleared in ``finally`` so an
+        event fired mid-start (e.g. ``user.join`` from this bot's own
+        ``join_channel``) can't loop back into ``Bot.start()`` from
+        ``on_event`` and trip the "Nick already in use" check on the
+        ``VirtualClient`` this same call already registered. Closes #317.
+        """
+        bot._starting = True
+        try:
+            yield
+        finally:
+            bot._starting = False
+
+    async def load_bots(self) -> None:
+        """Scan ~/.culture/bots/ and load all bot definitions."""
+        if not BOTS_DIR.is_dir():
+            return
+
+        for bot_dir in sorted(BOTS_DIR.iterdir()):
+            try:
+                await self._load_one_bot(bot_dir)
+            except Exception:
+                logger.exception("Failed to load bot from %s", bot_dir)
+
+    async def _load_one_bot(self, bot_dir) -> None:
+        """Load + start a single bot from its directory. Raises on failure."""
+        yaml_path = bot_dir / BOT_CONFIG_FILE
+        if not yaml_path.is_file():
+            return
+        config = load_bot_config(yaml_path)
+        if config.archived:
+            logger.info("Skipping archived bot %s", config.name)
+            return
+        # Compile event filter at load time.
+        if config.trigger_type == "event" and config.event_filter:
+            try:
+                config._compiled_filter = compile_filter(config.event_filter)
+            except _FILTER_ERRORS:
+                logger.exception("Bot %s has invalid filter, skipping", config.name)
+                return
+
+        bot = Bot(config, self.server)
+        # Insert before start() so a self-emitted join during ``bot.start()``
+        # re-enters on_event with the bot visible and the _starting guard
+        # short-circuits double-start. On failure we must NOT leave a dead bot
+        # (or clobber a previously-loaded working one) in the registry.
+        previous = self.bots.get(config.name)
+        self.bots[config.name] = bot
+        try:
+            with self._starting_guard(bot):
+                await bot.start()
+        except Exception:
+            if previous is not None:
+                self.bots[config.name] = previous
+            else:
+                self.bots.pop(config.name, None)
+            raise
+        logger.info("Loaded bot %s", config.name)
+
+    def register_bot(self, config: BotConfig) -> Bot:
+        """Register a bot from config (used by tests and system bot loader)."""
+        if config.trigger_type == "event" and config.event_filter:
+            try:
+                config._compiled_filter = compile_filter(config.event_filter)
+            except _FILTER_ERRORS as exc:
+                raise ValueError(f"bot {config.name} has invalid filter: {exc}") from exc
+        bot = Bot(config, self.server)
+        self.bots[config.name] = bot
+        return bot
+
+    async def _try_start_bot(self, bot: Bot) -> bool:
+        """Lazily start a bot on first matching event. Returns True if ready."""
+        if bot.active:
+            return True
+        if bot._starting:
+            return False
+        with self._starting_guard(bot):
+            try:
+                await bot.start()
+                return True
+            except Exception:
+                logger.exception("Bot %s failed to start", bot.config.name)
+                return False
+
+    async def on_event(self, event) -> None:
+        """Evaluate event-triggered bots against an event and dispatch matches."""
+        # Snapshot: handle() may call emit_event() which re-enters on_event().
+        ctx = {
+            "type": event.type.value if hasattr(event.type, "value") else str(event.type),
+            "channel": event.channel,
+            "nick": event.nick,
+            "data": dict(event.data),
+        }
+        for bot in list(self.bots.values()):  # NOSONAR S7504: defensive copy — _dispatch_to_bot awaits, so a concurrent load_bots/stop_all must not mutate self.bots mid-iteration.
+            if self._matches_event(bot, ctx):
+                await self._dispatch_to_bot(bot, ctx)
+
+    def _matches_event(self, bot: Bot, ctx: dict) -> bool:
+        """True iff `bot` is event-triggered and its filter accepts `ctx`."""
+        cfg = bot.config
+        if cfg.trigger_type != "event":
+            return False
+        compiled = getattr(cfg, "_compiled_filter", None)
+        if compiled is None:
+            return False
+        try:
+            return bool(evaluate(compiled, ctx))
+        except Exception:
+            logger.exception("Filter evaluation failed for bot %s", cfg.name)
+            return False
+
+    async def _dispatch_to_bot(self, bot: Bot, ctx: dict) -> None:
+        """Lazily start the bot and run handle() inside a bot.event.dispatch span."""
+        if not await self._try_start_bot(bot):
+            return
+        cfg = bot.config
+        event_type_str = ctx["type"]
+        with _otel_trace.get_tracer("culture.agentirc").start_as_current_span(
+            "bot.event.dispatch",
+            attributes={"bot.name": cfg.name, "event.type": event_type_str},
+        ) as span:
+            outcome = "success"
+            try:
+                await bot.handle({"event": ctx})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                outcome = "error"
+                span.set_status(_otel_trace.StatusCode.ERROR, str(exc))
+                logger.exception("Bot %s handle() failed for event %s", cfg.name, ctx["type"])
+            finally:
+                self.server.metrics.bot_invocations.add(
+                    1,
+                    {
+                        "bot": cfg.name,
+                        "event.type": event_type_str,
+                        "outcome": outcome,
+                    },
+                )
+
+    def load_system_bots(self) -> None:
+        """Discover and register system bots from the package.
+
+        System-bot discovery lives in the culture package
+        (``culture.bots.system``), which agentirc does not vendor. Import it
+        lazily and no-op cleanly when ``agentirc.bots.system`` is absent so a
+        standalone agentirc embedding still satisfies the stub contract; a
+        culture runtime that supplies the module gets the full behaviour.
+        """
+        try:
+            from agentirc.bots.system import discover_system_bots
+        except ImportError:
+            logger.debug("No agentirc.bots.system module — skipping system bots")
+            return
+
+        server_name = self.server.config.name if self.server else "unknown"
+        server_config = {}
+        if self.server:
+            raw = getattr(self.server.config, "system_bots", None)
+            if raw:
+                server_config = {"system_bots": raw}
+        for cfg in discover_system_bots(server_name, server_config):
+            if cfg.name in self.bots:
+                logger.info("Skipping system bot %s — name already registered", cfg.name)
+                continue
+            try:
+                self.register_bot(cfg)
+            except Exception:
+                logger.exception("Failed to register system bot %s", cfg.name)
+
+    async def create_bot(self, config: BotConfig) -> Bot:
+        """Create a new bot: write config to disk and start it."""
+        bot_dir = BOTS_DIR / config.name
+        save_bot_config(bot_dir / BOT_CONFIG_FILE, config)
+
+        bot = Bot(config, self.server)
+        self.bots[config.name] = bot
+        await bot.start()
+        return bot
+
+    async def start_bot(self, name: str) -> None:
+        """Start an existing stopped bot."""
+        bot = self.bots.get(name)
+        if not bot:
+            # Try loading from disk
+            yaml_path = BOTS_DIR / name / BOT_CONFIG_FILE
+            if not yaml_path.is_file():
+                raise ValueError(f"Bot {name!r} not found")
+            config = load_bot_config(yaml_path)
+            bot = Bot(config, self.server)
+            self.bots[name] = bot
+
+        await bot.start()
+
+    async def stop_bot(self, name: str) -> None:
+        """Stop a running bot."""
+        bot = self.bots.get(name)
+        if not bot:
+            raise ValueError(f"Bot {name!r} not found")
+        await bot.stop()
+
+    async def stop_all(self) -> None:
+        """Stop all active bots."""
+        for bot in self.bots.values():
+            try:
+                await bot.stop()
+            except Exception:
+                logger.exception("Failed to stop bot %s", bot.name)
+
+    def get_bot(self, name: str) -> Bot | None:
+        return self.bots.get(name)
+
+    def list_bots(self, owner: str | None = None) -> list[Bot]:
+        """List bots, optionally filtered by owner."""
+        bots = self.bots.values()
+        if owner:
+            bots = [b for b in bots if b.config.owner == owner]
+        return sorted(bots, key=lambda b: b.name)
+
+    async def dispatch(self, bot_name: str, payload: dict) -> str:
+        """Route an incoming webhook payload to the named bot.
+
+        Returns the rendered message text.
+        Raises ValueError if bot not found, RuntimeError if bot not active.
+        """
+        bot = self.bots.get(bot_name)
+        if not bot:
+            raise ValueError(f"Bot {bot_name!r} not found")
+        if not bot.active:
+            raise RuntimeError(f"Bot {bot_name!r} is not active")
+        return await bot.handle(payload)
