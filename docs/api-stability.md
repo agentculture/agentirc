@@ -1,10 +1,10 @@
 # Public API stability
 
-`agentirc-cli` exposes three public modules; everything else is internal
+`agentirc-cli` exposes six public modules; everything else is internal
 and may be refactored without a major version bump. Downstream consumers
 (notably `culture`, which pins `agentirc-cli>=9.0,<10` and calls
 `agentirc.cli.dispatch(argv)` from its `culture server` shim) should
-import only from these three modules.
+import only from these six modules.
 
 | Module | Members | Stability |
 |---|---|---|
@@ -13,6 +13,7 @@ import only from these three modules.
 | [`agentirc.protocol`](#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names | Public, semver-tracked |
 | [`agentirc.ircd`](#agentircircd) | `IRCd` (constructor + `start`/`stop`/`emit_event`/`subscription_registry`/`clients`/`channels`/`config`/`system_client`) | Public, semver-tracked (since 9.6.0) |
 | [`agentirc.virtual_client`](#agentircvirtual_client) | `VirtualClient` | Public, semver-tracked (since 9.6.0) |
+| [`agentirc.bots`](#agentircbots) | `BotManager`, `Bot`, `BotConfig` | Public, semver-tracked (since 9.7.0) |
 
 **Bot extension API (shipped in 9.5.0):**
 
@@ -156,6 +157,121 @@ lazily inside the constructor — not at import time — so the module is
 safe to import in dependency-injection contexts that defer
 configuration.
 
+## Embedding bots: `agentirc.bots`
+
+The bot framework is a deterministic, YAML-spec'd event-trigger system
+(promoted to the public surface in 9.7.0; see [#33](https://github.com/agentculture/agentirc/issues/33)).
+Bots are in-process `VirtualClient` presences that subscribe to events,
+match them against compiled filter expressions, and respond by sending
+messages or emitting custom-typed events back into the stream.
+
+Public members are `BotManager` (central registry for bot lifecycle and
+event dispatch), `Bot` (single bot instance), and `BotConfig` (YAML
+configuration dataclass). Bot definitions live in `~/.culture/bots/`
+(configurable via `BotConfig.BOTS_DIR`) as a directory per bot containing
+a `bot.yaml` spec and an optional custom `handler.py`.
+
+### Quick start
+
+```python
+import asyncio
+
+from agentirc.config import ServerConfig
+from agentirc.ircd import IRCd
+from agentirc.bots import BotManager
+
+
+async def main() -> None:
+    config = ServerConfig(name="myhost", host="127.0.0.1", port=6667)
+    ircd = IRCd(config)
+    await ircd.start()
+
+    # Create a BotManager and load YAML-spec'd bots from ~/.culture/bots/.
+    manager = BotManager(ircd)
+    await manager.load_bots()
+
+    # Dispatch an event to all registered bots; matching ones reply.
+    from agentirc.protocol import Event, EventType
+    await manager.on_event(
+        Event(
+            type=EventType.MESSAGE,
+            channel="#general",
+            nick="alice",
+            data={"text": "hello botnet!"},
+        )
+    )
+
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await manager.stop_all()
+        await ircd.stop()
+
+
+asyncio.run(main())
+```
+
+### Public surface on `BotManager`
+
+| Member | Stability |
+|---|---|
+| `BotManager(server: IRCd)` | Constructor — registers the manager for event dispatch on the running IRCd. |
+| `await manager.load_bots()` | Scan `~/.culture/bots/` and load all non-archived bot YAML specs. Filters are compiled at load time. Already-running bots are restarted. |
+| `manager.load_system_bots()` | Discover and register system bots (culture-supplied; no-ops cleanly if the discovery module is absent). |
+| `await manager.on_event(event)` | Route a `protocol.Event` to all bots whose filter matches the event. Matching bots are started lazily and their `handle()` method is invoked inside a `bot.event.dispatch` OTEL span. |
+| `manager.get_bot(name: str) -> Bot \| None` | Look up a bot by name. |
+| `await manager.stop_all()` | Stop all active bots and shut down the webhook HTTP listener. |
+
+### `BotConfig` (YAML schema)
+
+A `BotConfig` represents a single bot's metadata and trigger specification.
+Load from YAML via `agentirc.bots.config.load_bot_config(path)`. The YAML
+layout mirrors the dataclass structure:
+
+```yaml
+bot:
+  name: mybot
+  owner: alice
+  description: "Responds to ping events"
+trigger:
+  type: event
+  filter: "type == 'custom.ping' and channel == '#general'"
+output:
+  channels:
+    - "#general"
+  template: "pong! {{event.data.from}}"
+  fallback: json
+```
+
+Key fields:
+
+- `bot.name`, `bot.owner`, `bot.description`: metadata.
+- `trigger.type`: `"event"` (filter + emit) or `"webhook"` (HTTP POST).
+- `trigger.filter`: Boolean expression matching `{type, channel, nick, data}`
+  (event-triggered bots only). Compiled at load time into a `_compiled_filter`
+  attribute.
+- `output.channels`: List of channels the bot addresses.
+- `output.template`: Jinja2 template rendered with bot context and event data.
+- `output.fallback`: Fallback format (`"json"` or `"text"`).
+- `archived`: Flag to skip a bot without deleting it.
+
+### `Bot`
+
+Each `Bot` instance wraps a `BotConfig`, owns a `VirtualClient` presence on
+the IRCd, and implements event matching + response logic via `handle()`. The
+public contract is read-only:
+
+| Member | Stability |
+|---|---|
+| `bot.config: BotConfig` | The bot's configuration. |
+| `bot.name: str` | Shorthand for `bot.config.name`. |
+| `bot.active: bool` | Whether the bot is currently online and joined to its channels. |
+| `await bot.start()` | Register the bot's VirtualClient, join its channels, and mark `active=True`. |
+| `await bot.stop()` | Part all channels, deregister, and mark `active=False`. |
+
+Semver contract: direct instantiation of `Bot` is not recommended; use
+`BotManager.register_bot(config)` or `BotManager.load_bots()` instead.
+
 ## Semver contract
 
 Following [SemVer 2.0](https://semver.org/):
@@ -177,6 +293,9 @@ Internal modules (`agentirc.server_link`, `agentirc.channel`,
 `agentirc.client`, `agentirc.remote_client`, and everything under
 `agentirc._internal.*`) may be refactored — including renamed, split,
 or removed — in any minor or patch release. Don't import from them.
+Note: `agentirc.bots.*` submodules (e.g. `agentirc.bots.config`,
+`agentirc.bots.template_engine`, `agentirc.bots.virtual_client`) remain
+internal; import only from the anchor module `agentirc.bots`.
 
 `agentirc.ircd.IRCd` and `agentirc.virtual_client.VirtualClient` were
 promoted to the public surface in 9.6.0 (see
@@ -399,6 +518,7 @@ there for consistency.
 | 9.5.0a2 | 2026-05-02 | **Bot extension API — wire-format slice.** SEVENT and IRCv3 `event-data` tag now carry the canonical 5-field envelope `{type, channel, nick, data, timestamp}`. `_handle_sevent` sniffs the shape so 9.5 receivers tolerate ≤9.4 legacy peers (asymmetric: 9.5→9.4 emit breaks until peers upgrade). Added `agentirc.protocol.SEVENT`. Internal-only changes; no new public-API symbols beyond `SEVENT`. |
 | 9.5.0 | 2026-05-02 | **Bot extension API — final.** `agentirc.io/bot` IRCv3 capability gates silent JOIN/PART/QUIT broadcasts, no auto-op on fresh channels, `+` prefix in NAMES, `B` flag in WHO. New IRC verbs: `EVENTSUB` / `EVENTUNSUB` / `EVENTPUB` (handlers + per-subscription bounded queues; `EVENT` / `EVENTERR` server→client). `webhook_port` no longer bound by `IRCd.start()` (field stays for backward compat). Closes [#15](https://github.com/agentculture/agentirc/issues/15). |
 | 9.6.0 | 2026-05-02 | **Embedding API.** Promote `agentirc.ircd.IRCd` and `agentirc.virtual_client.VirtualClient` to the public surface so consumers can host an IRCd in-process and register in-process bots against it. Documents `IRCd.{start, stop, emit_event, subscription_registry, clients, channels, config, system_client}` as the in-process embedding contract. `agentirc._internal.virtual_client.VirtualClient` continues to resolve via a transitional re-export that emits `DeprecationWarning`; removal scheduled for 10.0.0. Closes [#22](https://github.com/agentculture/agentirc/issues/22). |
+| 9.7.0 | 2026-06-12 | **Bot framework absorption.** Promote `agentirc.bots` (BotManager, Bot, BotConfig) to the public surface. Deterministic, YAML-spec'd event-trigger bots run as in-process VirtualClient presences. BotManager loads bot specs from `~/.culture/bots/`, dispatches Event objects to matching bots (via compiled filter expressions), and manages bot lifecycle. Worked example and full API reference in api-stability.md. Closes [#33](https://github.com/agentculture/agentirc/issues/33). |
 
 ## Distribution
 
