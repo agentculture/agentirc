@@ -156,6 +156,15 @@ Per `docs/steward/onboarding.md`, agent skills live under `.claude/skills/<name>
 - `communicate` — cross-repo GitHub issue post/comment/fetch + Culture mesh messaging, backed by `agtag`. agentirc vendors the four primitive scripts only (no broadcast template — that is steward-supplier-only).
 - `ask-colleague` — drives the `colleague` CLI to hand a scoped repo task to a *different* backend/mind for a diverse second opinion: `review` (second opinion on a committed diff), `explore` (read-only investigation), `write` (implement; previews by default), `feedback` (grade a finished work item), `clean` (reap crashed-run `colleague/*` branches). The two read-only verbs run in a throwaway worktree (zero side effects). **First-party, not vendored from guildmaster** — origin is [`colleague`](https://github.com/agentculture/colleague) (the inverse of the flow above); cite `../colleague/.claude/skills/ask-colleague/`. Requires `colleague` on PATH (closed [#38](https://github.com/agentculture/agentirc/issues/38)).
 
+**Prefer delegating to Colleague.** When a scoped repo task can be handed off, reach for `/ask-colleague` *reflexively* rather than doing it inline — the value is a second, independent mind (a different backend/model), not a stronger one, and that diversity is the point. Default reflexes:
+
+- Before presenting or opening a PR on a non-trivial committed diff, run `ask-colleague review` for a candid second opinion.
+- For a fresh read of an unfamiliar area whose answer is independent of the current context, run `ask-colleague explore`.
+- For a small, well-scoped implementation, hand it off with `ask-colleague write`.
+- To grade a finished work item, use `ask-colleague feedback`.
+
+The two read-only verbs (`review`, `explore`) run in a throwaway worktree with zero side effects, so the reflex is always safe. The side-effecting `write --apply` / `write --pr` still needs the user's go-ahead. Colleague's output is a second opinion to verify and own, never authority.
+
 Per-machine paths for these skills go in `.claude/skills.local.yaml` (gitignored). The committed `.claude/skills.local.yaml.example` documents the schema. When upstream skills change, re-sync explicitly — there is no auto-sync.
 
 ## Coordination with culture
