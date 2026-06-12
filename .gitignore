@@ -225,3 +225,6 @@ __marimo__/
 
 # devague working state (not committed by default)
 .devague/reviews/
+
+# ask-colleague run bookkeeping (the colleague CLI writes here)
+.colleague/
