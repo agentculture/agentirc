@@ -148,12 +148,13 @@ Both jobs are gated on `hashFiles('pyproject.toml') != ''` so they no-op cleanly
 
 Markdown linting follows the user's global markdownlint config (no committed `.markdownlint-cli2.yaml` in this repo yet).
 
-## Skills (vendored from steward)
+## Skills
 
-Per `docs/steward/onboarding.md`, agent skills live under `.claude/skills/<name>/`, vendored cite-don't-import from `../steward/.claude/skills/<name>/`. Already vendored:
+Per `docs/steward/onboarding.md`, agent skills live under `.claude/skills/<name>/`. Most are vendored cite-don't-import from `../steward/.claude/skills/<name>/`; one (`ask-colleague`) is **first-party to a sibling** (origin `colleague`) rather than vendored. Already present:
 
 - `cicd` — delegates `lint`/`open`/`read`/`reply`/`delta` to `agex pr` (from `agentculture/agex-cli`) and keeps two steward extensions: `status` (SonarCloud quality gate + hotspots + unresolved-thread tally) and `await` (read --wait + status with non-zero exit on Sonar ERROR or unresolved threads). Portability lint runs via `.claude/skills/cicd/scripts/portability-lint.sh` (CI runs it directly; no `agex` needed in CI). Requires `agex` on PATH for the delegating verbs.
 - `communicate` — cross-repo GitHub issue post/comment/fetch + Culture mesh messaging, backed by `agtag`. agentirc vendors the four primitive scripts only (no broadcast template — that is steward-supplier-only).
+- `ask-colleague` — drives the `colleague` CLI to hand a scoped repo task to a *different* backend/mind for a diverse second opinion: `review` (second opinion on a committed diff), `explore` (read-only investigation), `write` (implement; previews by default), `feedback` (grade a finished work item), `clean` (reap crashed-run `colleague/*` branches). The two read-only verbs run in a throwaway worktree (zero side effects). **First-party, not vendored from guildmaster** — origin is [`colleague`](https://github.com/agentculture/colleague) (the inverse of the flow above); cite `../colleague/.claude/skills/ask-colleague/`. Requires `colleague` on PATH (closed [#38](https://github.com/agentculture/agentirc/issues/38)).
 
 Per-machine paths for these skills go in `.claude/skills.local.yaml` (gitignored). The committed `.claude/skills.local.yaml.example` documents the schema. When upstream skills change, re-sync explicitly — there is no auto-sync.
 
