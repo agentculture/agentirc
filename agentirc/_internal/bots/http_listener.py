@@ -1,36 +1,33 @@
-"""No-op ``HttpListener`` stub (scheduled for removal in 9.6.0).
+"""Deprecated. Import :class:`HttpListener` from :mod:`agentirc.bots.http_listener`.
 
-Pairs with the no-op :class:`agentirc._internal.bots.bot_manager.BotManager`.
-The real implementation lives in ``culture.bots.http_listener`` and exposes
-a webhook surface for triggering bot events. In a standalone agentirc
-deployment there is nothing to listen for, so ``start()`` and ``stop()``
-are no-ops.
-
-As of 9.5.0, :class:`agentirc.ircd.IRCd` no longer instantiates this stub —
-the webhook listener is the consumer's responsibility (see
-``docs/api-stability.md`` and ``docs/deployment.md``). The class itself
-stays in the codebase for one cycle so any vendored test or culture-runtime
-override that imports it keeps working; it is scheduled for deletion in
-9.6.0 once Phase A2 of agentculture/culture#308 confirms no consumer
-imports it.
+The class was promoted to the public API in 9.7.0 as part of the
+bot-framework absorption. This module remains as a transitional re-export.
+To make the warning point at the *consumer's* import site (rather than at
+importlib internals — which is what ``warnings.warn`` at module-init time
+with any fixed ``stacklevel`` would report), we use the PEP 562
+module-level :func:`__getattr__` hook so the warning fires when
+``HttpListener`` is *accessed* on the module, not when the module is loaded.
+Removal scheduled for 10.0.0.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import warnings
+from typing import Any
 
-if TYPE_CHECKING:
-    from agentirc._internal.bots.bot_manager import BotManager
+__all__ = ["HttpListener"]
+
+_DEPRECATION_MESSAGE = (
+    "agentirc._internal.bots.http_listener.HttpListener is deprecated; "
+    "import from agentirc.bots.http_listener instead. The shim will be "
+    "removed in 10.0.0."
+)
 
 
-class HttpListener:
-    def __init__(self, bot_manager: "BotManager", host: str, port: int) -> None:
-        self.bot_manager = bot_manager
-        self.host = host
-        self.port = port
+def __getattr__(name: str) -> Any:
+    if name == "HttpListener":
+        warnings.warn(_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
+        from agentirc.bots.http_listener import HttpListener
 
-    async def start(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
-        return None
-
-    async def stop(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
-        return None
+        return HttpListener
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

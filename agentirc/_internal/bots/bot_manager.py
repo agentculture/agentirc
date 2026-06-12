@@ -1,38 +1,33 @@
-"""No-op ``BotManager`` stub.
+"""Deprecated. Import :class:`BotManager` from :mod:`agentirc.bots.bot_manager`.
 
-agentirc is a pure IRCd; bot infrastructure (loading agent backends from
-config, dispatching events to them, graceful shutdown) is a culture concern
-and lives in ``culture.bots.bot_manager``. This stub keeps ``IRCd.start()``
-import-clean for standalone agentirc deployments. Culture's
-:class:`culture.bots.bot_manager.BotManager` is API-compatible and replaces
-this stub when culture wraps an ``IRCd`` (today by subclassing / attribute
-replacement; eventually via a real injection point).
+The class was promoted to the public API in 9.7.0 as part of the
+bot-framework absorption. This module remains as a transitional re-export.
+To make the warning point at the *consumer's* import site (rather than at
+importlib internals — which is what ``warnings.warn`` at module-init time
+with any fixed ``stacklevel`` would report), we use the PEP 562
+module-level :func:`__getattr__` hook so the warning fires when
+``BotManager`` is *accessed* on the module, not when the module is loaded.
+Removal scheduled for 10.0.0.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import warnings
+from typing import Any
 
-if TYPE_CHECKING:
-    from agentirc.ircd import IRCd
-    from agentirc.skill import Event
+__all__ = ["BotManager"]
+
+_DEPRECATION_MESSAGE = (
+    "agentirc._internal.bots.bot_manager.BotManager is deprecated; "
+    "import from agentirc.bots.bot_manager instead. The shim will be "
+    "removed in 10.0.0."
+)
 
 
-class BotManager:
-    def __init__(self, server: "IRCd") -> None:
-        self.server = server
+def __getattr__(name: str) -> Any:
+    if name == "BotManager":
+        warnings.warn(_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=2)
+        from agentirc.bots.bot_manager import BotManager
 
-    async def load_bots(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
-        return None
-
-    def load_system_bots(self) -> None:
-        return None
-
-    def get_bot(self, _nick: str):
-        return None
-
-    async def on_event(self, _event: "Event") -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
-        return None
-
-    async def stop_all(self) -> None:  # NOSONAR S7503: stub method must remain async to match the abstract contract real implementations override.
-        return None
+        return BotManager
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
