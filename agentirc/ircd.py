@@ -103,7 +103,7 @@ class IRCd:
         # listener if they need one. The field stays in ``ServerConfig`` so
         # culture's ``~/.culture/server.yaml`` keeps loading unchanged; we
         # just don't act on it. See docs/cli.md and docs/deployment.md.
-        from agentirc._internal.bots.bot_manager import BotManager
+        from agentirc.bots.bot_manager import BotManager
 
         logger.info("Loading bots...")
         self.bot_manager = BotManager(self)

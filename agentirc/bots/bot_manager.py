@@ -42,7 +42,7 @@ _FILTER_ERRORS = (FilterParseError, TypeError)
 if TYPE_CHECKING:
     from agentirc.ircd import IRCd
 
-    from agentirc._internal.bots.http_listener import HttpListener
+    from agentirc.bots.http_listener import HttpListener
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class BotManager:
         bots are torn down before the exception propagates so the caller
         doesn't see a half-started state.
         """
-        from agentirc._internal.bots.http_listener import HttpListener
+        from agentirc.bots.http_listener import HttpListener
 
         try:
             await self.load_bots()
