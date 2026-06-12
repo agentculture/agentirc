@@ -4,6 +4,38 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.7.0] - 2026-06-12
+
+Absorb culture's bot framework into the public `agentirc.bots` subsystem. Closes
+[#33](https://github.com/agentculture/agentirc/issues/33).
+
+### Added
+
+- **`agentirc.bots` public subsystem** — embeds culture's bot framework directly
+  into agentirc as a semver-tracked public API. Eight modules vendored from
+  `culture@df50942` via the cite-don't-copy pattern:
+  - `agentirc.bots.template_engine` — Jinja2-style template engine for bot
+    response rendering (quote from `culture/bots/template_engine.py`).
+  - `agentirc.bots.filter_dsl` — filter DSL for routing bot event subscriptions
+    (quote from `culture/bots/filter_dsl.py`).
+  - `agentirc.bots.config` — bot YAML configuration dataclasses (paraphrase of
+    `culture/bots/config.py` with import rewrites).
+  - `agentirc.bots.virtual_client` — in-process IRC client for bots to speak
+    into a hosted IRCd (paraphrase of `culture/bots/virtual_client.py`).
+  - `agentirc.bots.bot` — base `Bot` class with lifecycle hooks and event
+    dispatch (paraphrase of `culture/bots/bot.py`).
+  - `agentirc.bots.bot_manager` — `BotManager` that owns the bot lifecycle and
+    wires bots to the IRCd's event subscription stream (paraphrase of
+    `culture/bots/bot_manager.py`).
+  - `agentirc.bots.http_listener` — `HttpListener` webhook receiver that
+    converts HTTP POST payloads into IRC events (paraphrase of
+    `culture/bots/http_listener.py`; requires `aiohttp`).
+  - `agentirc.bots.cli` — `bot` subcommand for the `agentirc` CLI (paraphrase
+    of `culture/cli/bot.py`).
+- **New runtime dependencies**: `aiohttp>=3.9` (HTTP webhook listener) and
+  `opentelemetry-instrumentation-aiohttp-server>=0.43b0` (OTEL tracing for the
+  webhook server), consistent with the existing `>=1.22` otel pins.
+
 ## [9.6.2] - 2026-06-10
 
 Resync the vendored steward skills. Closes
