@@ -127,7 +127,10 @@ def _isolate_bots_dir(tmp_path, monkeypatch):
     BotManager is vendored. ``BOTS_DIR`` is imported by-name into three
     modules, so all three references are patched.
     """
-    empty = tmp_path / "bots"
+    # Distinct dir name so a test that wires its own bots dir (e.g. the bot
+    # manager lifecycle tests use ``tmp_path / "bots"``) can re-patch BOTS_DIR
+    # after this autouse fixture without a mkdir path collision.
+    empty = tmp_path / "_isolated_empty_bots"
     empty.mkdir(exist_ok=True)
     for mod in ("agentirc.bots.config", "agentirc.bots.bot", "agentirc.bots.bot_manager"):
         monkeypatch.setattr(f"{mod}.BOTS_DIR", empty, raising=False)
