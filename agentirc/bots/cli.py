@@ -25,6 +25,7 @@ import argparse
 import sys
 import time
 
+from agentirc.bots.filter_dsl import FilterParseError, compile_filter
 from agentirc.bots.config import (
     BOT_CONFIG_FILE,
     BOTS_DIR,
@@ -51,7 +52,19 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     bot_create.add_argument("--owner", required=True, help="Owner nick (e.g. spark-ori)")
     bot_create.add_argument("--channels", nargs="+", default=[], help="Channels to join")
     bot_create.add_argument(
-        "--trigger", default="webhook", choices=["webhook"], help="Trigger type"
+        "--trigger",
+        default="webhook",
+        choices=["webhook", "event"],
+        help="Trigger type: 'webhook' (HTTP POST) or 'event' (matches an "
+        "event filter). 'event' requires --event-filter.",
+    )
+    bot_create.add_argument(
+        "--event-filter",
+        default=None,
+        help="Filter expression for an event-triggered bot, e.g. "
+        "\"type == 'user.message' and channel == '#general'\". "
+        "Matches against {type, channel, nick, data}. Required for "
+        "--trigger event.",
     )
     bot_create.add_argument("--mention", default=None, help="Agent to @mention on trigger")
     bot_create.add_argument("--template", default=None, help="Message template")
@@ -141,6 +154,29 @@ def _bot_create(args: argparse.Namespace) -> int:
         # name has no prefix yet — mimic culture's auto-prefix
         name = f"{owner}-{name}"
 
+    # An event-triggered bot is meaningless without a filter; validate it
+    # compiles now so the user gets immediate feedback instead of a silent
+    # skip at load time.
+    event_filter = getattr(args, "event_filter", None)
+    if args.trigger == "event":
+        if not event_filter:
+            print(
+                "Error: --trigger event requires --event-filter",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            compile_filter(event_filter)
+        except (FilterParseError, TypeError) as exc:
+            print(f"Error: invalid --event-filter: {exc}", file=sys.stderr)
+            return 1
+    elif event_filter:
+        print(
+            "Error: --event-filter only applies to --trigger event",
+            file=sys.stderr,
+        )
+        return 1
+
     bot_config = BotConfig(
         name=name,
         owner=args.owner,
@@ -152,6 +188,7 @@ def _bot_create(args: argparse.Namespace) -> int:
         mention=args.mention,
         template=args.template,
         fallback="json",
+        event_filter=event_filter,
     )
 
     bot_dir = BOTS_DIR / name
@@ -163,6 +200,8 @@ def _bot_create(args: argparse.Namespace) -> int:
     print(f"Bot '{name}' created at {bot_dir}")
     print(f"  Owner:    {args.owner}")
     print(f"  Trigger:  {args.trigger}")
+    if event_filter:
+        print(f"  Filter:   {event_filter}")
     if args.channels:
         print(f"  Channels: {', '.join(args.channels)}")
     if args.mention:

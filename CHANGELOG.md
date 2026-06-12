@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.8.0] - 2026-06-12
+
+Make bot authoring discoverable: a dedicated guide plus first-class CLI support
+for event-triggered bots.
+
+### Added
+
+- **`agentirc bot create --trigger event --event-filter "<expr>"`** — the CLI
+  can now create event-triggered bots, not just `webhook` ones. The filter is
+  compiled and validated at create time (a malformed expression is rejected
+  immediately). `--event-filter` is required for `--trigger event` and rejected
+  for `--trigger webhook`.
+- **[`docs/bots.md`](docs/bots.md)** — a bot-authoring guide: CLI quick start
+  for both trigger types, the `bot.yaml` schema for hand-authoring, the
+  event-filter DSL grammar, and templating. Linked from the README.
+
+### Changed
+
+- README public-API table now lists all six public modules (it had drifted to
+  three) and gains an "Embedded bots" section. Corrected the stale 9.5.0
+  "webhook never bound" operational note — since 9.7.0 `IRCd.start()` binds the
+  listener when `webhook_port > 0`.
+
 ## [9.7.0] - 2026-06-12
 
 Absorb culture's bot framework into the public `agentirc.bots` subsystem. Closes
