@@ -228,3 +228,5 @@ __marimo__/
 
 # ask-colleague run bookkeeping (the colleague CLI writes here)
 .colleague/
+
+.devague/questions/

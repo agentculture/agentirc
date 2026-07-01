@@ -1,0 +1,414 @@
+{
+  "slug": "agentirc-ships-an-agent-accessibility-release-ai-a",
+  "title": "agentirc ships an agent-accessibility release: AI agents get a first-class CLI to join, send, read, and watch the mesh; messages carry machine-parseable structure; and the client transport is reliable enough that an autonomous agent can treat the chat as dependable infrastructure rather than a fragile text stream.",
+  "schema_version": 1,
+  "status": "exported",
+  "created": "2026-07-01T22:00:51Z",
+  "updated": "2026-07-01T22:14:28Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "agentirc ships an agent-accessibility release: AI agents get a first-class CLI to join, send, read, and watch the mesh; messages carry machine-parseable structure; and the client transport is reliable enough that an autonomous agent can treat the chat as dependable infrastructure rather than a fragile text stream.",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "ships as additive semver-minor releases on the 9.x line; every headline capability in the announcement is exercised by at least one test that drives the system the way an agent would (shell or TCP)",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c2",
+      "kind": "audience",
+      "text": "AI agents \u2014 LLM-driven clients (and the humans operating them) \u2014 that use agentirc as their chat mesh",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "every shipped feature is reachable from at least one agent path (CLI, wire protocol, or public Python API) and documented from the agent point of view",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c3",
+      "kind": "after_state",
+      "text": "an AI agent can join, send, read, and stay caught up on the mesh through interfaces designed for machine consumption \u2014 a clear CLI, structured messages, and a transport it can rely on",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "docs include an end-to-end agent walkthrough \u2014 join, send, read, disconnect, catch up \u2014 runnable as written against a fresh pip install",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c4",
+      "kind": "why_it_matters",
+      "text": "agentirc's whole purpose is chat FOR agents; if agents need bespoke scaffolding to use it reliably, the product is failing its stated audience",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "acceptance is judged on the agent path: no feature counts as done if it only works via internal test fixtures or a culture checkout",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "improvements target five named dimensions: CLI ergonomics, protocol/output clarity, reliability, message structure, and missing agent-facing features",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "every feature in the exported spec traces to at least one of the five named dimensions (CLI, clarity, reliability, message structure, missing features), and no dimension is left with zero coverage",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c6",
+      "kind": "boundary",
+      "text": "additive and IRC-compatible only: no new incompatible wire protocol; the known wire-format quirk fixes (#7 ROOMETAEND/ROOMETASET, #8 ERR_NOSUCHCHANNEL, #9 STHREAD) stay cross-repo Track A work and are not bundled into this effort",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h17",
+          "text": "the 9.5.0a2 wire-format golden tests pass unmodified; any client that worked against 9.7.0 registers and chats against this release with no changes",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c7",
+      "kind": "boundary",
+      "text": "agent backends and SDKs stay in culture \u2014 this effort adds no claude-agent-sdk/anthropic/etc. dependency and no 'culture' console script (existing hard invariant)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "pyproject.toml gains no agent/backend SDK dependency and git grep for culture imports in agentirc/ and tests/ stays empty (existing CI invariant)",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c8",
+      "kind": "boundary",
+      "text": "no renaming of on-disk artifacts: ~/.culture config/log/socket paths stay as-is",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "default config, log, and socket paths are byte-identical to the 9.7.0 defaults",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c9",
+      "kind": "before_state",
+      "text": "today all agent affordances (reconnect, buffering, catch-up) live in the culture harness, out of tree; an agent hitting agentirc directly gets a raw IRCv3 socket with silent inbound truncation (client.py:246-248), fire-and-forget delivery, last-N-only history, a documented-but-unimplemented client BACKFILL, no msgid/server-time tags, and error replies that mix bare NOTICE prose with ad-hoc numerics",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "each stated gap is re-verified against source at the cited file:line at plan time before any task is cut from it",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "culture-side harness changes (IRCTransport adoption, all-backends propagation) are culture Track-A work; this spec covers agentirc only and must not require lockstep culture changes to ship",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "the full test suite plus the end-to-end agent walkthrough pass in a venv with no culture checkout on the machine",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "CLI: agent-facing client verbs (e.g. agentirc send / read / watch / join) let an agent converse with a running daemon over TCP from a shell, with no Python imports and no culture install",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "the client verbs work against a running daemon over real TCP (not just an embedded IRCd) and are covered by subprocess-fixture tests",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "CLI clarity: lifecycle verbs (status, version at minimum) gain --json machine-readable output; default text output unchanged",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "--json output is valid JSON on stdout with diagnostics on stderr; existing text output is byte-identical without the flag (culture shim compatibility preserved)",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "reliability: a first-party public client transport with auto-reconnect, exponential backoff, nick re-registration and channel re-join \u2014 the affordances currently exclusive to the culture harness",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "reconnect/backoff is agentirc-native and tested with a killed-and-restarted server fixture; the culture harness could later adopt it without behavior change but nothing in this release requires culture to change",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "reliability: server-side liveness \u2014 periodic server-to-client PING with bounded timeout reaps dead connections (today _handle_pong is a no-op and half-open sockets linger)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "reap interval and timeout are configurable; a healthy but idle client that answers PING is never dropped; existing tests still pass with the ping loop on",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "message structure: server stamps msgid and server-time IRCv3 tags on delivered messages for message-tags clients; thread association becomes a machine-parseable tag instead of only a [thread:name] text prefix",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "tags are sent only to clients that negotiated message-tags; clients without the cap see a byte-identical wire format to 9.7.0 (backward compat verified by the wire-format golden tests)",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "message structure: long-message handling \u2014 outbound splitting at the 512-byte line limit and an explicit error reply on over-long inbound lines, replacing silent truncation",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "no inbound line is ever silently altered: over-limit input gets an explicit error reply naming the limit; outbound splitting never breaks mid-codepoint and preserves message order",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c17",
+      "kind": "requirement",
+      "text": "missing feature: HISTORY gains a since-timestamp/cursor form with deterministic pagination, backed by the existing SQLite (channel,timestamp,id) index \u2014 offline agents catch up without guessing a count",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "paging is deterministic and non-overlapping across calls (stable cursor), works on both the in-memory deque and SQLite backends, and HISTORY RECENT/SEARCH behavior is unchanged",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "missing feature: the documented recovery path becomes real \u2014 client-facing BACKFILL is implemented (or extension-api.md stops promising it); docs and implementation agree",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "after this ships, grep of extension-api.md finds no verb the server does not handle; the EVENTSUB overflow-recovery walkthrough is executable as written",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c19",
+      "kind": "requirement",
+      "text": "clarity: every skills error reply (rooms/threads/history) carries a stable named reason token in the style of EVENTERR, replacing bare NOTICE prose and ad-hoc 400/404/405 free text",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "existing culture-harness message parsing does not break: token replies are additive (new numeric/tag or trailing token) rather than rewrites of reply shapes culture already matches on",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c20",
+      "kind": "requirement",
+      "text": "clarity: runtime discoverability \u2014 a client can enumerate available skill verbs (ROOM*, THREAD*, HISTORY, TAGS, ...) via a single query verb instead of reading docs out-of-band",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "the discovery verb output is versioned and machine-parseable, and lists exactly the verbs the running server accepts (skills actually loaded), not a hardcoded list",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c21",
+      "kind": "success_signal",
+      "text": "an LLM agent with only a shell and pip install agentirc-cli \u2014 no culture checkout \u2014 can join a channel, send a message, and read replies using documented CLI verbs",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "verified in a clean venv: pip install agentirc-cli, start a daemon, then join, send, and read using only documented CLI verbs",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c22",
+      "kind": "success_signal",
+      "text": "an agent that disconnects and reconnects can deterministically catch up on channel messages it missed, with no duplicates and no manual count-guessing",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "an integration test disconnects a client mid-stream, sends messages during the outage, reconnects, and asserts exact recovery with no duplicates and no manual count",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c23",
+      "kind": "success_signal",
+      "text": "every error an agent can trigger on the skill verbs is branchable by a stable token, verified by tests, and extension-api.md promises nothing the server does not implement",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "a test enumerates every error path in the rooms/threads/history skills asserting a stable token, and a docs check confirms extension-api.md promises only implemented verbs",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "missing feature: DMs are stored in history with the same retention rules as channels, recoverable via the HISTORY since-cursor form; no new delivery semantics (user decision on q1)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "a DM sent while the recipient is connected lands in history and is retrievable via HISTORY since-cursor after the recipient reconnects; retention/prune rules match channel history; wire behavior for online DMs is unchanged",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "which further IRCv3 caps to adopt beyond message-tags msgid/server-time (labeled-response, echo-message, batch, draft/multiline) \u2014 each has real value for agents but expands scope",
+      "kind": "follow_up",
+      "claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "delivery acknowledgments for sends (today Client.send swallows OSError silently) \u2014 likely wants echo-message/labeled-response, so it rides the caps follow-up",
+      "kind": "follow_up",
+      "claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "exact CLI verb names and flag shapes for the agent client verbs (send/read/watch vs msg/tail) \u2014 bikeshed to settle at plan time, not spec time",
+      "kind": "unknown_nonblocking",
+      "claim_id": null
+    }
+  ]
+}
