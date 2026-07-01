@@ -80,7 +80,7 @@
     {
       "id": "c8",
       "kind": "boundary",
-      "text": "no renaming of on-disk artifacts: ~/.culture config/log/socket paths stay as-is"
+      "text": "no renaming of on-disk artifacts: config/log/socket paths under ~/.culture/ stay as-is"
     },
     {
       "id": "h19",

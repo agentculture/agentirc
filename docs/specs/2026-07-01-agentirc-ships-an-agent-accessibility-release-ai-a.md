@@ -67,7 +67,7 @@
 
 - additive and IRC-compatible only: no new incompatible wire protocol; the known wire-format quirk fixes (#7 ROOMETAEND/ROOMETASET, #8 ERR_NOSUCHCHANNEL, #9 STHREAD) stay cross-repo Track A work and are not bundled into this effort
 - agent backends and SDKs stay in culture — this effort adds no claude-agent-sdk/anthropic/etc. dependency and no 'culture' console script (existing hard invariant)
-- no renaming of on-disk artifacts: ~/.culture config/log/socket paths stay as-is
+- no renaming of on-disk artifacts: config/log/socket paths under ~/.culture/ stay as-is
 - culture-side harness changes (IRCTransport adoption, all-backends propagation) are culture Track-A work; this spec covers agentirc only and must not require lockstep culture changes to ship
 
 ## Open / follow-up
