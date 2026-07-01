@@ -27,11 +27,15 @@ hits1=$(echo "$files" | xargs -r grep -nE '/home/[a-z][a-z0-9_-]+/' 2>/dev/null 
 # Carve-outs (allowed, NOT flagged):
 #   - ~/.claude/skills/<x>/scripts/   vendored tool calls
 #   - ~/.culture/                     Culture mesh data this skill is supposed to read
+#   - ~/.eidetic/                     eidetic memory store (deliberately outside any
+#                                     git worktree; see recall/remember SKILL.md).
+#                                     Local extension over the steward upstream (#46).
 md_yaml=$(echo "$files" | grep -E '\.(md|ya?ml|toml|json|jsonc)$' || true)
 if [ -n "$md_yaml" ]; then
     hits2=$(echo "$md_yaml" | xargs -r grep -nE '~/\.[A-Za-z]' 2>/dev/null \
         | grep -vE '~/\.claude/skills/[^[:space:]"]+/scripts/' \
         | grep -vE '~/\.culture/' \
+        | grep -vE '~/\.eidetic/' \
         || true)
 else
     hits2=""
@@ -48,7 +52,7 @@ if [ -n "$hits2" ]; then
     [ "$fail" -eq 1 ] && echo
     echo "❌ Per-user ~/.<dotfile> config refs in committed doc/config:"
     echo "$hits2" | sed 's/^/    /'
-    echo "   Allowed carve-outs: ~/.claude/skills/.../scripts/ (tool calls), ~/.culture/ (mesh data)."
+    echo "   Allowed carve-outs: ~/.claude/skills/.../scripts/ (tool calls), ~/.culture/ (mesh data), ~/.eidetic/ (memory store)."
     echo "   Otherwise: commit a repo-local config or document a portable lookup."
     fail=1
 fi
