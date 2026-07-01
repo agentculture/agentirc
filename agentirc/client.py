@@ -26,7 +26,12 @@ from opentelemetry.context import Context as _OtelContext
 from opentelemetry.trace import Span as _OtelSpan
 
 from agentirc._internal.aio import maybe_await
-from agentirc._internal.constants import EVENT_TYPE_RE, SYSTEM_USER_PREFIX
+from agentirc._internal.constants import (
+    EVENT_TYPE_RE,
+    SYSTEM_USER_PREFIX,
+    new_msgid,
+    server_time_now,
+)
 from agentirc._internal.protocol import replies
 from agentirc._internal.protocol.message import Message
 from agentirc._internal.telemetry.audit import utc_iso_timestamp as _utc_iso_timestamp
@@ -38,7 +43,7 @@ from agentirc._internal.telemetry.context import (
 )
 from agentirc._internal.telemetry.context import inject_traceparent as _inject_traceparent
 from agentirc.channel import Channel
-from agentirc.protocol import BOT_CAP, EVENTERR
+from agentirc.protocol import BOT_CAP, EVENTERR, MSGID_TAG, SERVER_TIME_TAG
 from agentirc.skill import Event, EventType
 
 # OTEL instrumentation name. Kept verbatim ("culture.agentirc") because
@@ -824,7 +829,7 @@ class Client:
         mode_str = "+" + "".join(sorted(self.modes)) if self.modes else "+"
         await self.send_numeric(replies.RPL_UMODEIS, mode_str)
 
-    async def _send_to_channel(self, channel, target, relay, text, is_notice):
+    async def _send_to_channel(self, channel, target, relay, text, is_notice, msgid=None):
         with _otel_trace.get_tracer(_TRACER_NAME).start_as_current_span(
             "irc.privmsg.deliver.channel",
             attributes={
@@ -836,9 +841,11 @@ class Client:
         ):
             for member in [*channel.members]:
                 if member is not self:
-                    await member.send(relay)
+                    await self._deliver_relay(member, relay)
             self.server.metrics.privmsg_delivered.add(1, {"kind": "channel", "channel": target})
             event_data = {"text": text}
+            if msgid is not None:
+                event_data["msgid"] = msgid
             if is_notice:
                 event_data["notice"] = True
             await self.server.emit_event(
@@ -850,7 +857,24 @@ class Client:
                 )
             )
 
-    async def _send_to_client(self, target, relay, text, is_notice):
+    @staticmethod
+    async def _deliver_relay(member, relay: Message) -> None:
+        """Deliver a relayed message, stripping tags for non-message-tags clients.
+
+        Local :class:`Client` recipients go through ``send_tagged`` so any
+        ``msgid``/``time``/``agentirc.io/thread`` tags on ``relay`` are dropped
+        for clients that didn't negotiate ``message-tags`` (byte-identical wire
+        output). ``RemoteClient``/``VirtualClient`` have no ``send_tagged`` and
+        a no-op ``send`` — federation delivers to remotes via the S2S path, so
+        the tag block never rides the link (quirk #9 stays local-only).
+        """
+        send_tagged = getattr(member, "send_tagged", None)
+        if send_tagged is not None:
+            await send_tagged(relay)
+        else:
+            await member.send(relay)
+
+    async def _send_to_client(self, target, relay, text, is_notice, msgid=None):
         from agentirc.remote_client import RemoteClient
 
         with _otel_trace.get_tracer(_TRACER_NAME).start_as_current_span(
@@ -866,14 +890,18 @@ class Client:
             if not recipient:
                 return False
             if isinstance(recipient, RemoteClient):
+                # S2S relay is intentionally untagged — msgid/time are
+                # local-delivery-only and must not ride the federation link.
                 s2s_cmd = "SNOTICE" if is_notice else "SMSG"
                 await recipient.link.send_raw(
                     f":{self.server.config.name} {s2s_cmd} {target} {self.nick} :{text}"
                 )
             else:
-                await recipient.send(relay)
+                await self._deliver_relay(recipient, relay)
             self.server.metrics.privmsg_delivered.add(1, {"kind": "dm"})
             event_data = {"text": text, "target": target}
+            if msgid is not None:
+                event_data["msgid"] = msgid
             if is_notice:
                 event_data["notice"] = True
             await self.server.emit_event(
@@ -904,7 +932,17 @@ class Client:
                 _ATTR_SIZE: len(text),
             },
         ):
-            relay = Message(prefix=self.prefix, command="PRIVMSG", params=[target, text])
+            # One msgid per inbound message, stamped identically on every
+            # recipient's delivery (fan-out stability) and echoed into the
+            # MESSAGE event's data. Tags ride only to message-tags clients —
+            # `_deliver_relay` strips them for everyone else.
+            msgid = new_msgid()
+            relay = Message(
+                prefix=self.prefix,
+                command="PRIVMSG",
+                params=[target, text],
+                tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
+            )
 
             if target.startswith("#"):
                 channel = self.server.channels.get(target)
@@ -918,10 +956,10 @@ class Client:
                         replies.ERR_CANNOTSENDTOCHAN, target, "Cannot send to channel"
                     )
                     return
-                await self._send_to_channel(channel, target, relay, text, False)
+                await self._send_to_channel(channel, target, relay, text, False, msgid=msgid)
                 await self._notify_mentions(target, text)
             else:
-                found = await self._send_to_client(target, relay, text, False)
+                found = await self._send_to_client(target, relay, text, False, msgid=msgid)
                 if not found:
                     await self.send_numeric(replies.ERR_NOSUCHNICK, target, replies.MSG_NOSUCHNICK)
                     return
