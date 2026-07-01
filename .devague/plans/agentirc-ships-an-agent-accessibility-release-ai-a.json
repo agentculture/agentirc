@@ -5,7 +5,7 @@
   "schema_version": 1,
   "status": "exported",
   "created": "2026-07-01T22:15:38Z",
-  "updated": "2026-07-01T22:19:10Z",
+  "updated": "2026-07-01T22:27:58Z",
   "targets": [
     {
       "id": "c1",
@@ -328,7 +328,8 @@
       "status": "confirmed",
       "acceptance_criteria": [
         "server sends PING at a configurable interval and reaps connections missing a configurable PONG deadline; _handle_pong updates liveness state",
-        "an idle-but-responsive client is never dropped; a killed TCP peer is reaped within interval plus timeout; existing suite green with the loop on"
+        "an idle-but-responsive client is never dropped; a killed TCP peer is reaped within interval plus timeout; existing suite green with the loop on",
+        "server-initiated PING is additive to the client stream and exempt from the byte-identical message-relay baseline; the golden tests assert message relay shapes, which stay unchanged"
       ],
       "deps": [
         "t4"
@@ -380,11 +381,13 @@
       "status": "confirmed",
       "acceptance_criteria": [
         "a registered client can issue BACKFILL and receive events missed in its subscription window; the EVENTSUB overflow-recovery walkthrough in extension-api.md executes as written",
-        "a docs-vs-implementation test extracts the verbs extension-api.md promises and asserts each has a live handler"
+        "a docs-vs-implementation test extracts the verbs extension-api.md promises and asserts each has a live handler",
+        "any history-store schema or query change needed for BACKFILL lands via t7 first; t8 confines its edits to the event-subscription path, client handler, and docs"
       ],
       "deps": [
         "t5",
-        "t6"
+        "t6",
+        "t7"
       ],
       "covers": [
         "c18",
@@ -566,6 +569,18 @@
       "text": "cursor stability under concurrent writes (timestamp collisions) \u2014 settle the timestamp-plus-id composite cursor semantics at t6 implementation time",
       "kind": "unknown_nonblocking",
       "task_id": "t6"
+    },
+    {
+      "id": "r4",
+      "text": "colleague review: shipping without delivery acknowledgments while announcing dependable infrastructure is a credibility tension \u2014 consider pulling echo-message into scope near t3, or soften release wording (rides parked follow-up v2)",
+      "kind": "follow_up",
+      "task_id": null
+    },
+    {
+      "id": "r5",
+      "text": "colleague review: no rate-limiting stance for autonomous-agent clients (HISTORY floods, send spam); decide add-or-explicitly-exclude before the release ships",
+      "kind": "follow_up",
+      "task_id": null
     }
   ]
 }

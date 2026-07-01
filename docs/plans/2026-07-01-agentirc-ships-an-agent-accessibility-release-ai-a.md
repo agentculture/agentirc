@@ -45,6 +45,7 @@ slug: `agentirc-ships-an-agent-accessibility-release-ai-a` · status: `exported`
 - acceptance:
   - server sends PING at a configurable interval and reaps connections missing a configurable PONG deadline; _handle_pong updates liveness state
   - an idle-but-responsive client is never dropped; a killed TCP peer is reaped within interval plus timeout; existing suite green with the loop on
+  - server-initiated PING is additive to the client stream and exempt from the byte-identical message-relay baseline; the golden tests assert message relay shapes, which stay unchanged
 
 ### t6 — HISTORY since-cursor pagination
 
@@ -64,11 +65,12 @@ slug: `agentirc-ships-an-agent-accessibility-release-ai-a` · status: `exported`
 
 ### t8 — Client-facing BACKFILL
 
-- depends on: t5, t6
+- depends on: t5, t6, t7
 - covers: c18, h9
 - acceptance:
   - a registered client can issue BACKFILL and receive events missed in its subscription window; the EVENTSUB overflow-recovery walkthrough in extension-api.md executes as written
   - a docs-vs-implementation test extracts the verbs extension-api.md promises and asserts each has a live handler
+  - any history-store schema or query change needed for BACKFILL lands via t7 first; t8 confines its edits to the event-subscription path, client handler, and docs
 
 ### t9 — Runtime verb discovery
 
@@ -139,3 +141,5 @@ slug: `agentirc-ships-an-agent-accessibility-release-ai-a` · status: `exported`
 - [unknown_nonblocking] error-token rewrites must stay additive to reply shapes the culture harness parses; verify against the actual culture-side parsers before merging t2 (task t2)
 - [unknown_nonblocking] thread-tag design may brush against federation quirk #9 (STHREAD verb collapse); keep the tag local-optional so no Track A coordination is required (task t3)
 - [unknown_nonblocking] cursor stability under concurrent writes (timestamp collisions) — settle the timestamp-plus-id composite cursor semantics at t6 implementation time (task t6)
+- [follow_up] colleague review: shipping without delivery acknowledgments while announcing dependable infrastructure is a credibility tension — consider pulling echo-message into scope near t3, or soften release wording (rides parked follow-up v2)
+- [follow_up] colleague review: no rate-limiting stance for autonomous-agent clients (HISTORY floods, send spam); decide add-or-explicitly-exclude before the release ships
