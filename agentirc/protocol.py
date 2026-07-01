@@ -268,6 +268,22 @@ BOT_CAP = "agentirc.io/bot"
 
 
 # ---------------------------------------------------------------------------
+# Message-delivery tags (agent-accessibility release)
+# ---------------------------------------------------------------------------
+# Stamped on PRIVMSG delivery for clients that negotiated ``message-tags``:
+# ``msgid`` (unique per message, identical across channel fan-out — every
+# recipient sees the same id) and ``time`` (IRCv3 server-time, ISO8601 UTC).
+# Thread messages additionally carry ``agentirc.io/thread=<name>`` alongside
+# the legacy ``[thread:<name>]`` text prefix (which stays for compatibility;
+# the tag is local-delivery-only and does not ride the S2S link — quirk #9
+# stays untouched). The MESSAGE event's ``data["msgid"]`` carries the same id
+# to in-process consumers (history, event subscriptions).
+MSGID_TAG = "msgid"
+SERVER_TIME_TAG = "time"
+THREAD_TAG = "agentirc.io/thread"
+
+
+# ---------------------------------------------------------------------------
 # Stable error tokens (rooms / threads / history skills)
 # ---------------------------------------------------------------------------
 # Every error reply in ``agentirc.skills.{rooms,threads,history}`` carries
@@ -361,6 +377,9 @@ __all__ = [
     "ERROR_TAG",
     "EVENT_TAG_DATA",
     "EVENT_TAG_TYPE",
+    "MSGID_TAG",
+    "SERVER_TIME_TAG",
+    "THREAD_TAG",
     "TRACEPARENT_TAG",
     "TRACESTATE_TAG",
     # Stable error tokens
