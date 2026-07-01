@@ -18,8 +18,12 @@ from agentirc.protocol import (
     ERROR_TOKEN_THREAD_ALREADY_EXISTS,
     ERROR_TOKEN_THREAD_ARCHIVED,
     ERROR_TOKEN_UNKNOWN_SUBCOMMAND,
+    MSGID_TAG,
+    SERVER_TIME_TAG,
+    THREAD_TAG,
 )
 from agentirc.skill import Event, EventType, Skill
+from agentirc._internal.constants import new_msgid, server_time_now
 from agentirc._internal.protocol import replies
 from agentirc._internal.protocol.message import Message
 
@@ -341,14 +345,28 @@ class ThreadsSkill(Skill):
         from agentirc.remote_client import RemoteClient
 
         prefixed = self._format_thread_msg(thread_name, text)
+        # message-tags clients get msgid/time plus the thread tag carrying the
+        # bare thread name; the legacy `[thread:<name>]` text prefix stays put.
+        # `send_tagged` strips the whole block for non-negotiated clients, so
+        # their wire line is byte-identical to before. Tags are local delivery
+        # only — RemoteClients are excluded here (federation quirk #9 untouched).
         relay = Message(
             prefix=sender.prefix,
             command="PRIVMSG",
             params=[channel.name, prefixed],
+            tags={
+                MSGID_TAG: new_msgid(),
+                SERVER_TIME_TAG: server_time_now(),
+                THREAD_TAG: thread_name,
+            },
         )
         for member in [*channel.members]:
             if member is not sender and not isinstance(member, RemoteClient):
-                await member.send(relay)
+                send_tagged = getattr(member, "send_tagged", None)
+                if send_tagged is not None:
+                    await send_tagged(relay)
+                else:
+                    await member.send(relay)
 
         await self._notify_mentioned_in_thread(sender, channel, thread_name, text)
 
