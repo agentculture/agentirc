@@ -137,14 +137,24 @@ class Client:
             )
         await self.send(msg)
 
-    async def send_numeric(self, code: str, *params: str) -> None:
+    async def send_numeric(
+        self, code: str, *params: str, tags: dict[str, str] | None = None
+    ) -> None:
+        """Send a numeric reply, optionally carrying additive IRCv3 tags.
+
+        ``tags`` (e.g. the ``agentirc.io/error`` reason token skills attach
+        to error replies) rides through ``send_tagged`` so it is stripped
+        for clients that haven't negotiated ``message-tags`` — callers that
+        never pass ``tags`` see byte-identical behavior to before.
+        """
         target = self.nick or "*"
         msg = Message(
             prefix=self.server.config.name,
             command=code,
             params=[target, *params],
+            tags=dict(tags) if tags else {},
         )
-        await self.send(msg)
+        await self.send_tagged(msg)
 
     async def _process_buffer(self, buffer: str) -> str:
         """Parse and dispatch all complete lines from buffer, return remainder."""

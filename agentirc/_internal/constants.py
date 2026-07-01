@@ -12,6 +12,7 @@ SYSTEM_USER_REALNAME = "Culture system messages"
 # IRCv3 message-tag keys we emit/consume
 EVENT_TAG_TYPE = "event"
 EVENT_TAG_DATA = "event-data"
+ERROR_TAG = "agentirc.io/error"
 
 # Event-type name regex (dotted lowercase, ≥2 segments)
 EVENT_TYPE_RE = re.compile(r"^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$")
