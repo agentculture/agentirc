@@ -1,0 +1,571 @@
+{
+  "slug": "agentirc-ships-an-agent-accessibility-release-ai-a",
+  "title": "agentirc ships an agent-accessibility release: AI agents get a first-class CLI to join, send, read, and watch the mesh; messages carry machine-parseable structure; and the client transport is reliable enough that an autonomous agent can treat the chat as dependable infrastructure rather than a fragile text stream.",
+  "frame_slug": "agentirc-ships-an-agent-accessibility-release-ai-a",
+  "schema_version": 1,
+  "status": "exported",
+  "created": "2026-07-01T22:15:38Z",
+  "updated": "2026-07-01T22:19:10Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "agentirc ships an agent-accessibility release: AI agents get a first-class CLI to join, send, read, and watch the mesh; messages carry machine-parseable structure; and the client transport is reliable enough that an autonomous agent can treat the chat as dependable infrastructure rather than a fragile text stream."
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "ships as additive semver-minor releases on the 9.x line; every headline capability in the announcement is exercised by at least one test that drives the system the way an agent would (shell or TCP)"
+    },
+    {
+      "id": "c2",
+      "kind": "audience",
+      "text": "AI agents \u2014 LLM-driven clients (and the humans operating them) \u2014 that use agentirc as their chat mesh"
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "every shipped feature is reachable from at least one agent path (CLI, wire protocol, or public Python API) and documented from the agent point of view"
+    },
+    {
+      "id": "c3",
+      "kind": "after_state",
+      "text": "an AI agent can join, send, read, and stay caught up on the mesh through interfaces designed for machine consumption \u2014 a clear CLI, structured messages, and a transport it can rely on"
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "docs include an end-to-end agent walkthrough \u2014 join, send, read, disconnect, catch up \u2014 runnable as written against a fresh pip install"
+    },
+    {
+      "id": "c4",
+      "kind": "why_it_matters",
+      "text": "agentirc's whole purpose is chat FOR agents; if agents need bespoke scaffolding to use it reliably, the product is failing its stated audience"
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "acceptance is judged on the agent path: no feature counts as done if it only works via internal test fixtures or a culture checkout"
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "improvements target five named dimensions: CLI ergonomics, protocol/output clarity, reliability, message structure, and missing agent-facing features"
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "every feature in the exported spec traces to at least one of the five named dimensions (CLI, clarity, reliability, message structure, missing features), and no dimension is left with zero coverage"
+    },
+    {
+      "id": "c6",
+      "kind": "boundary",
+      "text": "additive and IRC-compatible only: no new incompatible wire protocol; the known wire-format quirk fixes (#7 ROOMETAEND/ROOMETASET, #8 ERR_NOSUCHCHANNEL, #9 STHREAD) stay cross-repo Track A work and are not bundled into this effort"
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "the 9.5.0a2 wire-format golden tests pass unmodified; any client that worked against 9.7.0 registers and chats against this release with no changes"
+    },
+    {
+      "id": "c7",
+      "kind": "boundary",
+      "text": "agent backends and SDKs stay in culture \u2014 this effort adds no claude-agent-sdk/anthropic/etc. dependency and no 'culture' console script (existing hard invariant)"
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "pyproject.toml gains no agent/backend SDK dependency and git grep for culture imports in agentirc/ and tests/ stays empty (existing CI invariant)"
+    },
+    {
+      "id": "c8",
+      "kind": "boundary",
+      "text": "no renaming of on-disk artifacts: ~/.culture config/log/socket paths stay as-is"
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "default config, log, and socket paths are byte-identical to the 9.7.0 defaults"
+    },
+    {
+      "id": "c9",
+      "kind": "before_state",
+      "text": "today all agent affordances (reconnect, buffering, catch-up) live in the culture harness, out of tree; an agent hitting agentirc directly gets a raw IRCv3 socket with silent inbound truncation (client.py:246-248), fire-and-forget delivery, last-N-only history, a documented-but-unimplemented client BACKFILL, no msgid/server-time tags, and error replies that mix bare NOTICE prose with ad-hoc numerics"
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "each stated gap is re-verified against source at the cited file:line at plan time before any task is cut from it"
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "culture-side harness changes (IRCTransport adoption, all-backends propagation) are culture Track-A work; this spec covers agentirc only and must not require lockstep culture changes to ship"
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "the full test suite plus the end-to-end agent walkthrough pass in a venv with no culture checkout on the machine"
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "CLI: agent-facing client verbs (e.g. agentirc send / read / watch / join) let an agent converse with a running daemon over TCP from a shell, with no Python imports and no culture install"
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "the client verbs work against a running daemon over real TCP (not just an embedded IRCd) and are covered by subprocess-fixture tests"
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "CLI clarity: lifecycle verbs (status, version at minimum) gain --json machine-readable output; default text output unchanged"
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "--json output is valid JSON on stdout with diagnostics on stderr; existing text output is byte-identical without the flag (culture shim compatibility preserved)"
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "reliability: a first-party public client transport with auto-reconnect, exponential backoff, nick re-registration and channel re-join \u2014 the affordances currently exclusive to the culture harness"
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "reconnect/backoff is agentirc-native and tested with a killed-and-restarted server fixture; the culture harness could later adopt it without behavior change but nothing in this release requires culture to change"
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "reliability: server-side liveness \u2014 periodic server-to-client PING with bounded timeout reaps dead connections (today _handle_pong is a no-op and half-open sockets linger)"
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "reap interval and timeout are configurable; a healthy but idle client that answers PING is never dropped; existing tests still pass with the ping loop on"
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "message structure: server stamps msgid and server-time IRCv3 tags on delivered messages for message-tags clients; thread association becomes a machine-parseable tag instead of only a [thread:name] text prefix"
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "tags are sent only to clients that negotiated message-tags; clients without the cap see a byte-identical wire format to 9.7.0 (backward compat verified by the wire-format golden tests)"
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "message structure: long-message handling \u2014 outbound splitting at the 512-byte line limit and an explicit error reply on over-long inbound lines, replacing silent truncation"
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "no inbound line is ever silently altered: over-limit input gets an explicit error reply naming the limit; outbound splitting never breaks mid-codepoint and preserves message order"
+    },
+    {
+      "id": "c17",
+      "kind": "requirement",
+      "text": "missing feature: HISTORY gains a since-timestamp/cursor form with deterministic pagination, backed by the existing SQLite (channel,timestamp,id) index \u2014 offline agents catch up without guessing a count"
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "paging is deterministic and non-overlapping across calls (stable cursor), works on both the in-memory deque and SQLite backends, and HISTORY RECENT/SEARCH behavior is unchanged"
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "missing feature: the documented recovery path becomes real \u2014 client-facing BACKFILL is implemented (or extension-api.md stops promising it); docs and implementation agree"
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "after this ships, grep of extension-api.md finds no verb the server does not handle; the EVENTSUB overflow-recovery walkthrough is executable as written"
+    },
+    {
+      "id": "c19",
+      "kind": "requirement",
+      "text": "clarity: every skills error reply (rooms/threads/history) carries a stable named reason token in the style of EVENTERR, replacing bare NOTICE prose and ad-hoc 400/404/405 free text"
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "existing culture-harness message parsing does not break: token replies are additive (new numeric/tag or trailing token) rather than rewrites of reply shapes culture already matches on"
+    },
+    {
+      "id": "c20",
+      "kind": "requirement",
+      "text": "clarity: runtime discoverability \u2014 a client can enumerate available skill verbs (ROOM*, THREAD*, HISTORY, TAGS, ...) via a single query verb instead of reading docs out-of-band"
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "the discovery verb output is versioned and machine-parseable, and lists exactly the verbs the running server accepts (skills actually loaded), not a hardcoded list"
+    },
+    {
+      "id": "c21",
+      "kind": "success_signal",
+      "text": "an LLM agent with only a shell and pip install agentirc-cli \u2014 no culture checkout \u2014 can join a channel, send a message, and read replies using documented CLI verbs"
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "verified in a clean venv: pip install agentirc-cli, start a daemon, then join, send, and read using only documented CLI verbs"
+    },
+    {
+      "id": "c22",
+      "kind": "success_signal",
+      "text": "an agent that disconnects and reconnects can deterministically catch up on channel messages it missed, with no duplicates and no manual count-guessing"
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "an integration test disconnects a client mid-stream, sends messages during the outage, reconnects, and asserts exact recovery with no duplicates and no manual count"
+    },
+    {
+      "id": "c23",
+      "kind": "success_signal",
+      "text": "every error an agent can trigger on the skill verbs is branchable by a stable token, verified by tests, and extension-api.md promises nothing the server does not implement"
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "a test enumerates every error path in the rooms/threads/history skills asserting a stable token, and a docs check confirms extension-api.md promises only implemented verbs"
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "missing feature: DMs are stored in history with the same retention rules as channels, recoverable via the HISTORY since-cursor form; no new delivery semantics (user decision on q1)"
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "a DM sent while the recipient is connected lands in history and is retrievable via HISTORY since-cursor after the recipient reconnects; retention/prune rules match channel history; wire behavior for online DMs is unchanged"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Re-verify before-state gaps and lock the wire-format baseline",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "every file:line citation in the spec before-state is re-checked against current main and recorded in a short verification note under docs/specs/",
+        "the 9.5.0a2 golden wire-format tests run green unmodified and are extended to baseline PRIVMSG relay, NOTICE error replies, and HISTORY replay lines"
+      ],
+      "deps": [],
+      "covers": [
+        "c6",
+        "h17",
+        "c9",
+        "h20"
+      ]
+    },
+    {
+      "id": "t2",
+      "summary": "Stable error tokens across rooms, threads, and history skills",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "every error path in skills/rooms.py, skills/threads.py, skills/history.py emits a reply carrying a stable named token; a parameterized test enumerates all paths and asserts each token",
+        "reply shapes the culture harness already matches on are unchanged: tokens ride additively, verified against the golden baseline"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c19",
+        "h10",
+        "c23",
+        "h24"
+      ]
+    },
+    {
+      "id": "t3",
+      "summary": "msgid, server-time, and thread tags on delivered messages",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "clients that negotiated message-tags receive msgid and time tags on PRIVMSG delivery and a thread tag on thread messages; the [thread:name] text prefix remains",
+        "clients without message-tags see byte-identical 9.7.0 wire format (golden tests)",
+        "msgids are unique per message and stable across channel fan-out (every recipient sees the same msgid)"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [
+        "c15",
+        "h6"
+      ]
+    },
+    {
+      "id": "t4",
+      "summary": "Long-message handling: outbound split, explicit inbound limit error",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "outbound messages beyond the 512-byte line limit split into ordered continuation lines, never mid-codepoint, preserving order",
+        "an over-limit inbound line yields an explicit error reply naming the limit; the silent truncation path at client.py:246-248 is gone; no input is ever silently altered"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "c16",
+        "h7"
+      ]
+    },
+    {
+      "id": "t5",
+      "summary": "Server liveness: periodic PING and dead-connection reaper",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "server sends PING at a configurable interval and reaps connections missing a configurable PONG deadline; _handle_pong updates liveness state",
+        "an idle-but-responsive client is never dropped; a killed TCP peer is reaped within interval plus timeout; existing suite green with the loop on"
+      ],
+      "deps": [
+        "t4"
+      ],
+      "covers": [
+        "c14",
+        "h5"
+      ]
+    },
+    {
+      "id": "t6",
+      "summary": "HISTORY since-cursor pagination",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "HISTORY gains a since form taking an opaque cursor (timestamp plus id composite) returning deterministic, non-overlapping pages on both the deque and SQLite backends",
+        "HISTORY RECENT and SEARCH behavior is byte-unchanged; pagination tests span a retention-prune boundary"
+      ],
+      "deps": [
+        "t2"
+      ],
+      "covers": [
+        "c17",
+        "h8"
+      ]
+    },
+    {
+      "id": "t7",
+      "summary": "DM history storage",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a DM to a connected recipient lands in the history store under the same retention and prune rules as channels and is retrievable via the since-cursor form after reconnect",
+        "DM history is queryable only by the sender and the recipient; DMs never appear in channel history queries; online DM wire behavior is unchanged"
+      ],
+      "deps": [
+        "t5",
+        "t6"
+      ],
+      "covers": [
+        "c24",
+        "h16"
+      ]
+    },
+    {
+      "id": "t8",
+      "summary": "Client-facing BACKFILL",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a registered client can issue BACKFILL and receive events missed in its subscription window; the EVENTSUB overflow-recovery walkthrough in extension-api.md executes as written",
+        "a docs-vs-implementation test extracts the verbs extension-api.md promises and asserts each has a live handler"
+      ],
+      "deps": [
+        "t5",
+        "t6"
+      ],
+      "covers": [
+        "c18",
+        "h9"
+      ]
+    },
+    {
+      "id": "t9",
+      "summary": "Runtime verb discovery",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a single query verb returns a versioned, machine-parseable list of exactly the verbs the running server accepts, derived from loaded skills rather than a hardcoded list",
+        "the reply includes the negotiable capability names and the error-token vocabulary version"
+      ],
+      "deps": [
+        "t8"
+      ],
+      "covers": [
+        "c20",
+        "h11"
+      ]
+    },
+    {
+      "id": "t10",
+      "summary": "Public reconnecting client transport",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a new public module exposes a client that connects, registers, joins, reads, and sends over TCP with auto-reconnect (exponential backoff), nick re-registration, and channel re-join",
+        "a kill-and-restart server fixture proves reconnection and re-join; nothing in the module imports culture or any backend SDK"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c13",
+        "h4"
+      ]
+    },
+    {
+      "id": "t11",
+      "summary": "Agent CLI client verbs",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "agent-facing verbs (join, send, read, watch \u2014 final names settled at implementation per parked v3) drive a running daemon over real TCP from a shell; subprocess-fixture tests cover each verb",
+        "read and watch can resume from a since-cursor so a shell agent catches up without count-guessing"
+      ],
+      "deps": [
+        "t10",
+        "t6"
+      ],
+      "covers": [
+        "c11",
+        "h2"
+      ]
+    },
+    {
+      "id": "t12",
+      "summary": "--json output for status and version",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "agentirc status --json and agentirc version --json emit valid JSON on stdout with diagnostics on stderr; without the flag output stays byte-identical to 9.7.0"
+      ],
+      "deps": [
+        "t11"
+      ],
+      "covers": [
+        "c12",
+        "h3"
+      ]
+    },
+    {
+      "id": "t13",
+      "summary": "Reconnect catch-up integration test",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "an integration test disconnects a client mid-stream, delivers messages during the outage, reconnects, and asserts exact recovery \u2014 no gaps, no duplicates, msgid-verified \u2014 via the public transport plus since-cursor"
+      ],
+      "deps": [
+        "t3",
+        "t6",
+        "t10"
+      ],
+      "covers": [
+        "c22",
+        "h23"
+      ]
+    },
+    {
+      "id": "t14",
+      "summary": "CI guards: clean-venv run, dependency grep, on-disk path lock",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a CI job runs the full suite plus the agent walkthrough in a venv with no culture checkout on the machine",
+        "CI fails on any culture import under agentirc/ or tests/ and on any agent or backend SDK appearing in pyproject.toml",
+        "a test asserts default config, log, and socket paths are byte-identical to the 9.7.0 defaults"
+      ],
+      "deps": [
+        "t11"
+      ],
+      "covers": [
+        "c7",
+        "h18",
+        "c8",
+        "h19",
+        "c10",
+        "h21"
+      ]
+    },
+    {
+      "id": "t15",
+      "summary": "Agent-facing docs: walkthrough, extension-api, traceability",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "docs include an end-to-end agent walkthrough \u2014 join, send, read, disconnect, catch up \u2014 runnable as written against a fresh pip install of agentirc-cli",
+        "api-stability.md and extension-api.md document every new public surface from the agent point of view, and extension-api.md promises only implemented verbs",
+        "a traceability table maps every shipped feature to at least one of the five dimensions (CLI, clarity, reliability, message structure, missing features) with no dimension empty"
+      ],
+      "deps": [
+        "t8",
+        "t9",
+        "t11",
+        "t12"
+      ],
+      "covers": [
+        "c2",
+        "h13",
+        "c3",
+        "h14",
+        "c5",
+        "h1",
+        "c21",
+        "h22"
+      ]
+    },
+    {
+      "id": "t16",
+      "summary": "Release audit and version bumps",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "each headline capability from the announcement is exercised by at least one test that drives the system the way an agent would (shell or TCP); the audit note lands under docs/specs/",
+        "changes ship as semver-minor bumps on the 9.x line via /version-bump with changelog entries; acceptance is judged on the agent path only"
+      ],
+      "deps": [
+        "t13",
+        "t14",
+        "t15"
+      ],
+      "covers": [
+        "c1",
+        "h12",
+        "c4",
+        "h15"
+      ]
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "error-token rewrites must stay additive to reply shapes the culture harness parses; verify against the actual culture-side parsers before merging t2",
+      "kind": "unknown_nonblocking",
+      "task_id": "t2"
+    },
+    {
+      "id": "r2",
+      "text": "thread-tag design may brush against federation quirk #9 (STHREAD verb collapse); keep the tag local-optional so no Track A coordination is required",
+      "kind": "unknown_nonblocking",
+      "task_id": "t3"
+    },
+    {
+      "id": "r3",
+      "text": "cursor stability under concurrent writes (timestamp collisions) \u2014 settle the timestamp-plus-id composite cursor semantics at t6 implementation time",
+      "kind": "unknown_nonblocking",
+      "task_id": "t6"
+    }
+  ]
+}
