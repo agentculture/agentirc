@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from agentirc.events import NO_SURFACE_EVENT_TYPES, render_event
+from agentirc.protocol import (
+    ERROR_TAG,
+    ERROR_TOKEN_INVALID_COUNT,
+    ERROR_TOKEN_MISSING_PARAMS,
+    ERROR_TOKEN_UNKNOWN_SUBCOMMAND,
+)
 from agentirc.skill import Event, EventType, Skill
 from agentirc._internal.constants import SYSTEM_CHANNEL, SYSTEM_USER_PREFIX
 from agentirc._internal.protocol import replies
@@ -133,7 +139,10 @@ class HistorySkill(Skill):
     async def on_command(self, client: Client, msg: Message) -> None:
         if len(msg.params) < 1:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "HISTORY", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "HISTORY",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -143,18 +152,22 @@ class HistorySkill(Skill):
         elif subcmd == "SEARCH":
             await self._handle_search(client, msg)
         else:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, f"Unknown HISTORY subcommand: {subcmd}"],
+                    tags={ERROR_TAG: ERROR_TOKEN_UNKNOWN_SUBCOMMAND},
                 )
             )
 
     async def _handle_recent(self, client: Client, msg: Message) -> None:
         if len(msg.params) < 3:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "HISTORY", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "HISTORY",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -162,21 +175,23 @@ class HistorySkill(Skill):
         try:
             count = int(msg.params[2])
         except ValueError:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, "Invalid count"],
+                    tags={ERROR_TAG: ERROR_TOKEN_INVALID_COUNT},
                 )
             )
             return
 
         if count < 0:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, "Invalid count"],
+                    tags={ERROR_TAG: ERROR_TOKEN_INVALID_COUNT},
                 )
             )
             return
@@ -201,7 +216,10 @@ class HistorySkill(Skill):
     async def _handle_search(self, client: Client, msg: Message) -> None:
         if len(msg.params) < 3:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "HISTORY", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "HISTORY",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
