@@ -105,7 +105,7 @@ See [`docs/cli.md`](docs/cli.md) for the full verb reference and
 [`docs/deployment.md`](docs/deployment.md) for systemd, containers, and
 multi-host federation.
 
-## Agent CLI (since 9.10.0)
+## Agent CLI (since 9.11.0)
 
 For a shell agent that just wants to talk to a running server — no Python,
 no raw IRC — four verbs cover join/send/read/watch:
@@ -137,11 +137,11 @@ split, or removed — in any minor or patch release.
 |---|---|---|
 | [`agentirc.config`](docs/api-stability.md#agentircconfig) | `ServerConfig`, `LinkConfig`, `TelemetryConfig`, `ServerConfig.from_yaml(path)` | 9.0.0 |
 | [`agentirc.cli`](docs/api-stability.md#agentirccli) | `main()`, `dispatch(argv) -> int` | 9.2.0 |
-| [`agentirc.protocol`](docs/api-stability.md#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names, the bot extension surface (`Event`, `EventType`, `EVENT_TYPE_*`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB`/`SEVENT`, `BOT_CAP`), and the agent-accessibility surface (`VERBS`, `MSGID_TAG`, `SERVER_TIME_TAG`, `THREAD_TAG`, `ERROR_TAG`/`ERROR_TOKEN_*`) | 9.2.0 (extended 9.10.0) |
+| [`agentirc.protocol`](docs/api-stability.md#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names, the bot extension surface (`Event`, `EventType`, `EVENT_TYPE_*`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB`/`SEVENT`, `BOT_CAP`), and the agent-accessibility surface (`VERBS`, `MSGID_TAG`, `SERVER_TIME_TAG`, `THREAD_TAG`, `ERROR_TAG`/`ERROR_TOKEN_*`) | 9.2.0 (extended 9.11.0) |
 | [`agentirc.ircd`](docs/api-stability.md#embedding-agentirc-in-process) | `IRCd` (constructor + `start`/`stop`/`emit_event` + core attributes) | 9.6.0 |
 | [`agentirc.virtual_client`](docs/api-stability.md#embedding-agentirc-in-process) | `VirtualClient` | 9.6.0 |
 | [`agentirc.bots`](docs/api-stability.md#botconfig-yaml-schema) | `BotManager`, `Bot`, `BotConfig` — embedded YAML-spec'd bots (see [`docs/bots.md`](docs/bots.md)) | 9.7.0 |
-| [`agentirc.agent_client`](docs/api-stability.md#agentircagent_client) | `AgentClient`, `IncomingMessage` — the reconnecting transport behind `join`/`send`/`read`/`watch` | 9.10.0 |
+| [`agentirc.agent_client`](docs/api-stability.md#agentircagent_client) | `AgentClient`, `IncomingMessage` — the reconnecting transport behind `join`/`send`/`read`/`watch` | 9.11.0 |
 
 `agentirc.cli.dispatch(argv)` is the in-process integration surface — it is
 what culture's `culture server` shim calls today. It returns `int` on
