@@ -96,6 +96,13 @@ class Client:
         self.modes: set[str] = set()
         self.icon: str | None = None
         self._session_span: _OtelSpan | None = None
+        # Server liveness (t5): stamped on every inbound chunk (see `handle`)
+        # and explicitly by `_handle_pong` — any traffic from the client
+        # counts as liveness, not just PONG replies. `last_ping_sent` lets
+        # the IRCd liveness sweep send at most one keepalive PING per idle
+        # window instead of re-sending on every sweep tick.
+        self.last_activity: float = time.time()
+        self.last_ping_sent: float | None = None
 
     @property
     def prefix(self) -> str:
@@ -322,12 +329,17 @@ class Client:
                 # _process_buffer's docstring for the full resync story.
                 skipping_line = False
                 if initial_msg:
+                    self.last_activity = time.time()
                     buffer = initial_msg.replace("\r\n", "\n").replace("\r", "\n")
                     buffer, skipping_line = await self._process_buffer(buffer, skipping_line)
                 while True:
                     data = await self.reader.read(4096)
                     if not data:
                         break
+                    # Server liveness (t5): any inbound bytes count as activity,
+                    # not just PONG replies — see the field docstring on
+                    # `last_activity` in __init__.
+                    self.last_activity = time.time()
                     buffer += data.decode("utf-8", errors="replace")
                     # Normalize all line endings to \n for simpler parsing
                     buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
@@ -395,7 +407,14 @@ class Client:
         )
 
     def _handle_pong(self, msg: Message) -> None:
-        pass  # Client responding to our ping
+        """Client responding to our (server-initiated) liveness PING.
+
+        Explicitly stamps ``last_activity`` (t5) so a unit test can drive
+        this handler directly without going through the socket read loop
+        (which also stamps liveness for every inbound chunk — this is the
+        belt-and-suspenders half of that, not the only place it happens).
+        """
+        self.last_activity = time.time()
 
     # Capabilities advertised in CAP LS and accepted in CAP REQ. Adding
     # a new cap here is a minor bump per docs/api-stability.md; removing

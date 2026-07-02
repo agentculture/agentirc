@@ -125,6 +125,33 @@ def test_from_yaml_ignores_culture_only_keys(tmp_path):
     assert cfg.port == 6667
 
 
+def test_from_yaml_liveness_defaults_when_absent(tmp_path):
+    """t5: ping_interval/pong_timeout default to 60.0/120.0 when unset."""
+    p = tmp_path / "s.yaml"
+    p.write_text("server:\n  name: spark\n")
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.ping_interval == 60.0
+    assert cfg.pong_timeout == 120.0
+
+
+def test_from_yaml_liveness_keys_override_defaults(tmp_path):
+    """t5: top-level ping_interval/pong_timeout keys are recognised."""
+    p = tmp_path / "s.yaml"
+    p.write_text("ping_interval: 5\npong_timeout: 10\n")
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.ping_interval == 5
+    assert cfg.pong_timeout == 10
+
+
+def test_from_yaml_liveness_disabled_via_zero(tmp_path):
+    """t5: 0 (or negative) is a valid, meaningful value — disables the loop."""
+    p = tmp_path / "s.yaml"
+    p.write_text("ping_interval: 0\npong_timeout: 0\n")
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.ping_interval == 0
+    assert cfg.pong_timeout == 0
+
+
 def test_from_yaml_malformed_raises(tmp_path):
     p = tmp_path / "bad.yaml"
     p.write_text("server:\n  name: [unclosed\n")
