@@ -160,6 +160,29 @@ def _decode_cursor(cursor: str) -> tuple[float, int] | None:
     return float(ts_str), int(id_str)
 
 
+def encode_since_cursor(timestamp: float, entry_id: int) -> str:
+    """Public wrapper around :func:`_encode_cursor`.
+
+    Narrow read helper added for task t8 (client-facing ``BACKFILL``, see
+    ``agentirc/client.py``'s ``_handle_backfill``): ``BACKFILL`` reuses the
+    exact ``HISTORY SINCE`` cursor codec so a bot can track one cursor
+    concept across both verbs, without duplicating the encoding logic or
+    reaching into this module's private ``_encode_cursor``. ``HISTORY
+    SINCE`` itself keeps calling ``_encode_cursor`` directly — this wrapper
+    changes no existing query semantics.
+    """
+    return _encode_cursor(timestamp, entry_id)
+
+
+def decode_since_cursor(cursor: str) -> tuple[float, int] | None:
+    """Public wrapper around :func:`_decode_cursor`. See :func:`encode_since_cursor`.
+
+    Raises ``ValueError`` exactly like ``_decode_cursor`` on a malformed
+    token; callers should catch it and surface an ``invalid-cursor`` error.
+    """
+    return _decode_cursor(cursor)
+
+
 def _dm_pair_key(nick_a: str, nick_b: str) -> str:
     """Canonicalize two nicks into the internal DM-history storage key.
 

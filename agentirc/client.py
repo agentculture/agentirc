@@ -47,9 +47,11 @@ from agentirc._internal.telemetry.context import (
 from agentirc._internal.telemetry.context import inject_traceparent as _inject_traceparent
 from agentirc.channel import Channel
 from agentirc.protocol import (
+    BACKFILLEND,
     BOT_CAP,
     ERROR_TAG,
     ERROR_TOKEN_LINE_TOO_LONG,
+    EVENT,
     EVENTERR,
     MSGID_TAG,
     SERVER_TIME_TAG,
@@ -71,6 +73,7 @@ _ATTR_CHANNEL = "irc.channel"
 
 if TYPE_CHECKING:
     from agentirc.ircd import IRCd
+    from agentirc.skills.history import HistoryEntry
 
 
 class Client:
@@ -1293,10 +1296,12 @@ class Client:
 
         raise ConnectionError("Client quit")
 
-    # --- Bot extension verbs (9.5.0) ---
+    # --- Bot extension verbs (9.5.0; BACKFILL added in task t8) ---
     # Spec: docs/superpowers/specs/2026-05-01-bot-extension-api-design.md
     # § Decision B (EVENTSUB/EVENTUNSUB) and § Decision E (EVENTPUB).
-    # All three require:
+    # docs/extension-api.md's "Recovering with BACKFILL" section documents
+    # the client-facing BACKFILL verb this same gate now also covers.
+    # All four require:
     #   1. The ``agentirc.io/bot`` capability — without it, the server
     #      replies ``EVENTERR <id> :bot-capability-required``.
     #   2. A registered connection (post-NICK/USER) — without it, the
@@ -1306,8 +1311,16 @@ class Client:
 
     _SUB_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,32}$")
 
+    # Reserved sub-id token BACKFILL-replayed ``EVENT`` lines carry in the
+    # ``<sub-id>`` slot — BACKFILL isn't tied to any live subscription, so
+    # there's no real sub-id to put there. Lets a bot's existing EVENT
+    # parser handle replay lines unmodified while still being able to tell
+    # "this is a replay" from "this is live" by checking
+    # ``sub_id == _BACKFILL_EVENT_SUB_ID``. See ``_handle_backfill``.
+    _BACKFILL_EVENT_SUB_ID = "backfill"
+
     async def _bot_verb_gate(self, verb_id: str) -> bool:
-        """Common bot-CAP + registration gate for EVENTSUB/EVENTUNSUB/EVENTPUB.
+        """Common bot-CAP + registration gate for EVENTSUB/EVENTUNSUB/EVENTPUB/BACKFILL.
 
         Sends the appropriate ``EVENTERR`` and returns ``False`` on
         rejection; returns ``True`` if the caller may proceed.
@@ -1428,3 +1441,142 @@ class Client:
             timestamp=time.time(),
         )
         await self.server.emit_event(ev)
+
+    async def _handle_backfill(self, msg: Message) -> None:
+        """``BACKFILL <channel-or-*> <cursor-or-*> [limit]`` (task t8).
+
+        Makes good on the recovery path ``docs/extension-api.md``'s
+        Backpressure section promises: after an
+        ``EVENTERR <sub-id> :backpressure-overflow``, a bot re-subscribes
+        and issues ``BACKFILL`` to catch up on what it missed. Gated
+        identically to ``EVENTSUB``/``EVENTUNSUB``/``EVENTPUB`` via
+        ``_bot_verb_gate`` — the ``EVENTERR`` reply's second token echoes
+        back whatever ``<channel-or-*>`` was sent, mirroring how
+        ``_handle_eventpub`` echoes back ``<type>``.
+
+        Only stored ``message`` events (ordinary channel ``PRIVMSG``s) are
+        replayed — lifecycle entries (``user.join``, ``topic``, …) that also
+        land in the history store are skipped. They're identified by their
+        synthetic ``system-``-prefixed nick (see
+        ``HistorySkill.on_event``); a real client nick can never start with
+        that prefix (``_handle_nick`` rejects it at registration time), so
+        this is an exact filter, not a heuristic.
+
+        Replayed events reuse the ``EVENT`` wire shape with the reserved
+        sub-id token ``_BACKFILL_EVENT_SUB_ID`` (never a live subscription
+        id) so a bot's existing ``EVENT`` parser handles them without a new
+        code path.
+
+        ``<channel-or-*>`` is either an exact, currently-existing channel
+        name (``self.server.channels``) or the literal ``*`` meaning "every
+        channel I'm currently joined to" (``self.channels``). DM history
+        (the internal ``@dm:...`` history-store keys — see
+        ``agentirc.skills.history``'s module docstring) is never resolved or
+        reachable through this verb at any spelling: only ``#``-prefixed
+        names are ever looked up, so a bare nick or a directly-named
+        ``@dm:...`` target both fail the ``#``-prefix check and get
+        ``no-such-channel``, exactly like a channel that never existed.
+
+        ``<cursor-or-*>`` reuses the exact ``HISTORY SINCE`` cursor codec
+        (``agentirc.skills.history.decode_since_cursor``/
+        ``encode_since_cursor``) so a bot can track one cursor concept
+        across both verbs.
+
+        A page may legitimately replay zero ``EVENT`` lines while the
+        terminator's cursor still advances (e.g. a page consisting entirely
+        of skipped lifecycle entries) — this mirrors ``HISTORY SINCE``'s own
+        paging semantics; callers loop on the terminator's cursor until an
+        empty page whose cursor stops advancing.
+        """
+        channel_param = msg.params[0] if msg.params else "?"
+        if not await self._bot_verb_gate(channel_param):
+            return
+        if len(msg.params) < 2:
+            await self.send_raw(f"{EVENTERR} {channel_param} :missing-params")
+            return
+        cursor_token = msg.params[1]
+
+        from agentirc.skills.history import (
+            DEFAULT_SINCE_LIMIT,
+            HistorySkill,
+            decode_since_cursor,
+            encode_since_cursor,
+        )
+
+        limit = DEFAULT_SINCE_LIMIT
+        if len(msg.params) >= 3:
+            try:
+                limit = int(msg.params[2])
+            except ValueError:
+                await self.send_raw(f"{EVENTERR} {channel_param} :invalid-count")
+                return
+            if limit < 0:
+                await self.send_raw(f"{EVENTERR} {channel_param} :invalid-count")
+                return
+
+        try:
+            after = decode_since_cursor(cursor_token)
+        except ValueError:
+            await self.send_raw(f"{EVENTERR} {channel_param} :invalid-cursor")
+            return
+
+        if channel_param == "*":
+            channels = sorted(ch.name for ch in self.channels)
+        else:
+            if not channel_param.startswith("#") or channel_param not in self.server.channels:
+                await self.send_raw(f"{EVENTERR} {channel_param} :no-such-channel")
+                return
+            channels = [channel_param]
+
+        history_skill = self.server.get_skill_for_command("HISTORY")
+
+        # Per-channel fetch capped at `limit` each, then merged and
+        # re-truncated to a global `limit` — a standard bounded k-way merge:
+        # since the final result is at most `limit` entries wide, no single
+        # channel can contribute more than `limit` of them, so fetching up
+        # to `limit` from every channel independently can never short-change
+        # the merge. The next-cursor is derived from this *raw* (pre-filter)
+        # truncated batch, exactly mirroring HISTORY SINCE's own
+        # last-entry-in-the-page cursor derivation, so pagination stays
+        # non-overlapping and exactly-once even though some raw entries are
+        # skipped (not emitted) below for being lifecycle, not message.
+        merged: list[tuple[str, "HistoryEntry"]] = []
+        if isinstance(history_skill, HistorySkill):
+            for ch in channels:
+                for entry in history_skill.get_since(ch, after, limit):
+                    merged.append((ch, entry))
+        merged.sort(key=lambda pair: (pair[1].timestamp, pair[1].id))
+        merged = merged[:limit]
+
+        from agentirc.ircd import IRCd
+
+        server_name = self.server.config.name
+        for ch, entry in merged:
+            if entry.nick.startswith(SYSTEM_USER_PREFIX):
+                continue
+            data = {"text": entry.text}
+            if entry.msgid is not None:
+                data["msgid"] = entry.msgid
+            event = Event(
+                type=EventType.MESSAGE,
+                channel=ch,
+                nick=entry.nick,
+                data=data,
+                timestamp=entry.timestamp,
+            )
+            envelope = IRCd._build_event_envelope(event)
+            encoded = IRCd._encode_event_data(envelope, EventType.MESSAGE.value)
+            await self.send_raw(
+                f":{server_name} {EVENT} {self._BACKFILL_EVENT_SUB_ID} "
+                f"{EventType.MESSAGE.value} {ch} {entry.nick} :{encoded}"
+            )
+
+        if merged:
+            last_entry = merged[-1][1]
+            next_cursor = encode_since_cursor(last_entry.timestamp, last_entry.id)
+        elif after is None:
+            next_cursor = "*"
+        else:
+            next_cursor = cursor_token
+
+        await self.send_raw(f":{server_name} {BACKFILLEND} {channel_param} {next_cursor}")

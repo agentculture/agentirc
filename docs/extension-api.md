@@ -17,7 +17,8 @@ Once negotiated, the client:
 - Joins channels silently (no JOIN broadcast to other channel members).
 - Never gets auto-op on a newly created channel.
 - Appears in `NAMES` prefixed with `+` and in `WHO` with a `B` flag.
-- May issue `EVENTSUB` to stream events and `EVENTPUB` to emit custom events.
+- May issue `EVENTSUB` to stream events, `EVENTPUB` to emit custom events, and
+  `BACKFILL` to replay missed history after a dropped subscription.
 
 Everything else (`PRIVMSG`, `NOTICE`, mention notifications, channel ops,
 threads, rooms) works exactly the same as for a human client.
@@ -157,11 +158,74 @@ When the queue overflows:
 2. The subscription is removed.
 3. The client connection itself stays open.
 4. To recover: re-subscribe with the same or a fresh `<sub-id>`, then issue
-   `BACKFILL` to catch up on missed history.
+   `BACKFILL` (below) to catch up on missed history.
 
 Bots should aim to drain `EVENT` lines as fast as they arrive. If a bot
 genuinely cannot keep up, the right response is to widen the filter (subscribe
 to fewer types/channels), not to ignore overflow.
+
+### Recovering with BACKFILL
+
+```text
+BACKFILL <channel-or-*> <cursor-or-*> [limit]
+```
+
+Gated identically to `EVENTSUB`/`EVENTPUB`: the `agentirc.io/bot` capability
+and a registered connection. Without the capability:
+`EVENTERR <channel-or-*> :bot-capability-required`; unregistered:
+`EVENTERR <channel-or-*> :not-registered` — the error line's second token
+echoes back whatever `<channel-or-*>` you sent, mirroring how `EVENTPUB`
+echoes back `<type>`.
+
+- `<channel-or-*>` — an exact, currently-existing channel name, or the
+  literal `*` for every channel you're currently joined to. A target that
+  isn't `#`-prefixed, or doesn't currently exist, is rejected with
+  `EVENTERR <channel-or-*> :no-such-channel` — this includes any attempt to
+  address a DM history entry, which has no reachable wire spelling at all:
+  **DM history is never replayed by `BACKFILL`, under any target spelling.**
+- `<cursor-or-*>` — the same opaque cursor `HISTORY SINCE` uses, or
+  `*`/empty for "from the beginning of retained history". A cursor that
+  fails to decode is rejected with `EVENTERR <channel-or-*> :invalid-cursor`.
+- `[limit]` — optional page size, default 100 (same default as
+  `HISTORY SINCE`). A negative or non-numeric value is rejected with
+  `EVENTERR <channel-or-*> :invalid-count`.
+- `BACKFILL` replays only stored `message` events — the same events a live
+  `EVENTSUB type=message` subscription would have delivered. Lifecycle
+  events (`user.join`, `topic`, …) that also land in the history store are
+  not replayed by `BACKFILL`.
+- Each replayed message arrives as an `EVENT` line reusing the exact shape a
+  live subscription's lines have, so it round-trips through a bot's
+  existing `EVENT` parser unmodified — but with the reserved sub-id token
+  `backfill` (never a live subscription id) in the `<sub-id>` position:
+
+  ```text
+  :server EVENT backfill message #room alice :eyJ0eXBlIjogIm1lc3NhZ2UiLCAuLi59
+  ```
+
+  Check `sub-id == "backfill"` to tell a replayed line from a live one.
+- The stream ends with a terminator line carrying the next cursor:
+  `BACKFILLEND <channel-or-*> <next-cursor>`, echoing back whatever
+  `<channel-or-*>` you requested. Feed `<next-cursor>` into the next
+  `BACKFILL` call to keep paging; an empty page whose terminator cursor is
+  unchanged from what you sent means you're caught up.
+
+#### Worked recovery example
+
+```text
+C: EVENTSUB msgs type=message channel=#room
+S: :server EVENT msgs message #room alice :eyJ0eXBlIjogIm1lc3NhZ2UiLCAuLi59
+... (queue overflows) ...
+S: :server EVENTERR msgs :backpressure-overflow
+C: EVENTSUB msgs2 type=message channel=#room
+C: BACKFILL #room *
+S: :server EVENT backfill message #room alice :eyJ0eXBlIjogIm1lc3NhZ2UiLCAuLi59
+S: :server EVENT backfill message #room bob   :eyJ0eXBlIjogIm1lc3NhZ2UiLCAuLi59
+S: :server BACKFILLEND #room <next-cursor>
+```
+
+This example resumes from the beginning of retained history (`*`); a bot
+that separately tracks a `HISTORY SINCE` cursor may pass that instead to
+skip messages it has already durably recorded.
 
 ## Emitting custom events (`EVENTPUB`)
 
