@@ -64,6 +64,11 @@ class IRCd:
         self._stopping = False
         self._stopped = asyncio.Event()
         self._background_tasks: set[asyncio.Task] = set()
+        # Server liveness (t5): periodic PING + dead-connection reaper for
+        # local TCP clients. Started in start(), cancelled in stop(). Kept
+        # out of _background_tasks (which is fire-and-forget) because stop()
+        # needs to deterministically await its cancellation.
+        self._liveness_task: asyncio.Task | None = None
         # Bots
         self.bot_manager = None  # set in start()
         self.system_client: VirtualClient | None = None
@@ -122,6 +127,11 @@ class IRCd:
             self.config.host,
             self.config.port,
         )
+
+        # Server liveness (t5): `ping_interval <= 0` disables the sweep loop
+        # entirely (default 60.0 never fires within typical test lifetimes).
+        if self.config.ping_interval > 0:
+            self._liveness_task = asyncio.create_task(self._liveness_sweep_loop())
 
         logger.info("Server ready")
 
@@ -442,6 +452,15 @@ class IRCd:
                 )
             except Exception:
                 logger.exception("failed to emit server.sleep")
+            # Server liveness (t5): stop sweeping before anything else tears
+            # down so it never races the socket/link/bot shutdown below.
+            if self._liveness_task is not None:
+                self._liveness_task.cancel()
+                try:
+                    await self._liveness_task
+                except asyncio.CancelledError:
+                    pass
+                self._liveness_task = None
             # Stop bots and the webhook HTTP listener. ``BotManager.stop()``
             # tears down the listener (bound in ``start()`` since 9.7.0) before
             # stopping the bots, mirroring the lifecycle ``IRCd.start()`` drives.
@@ -554,6 +573,92 @@ class IRCd:
         state = self._link_retry_state.pop(peer_name, None)
         if state and state.get("task"):
             state["task"].cancel()
+
+    # Sweep granularity cap (t5): the sweep wakes every
+    # ``min(ping_interval, _LIVENESS_SWEEP_MAX_INTERVAL)`` seconds so a tiny
+    # configured interval (test fixtures) is observed quickly, while the 60s
+    # default still sweeps at a cheap, coarse cadence.
+    _LIVENESS_SWEEP_MAX_INTERVAL = 5.0
+
+    async def _liveness_sweep_loop(self) -> None:
+        """Periodically PING idle local TCP clients and reap unresponsive ones.
+
+        Scope: LOCAL TCP ``Client`` instances only. ``self.clients`` also
+        holds ``VirtualClient`` bot presences (no socket, skipped here) and
+        server-to-server peers live in ``self.remote_clients``/``self.links``
+        entirely, never in ``self.clients`` — so this loop never touches
+        federation links or ``RemoteClient`` ghosts.
+        """
+        from agentirc.client import Client
+
+        interval = self.config.ping_interval
+        timeout = self.config.pong_timeout
+        sweep_every = min(interval, self._LIVENESS_SWEEP_MAX_INTERVAL)
+        while True:
+            await asyncio.sleep(sweep_every)
+            now = time.time()
+            for client in [*self.clients.values()]:
+                if not isinstance(client, Client):
+                    continue  # VirtualClient bot presence: no socket to sweep
+                try:
+                    await self._liveness_check_client(client, now, interval, timeout)
+                except Exception:
+                    logger.exception(
+                        "Liveness sweep failed for %s", getattr(client, "nick", "?")
+                    )
+
+    async def _liveness_check_client(
+        self, client: "Client", now: float, interval: float, timeout: float
+    ) -> None:
+        """Apply the liveness rule to a single local client.
+
+        Reap wins over ping when both thresholds are already crossed (can
+        happen if the sweep was delayed, e.g. under load). Otherwise, PING
+        at most once per idle window: ``last_ping_sent`` only advances when
+        we send, and is considered "stale" once ``last_activity`` moves past
+        it (any inbound line, including but not limited to a PONG, resets
+        the window).
+        """
+        idle = now - client.last_activity
+        if idle > interval + timeout:
+            self._reap_client(client)
+            return
+        if idle > interval and (
+            client.last_ping_sent is None or client.last_ping_sent < client.last_activity
+        ):
+            await self._send_liveness_ping(client)
+            client.last_ping_sent = now
+
+    @staticmethod
+    async def _send_liveness_ping(client: "Client") -> None:
+        try:
+            await client.send_raw(f"PING :{client.server.config.name}")
+        except Exception:
+            logger.debug(
+                "Failed to send liveness PING to %s", getattr(client, "nick", "?")
+            )
+
+    @staticmethod
+    def _reap_client(client: "Client") -> None:
+        """Close a dead client's connection through the normal disconnect path.
+
+        Deliberately does NOT broadcast QUIT or call ``_remove_client``
+        directly — closing the writer feeds EOF to the client's own
+        ``handle()`` read loop (same transport), which unwinds through
+        ``_accept_c2s_connection``'s existing ``finally`` block exactly as a
+        natural TCP drop does today: nick removed, channels cleaned up,
+        disconnect events emitted, metrics recorded — with no QUIT line
+        broadcast, matching current natural-disconnect behavior.
+        """
+        logger.info(
+            "Reaping unresponsive client %s (no activity within "
+            "ping_interval + pong_timeout)",
+            getattr(client, "nick", None) or client.host,
+        )
+        try:
+            client.writer.close()
+        except OSError:
+            pass
 
     async def _handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
