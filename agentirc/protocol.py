@@ -317,7 +317,12 @@ THREAD_TAG = "agentirc.io/thread"
 #   thread-already-exists   — THREAD CREATE duplicate (channel, name) pair
 #   no-such-thread          — THREAD REPLY/THREADCLOSE(/PROMOTE) unknown thread
 #   thread-archived         — THREAD REPLY/THREADCLOSE(/PROMOTE) on a closed thread
-#   invalid-count           — HISTORY RECENT non-integer or negative count
+#   invalid-count           — HISTORY RECENT / HISTORY SINCE non-integer or
+#                              negative count/limit
+#   invalid-cursor          — HISTORY SINCE cursor token fails to decode
+#                              (bad base64, missing separator, non-numeric
+#                              timestamp/id) — see agentirc/skills/history.py
+#                              module docstring for the cursor encoding
 
 ERROR_TOKEN_MISSING_PARAMS = "missing-params"
 ERROR_TOKEN_INVALID_CHANNEL_NAME = "invalid-channel-name"
@@ -336,6 +341,7 @@ ERROR_TOKEN_THREAD_ALREADY_EXISTS = "thread-already-exists"
 ERROR_TOKEN_NO_SUCH_THREAD = "no-such-thread"
 ERROR_TOKEN_THREAD_ARCHIVED = "thread-archived"
 ERROR_TOKEN_INVALID_COUNT = "invalid-count"
+ERROR_TOKEN_INVALID_CURSOR = "invalid-cursor"
 
 
 __all__ = [
@@ -386,6 +392,7 @@ __all__ = [
     "ERROR_TOKEN_CHANNEL_ALREADY_EXISTS",
     "ERROR_TOKEN_INVALID_CHANNEL_NAME",
     "ERROR_TOKEN_INVALID_COUNT",
+    "ERROR_TOKEN_INVALID_CURSOR",
     "ERROR_TOKEN_INVALID_META_VALUE",
     "ERROR_TOKEN_INVALID_THREAD_NAME",
     "ERROR_TOKEN_MISSING_PARAMS",

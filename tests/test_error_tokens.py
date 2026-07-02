@@ -46,6 +46,7 @@ from agentirc.protocol import (
     ERROR_TOKEN_CHANNEL_ALREADY_EXISTS,
     ERROR_TOKEN_INVALID_CHANNEL_NAME,
     ERROR_TOKEN_INVALID_COUNT,
+    ERROR_TOKEN_INVALID_CURSOR,
     ERROR_TOKEN_INVALID_META_VALUE,
     ERROR_TOKEN_INVALID_THREAD_NAME,
     ERROR_TOKEN_MISSING_PARAMS,
@@ -330,6 +331,15 @@ async def _probe_history_invalid_count_negative(client, _ctx):
     return await _send_and_recv(client, f"HISTORY RECENT {chan} -5")
 
 
+async def _probe_history_since_invalid_cursor(client, _ctx):
+    chan = f"#hist3-{client.nick}"
+    # "bm9jb2xvbmhlcmU=" is valid base64 (decodes to "nocolonhere") but has
+    # no ":" separator once decoded, so it deterministically fails cursor
+    # parsing regardless of base64-decoder leniency quirks — see
+    # agentirc/skills/history.py's _decode_cursor.
+    return await _send_and_recv(client, f"HISTORY SINCE {chan} bm9jb2xvbmhlcmU=")
+
+
 CASES: list[ErrorCase] = [
     # -- missing-params: ERR_NEEDMOREPARAMS across every rooms/threads/history verb --
     ErrorCase("roomcreate-missing-params", ERROR_TOKEN_MISSING_PARAMS, _bare("ROOMCREATE #x")),
@@ -547,6 +557,13 @@ CASES: list[ErrorCase] = [
         "history-recent-invalid-count-negative",
         ERROR_TOKEN_INVALID_COUNT,
         _probe_history_invalid_count_negative,
+    ),
+    # -- invalid-cursor --
+    ErrorCase(
+        "history-since-invalid-cursor",
+        ERROR_TOKEN_INVALID_CURSOR,
+        _probe_history_since_invalid_cursor,
+        expected_untagged=lambda nick: f":testserv NOTICE {nick} :Invalid cursor",
     ),
     # -- unknown-subcommand --
     ErrorCase(
