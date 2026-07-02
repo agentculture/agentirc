@@ -72,6 +72,9 @@ asyncio_mode = "auto"
 testpaths = [
     "tests",
 ]
+markers = [
+    "walkthrough: end-to-end agent-facing CLI smoke test that drives a real daemon subprocess over TCP (start/join/send/read/watch/stop). Runs in the normal suite too; CI's agent-guards job also invokes it by name via `pytest -m walkthrough`.",
+]
 
 [tool.citation.packages.culture-aio]
 schema = 2

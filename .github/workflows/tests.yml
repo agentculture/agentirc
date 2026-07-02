@@ -126,3 +126,108 @@ jobs:
             echo "::error::Version $PR_VERSION matches main. Bump before merging."
             exit 1
           fi
+
+  # Guards for the agent-accessibility release (task t14). GitHub-hosted
+  # runners never have a `../culture` checkout, so the "clean venv, no
+  # culture on the machine" guarantee already holds by construction here;
+  # the explicit check below turns that ambient fact into a loud failure
+  # if it's ever violated (e.g. a self-hosted runner, or a future workflow
+  # change that checks out a sibling repo).
+  agent-guards:
+    needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Bootstrap status check
+        id: bootstrap
+        run: |
+          if [ -f pyproject.toml ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Pre-bootstrap (no pyproject.toml) — agent guards skipped."
+          fi
+
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
+        if: steps.bootstrap.outputs.ready == 'true'
+
+      - name: Install Python
+        if: steps.bootstrap.outputs.ready == 'true'
+        run: uv python install 3.12
+
+      - name: Sync deps (fresh venv, with dev extras)
+        if: steps.bootstrap.outputs.ready == 'true'
+        run: uv sync --extra dev
+
+      - name: Assert no ../culture checkout on this runner
+        if: steps.bootstrap.outputs.ready == 'true'
+        run: |
+          if [ -d ../culture ]; then
+            echo "::error::../culture checkout found next to agentirc — this job exists to guarantee agentirc's test suite (and this walkthrough) run clean, with no culture checkout on the machine. Remove the sibling checkout or move it outside the runner's workspace."
+            exit 1
+          fi
+          echo "No ../culture checkout present — clean-venv invariant holds."
+
+      - name: No 'import culture' under agentirc/ or tests/
+        if: steps.bootstrap.outputs.ready == 'true'
+        run: |
+          if git grep -nE '^(from|import) culture' -- agentirc/ tests/; then
+            echo "::error::Found a top-level 'import culture' / 'from culture import ...' under agentirc/ or tests/ — agentirc must have no import-time dependency on culture (see CLAUDE.md's 'Hard invariants')."
+            exit 1
+          fi
+          echo "No 'import culture' found under agentirc/ or tests/."
+
+      - name: No agent/backend SDKs declared in pyproject.toml
+        if: steps.bootstrap.outputs.ready == 'true'
+        run: |
+          python3 - <<'PYEOF'
+          import sys
+          import tomllib
+
+          # agentirc's dependency boundary (CLAUDE.md "Hard invariants"):
+          # no backend/agent SDKs, ever, as a real dependency. Checked
+          # against declared dependency *names* (project.dependencies +
+          # every project.optional-dependencies group), not the raw file
+          # text — pyproject.toml's own [tool.citation] notes legitimately
+          # *mention* several of these names in prose explaining why
+          # they're forbidden, which a plain grep would misfire on.
+          FORBIDDEN = {
+              "claude-agent-sdk",
+              "anthropic",
+              "agex-cli",
+              "afi-cli",
+              "github-copilot-sdk",
+              "openai",
+          }
+
+          with open("pyproject.toml", "rb") as f:
+              data = tomllib.load(f)
+
+          project = data.get("project", {})
+          deps = list(project.get("dependencies", []))
+          for group_deps in project.get("optional-dependencies", {}).values():
+              deps.extend(group_deps)
+
+          def dep_name(spec: str) -> str:
+              name = spec.split(";", 1)[0]  # drop environment markers
+              for sep in (">=", "<=", "==", "~=", "!=", ">", "<", "[", " "):
+                  name = name.split(sep, 1)[0]
+              return name.strip().lower()
+
+          hits = [d for d in deps if dep_name(d) in FORBIDDEN]
+          if hits:
+              for h in hits:
+                  print(f"::error::Forbidden agent/backend SDK dependency in pyproject.toml: {h!r}")
+              sys.exit(1)
+
+          print("No forbidden agent/backend SDK dependencies found in pyproject.toml.")
+          PYEOF
+
+      - name: Agent walkthrough smoke (by marker)
+        if: steps.bootstrap.outputs.ready == 'true'
+        env:
+          UV_PROJECT_ENVIRONMENT: .venv
+        run: uv run pytest -m walkthrough -v
