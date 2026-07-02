@@ -25,29 +25,92 @@ class HistoryStore:
                 channel TEXT NOT NULL,
                 nick TEXT NOT NULL,
                 text TEXT NOT NULL,
-                timestamp REAL NOT NULL
+                timestamp REAL NOT NULL,
+                msgid TEXT
             )""")
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_history_channel_ts ON history(channel, timestamp, id)"
         )
+        self._migrate_msgid_column()
         self._conn.commit()
 
-    def append(self, channel: str, nick: str, text: str, timestamp: float) -> None:
-        """Insert a single history entry (batched — not committed per call)."""
-        self._conn.execute(
-            "INSERT INTO history (channel, nick, text, timestamp) VALUES (?, ?, ?, ?)",
-            (channel, nick, text, timestamp),
+    def _migrate_msgid_column(self) -> None:
+        """Add the ``msgid`` column to a pre-existing (pre-t6) database.
+
+        ``CREATE TABLE IF NOT EXISTS`` above is a no-op against a database
+        created before the ``msgid`` column existed, so it's added here via a
+        lightweight ``ALTER TABLE`` on open, guarded by a ``PRAGMA
+        table_info`` check so it only runs once (SQLite has no
+        ``ADD COLUMN IF NOT EXISTS``). Fresh databases already have the
+        column from ``CREATE TABLE`` and this is a no-op for them.
+        """
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(history)")}
+        if "msgid" not in cols:
+            self._conn.execute("ALTER TABLE history ADD COLUMN msgid TEXT")
+
+    def append(
+        self,
+        channel: str,
+        nick: str,
+        text: str,
+        timestamp: float,
+        msgid: str | None = None,
+    ) -> int:
+        """Insert a single history entry (batched — not committed per call).
+
+        Returns the assigned ``AUTOINCREMENT`` row id, which doubles as the
+        monotonic tie-break component of the HISTORY SINCE cursor (see
+        ``agentirc/skills/history.py``'s module docstring).
+        """
+        cur = self._conn.execute(
+            "INSERT INTO history (channel, nick, text, timestamp, msgid) VALUES (?, ?, ?, ?, ?)",
+            (channel, nick, text, timestamp, msgid),
         )
+        return cur.lastrowid
 
     def get_recent(self, channel: str, count: int) -> list[dict]:
         """Return the last *count* entries for a channel, in chronological order."""
         cur = self._conn.execute(
-            "SELECT nick, text, timestamp FROM history "
+            "SELECT id, nick, text, timestamp, msgid FROM history "
             "WHERE channel = ? ORDER BY timestamp DESC, id DESC LIMIT ?",
             (channel, count),
         )
         rows = cur.fetchall()
-        return [{"nick": r[0], "text": r[1], "timestamp": r[2]} for r in reversed(rows)]
+        return [
+            {"id": r[0], "nick": r[1], "text": r[2], "timestamp": r[3], "msgid": r[4]}
+            for r in reversed(rows)
+        ]
+
+    def get_since(self, channel: str, after: tuple[float, int] | None, limit: int) -> list[dict]:
+        """Return up to *limit* entries strictly after cursor tuple *after*.
+
+        *after* is a decoded ``(timestamp, id)`` pair (or ``None`` for "from
+        the beginning"). Results are ordered ascending by ``(timestamp,
+        id)`` — the same order the ``idx_history_channel_ts`` index is built
+        for — so this is a plain keyset-pagination range scan, not an
+        offset scan: deterministic and non-overlapping across successive
+        calls chained by the previous page's last row.
+        """
+        if limit <= 0:
+            return []
+        if after is None:
+            cur = self._conn.execute(
+                "SELECT id, nick, text, timestamp, msgid FROM history "
+                "WHERE channel = ? ORDER BY timestamp ASC, id ASC LIMIT ?",
+                (channel, limit),
+            )
+        else:
+            after_ts, after_id = after
+            cur = self._conn.execute(
+                "SELECT id, nick, text, timestamp, msgid FROM history "
+                "WHERE channel = ? AND (timestamp, id) > (?, ?) "
+                "ORDER BY timestamp ASC, id ASC LIMIT ?",
+                (channel, after_ts, after_id, limit),
+            )
+        return [
+            {"id": r[0], "nick": r[1], "text": r[2], "timestamp": r[3], "msgid": r[4]}
+            for r in cur
+        ]
 
     def search(self, channel: str, term: str) -> list[dict]:
         """Case-insensitive substring search within a channel."""
@@ -63,7 +126,8 @@ class HistoryStore:
         """Load the last *maxlen* entries per channel for startup restore.
 
         Returns a dict mapping channel names to deques of
-        ``{"nick": ..., "text": ..., "timestamp": ...}`` dicts.
+        ``{"id": ..., "nick": ..., "text": ..., "timestamp": ..., "msgid": ...}``
+        dicts — ``id``/``msgid`` were added in t6 for HISTORY SINCE support.
         """
         cur = self._conn.execute("SELECT DISTINCT channel FROM history")
         channels: dict[str, deque] = {}
