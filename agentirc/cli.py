@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -298,6 +299,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser("status", help="Report IRCd daemon state")
     p_status.add_argument("--name", default=None, help=_SERVER_NAME_HELP)
+    p_status.add_argument("--json", action="store_true", help="Emit JSON output")
 
     p_link = sub.add_parser("link", help="Validate a server-to-server mesh link spec")
     p_link.add_argument(
@@ -314,7 +316,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Tail the log file (like tail -f)",
     )
 
-    sub.add_parser("version", help="Print agentirc version")
+    p_version = sub.add_parser("version", help="Print agentirc version")
+    p_version.add_argument("--json", action="store_true", help="Emit JSON output")
 
     _add_client_verbs(sub)
 
@@ -718,16 +721,32 @@ def _server_status(args: argparse.Namespace) -> None:
     pid = read_pid(pid_name)
     port = read_port(pid_name)
 
-    if pid is None:
-        print(f"Server '{args.name}': not running (no PID file)")
-    elif is_process_alive(pid):
-        if port:
-            print(f"Server '{args.name}': running (PID {pid}, port {port})")
-        else:
-            print(f"Server '{args.name}': running (PID {pid})")
+    if getattr(args, "json", False):
+        # JSON output mode
+        running = pid is not None and is_process_alive(pid)
+        stale = pid is not None and not is_process_alive(pid)
+        output = {
+            "name": args.name,
+            "running": running,
+            "pid": pid,
+            "port": port,
+        }
+        if stale:
+            output["stale"] = True
+            remove_pid(pid_name)
+        print(json.dumps(output))
     else:
-        print(f"Server '{args.name}': not running (stale PID {pid})")
-        remove_pid(pid_name)
+        # Text output mode
+        if pid is None:
+            print(f"Server '{args.name}': not running (no PID file)")
+        elif is_process_alive(pid):
+            if port:
+                print(f"Server '{args.name}': running (PID {pid}, port {port})")
+            else:
+                print(f"Server '{args.name}': running (PID {pid})")
+        else:
+            print(f"Server '{args.name}': not running (stale PID {pid})")
+            remove_pid(pid_name)
 
 
 def _server_link(args: argparse.Namespace) -> int:
@@ -854,7 +873,11 @@ def dispatch(argv: Sequence[str]) -> int:
         return 1
 
     if args.verb == "version":
-        print(f"agentirc {__version__}")
+        if getattr(args, "json", False):
+            output = {"name": "agentirc-cli", "version": __version__}
+            print(json.dumps(output))
+        else:
+            print(f"agentirc {__version__}")
         return 0
 
     handler = _HANDLERS.get(args.verb)
