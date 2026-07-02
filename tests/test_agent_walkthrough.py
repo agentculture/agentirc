@@ -69,8 +69,9 @@ async def _run_cli(*args: str, env: dict, timeout: float = 35.0) -> tuple[int, s
         env=env,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+        async with asyncio.timeout(timeout):
+            stdout, stderr = await proc.communicate()
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise

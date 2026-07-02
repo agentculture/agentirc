@@ -135,6 +135,11 @@ DEFAULT_SINCE_LIMIT = 100
 # over the wire only via a trailing empty parameter (`HISTORY SINCE #x :`).
 _CURSOR_BEGIN_TOKENS = frozenset({"", "*"})
 
+# Shared NOTICE text for a non-numeric or negative count/limit parameter
+# (RECENT's `count` and SINCE's `[limit]`). Wire-visible text; must stay
+# byte-identical across all sites that send it.
+_MSG_INVALID_COUNT = "Invalid count"
+
 
 def _encode_cursor(timestamp: float, entry_id: int) -> str:
     """Encode a (timestamp, id) composite into an opaque SINCE cursor token."""
@@ -496,7 +501,7 @@ class HistorySkill(Skill):
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
-                    params=[client.nick, "Invalid count"],
+                    params=[client.nick, _MSG_INVALID_COUNT],
                     tags={ERROR_TAG: ERROR_TOKEN_INVALID_COUNT},
                 )
             )
@@ -507,7 +512,7 @@ class HistorySkill(Skill):
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
-                    params=[client.nick, "Invalid count"],
+                    params=[client.nick, _MSG_INVALID_COUNT],
                     tags={ERROR_TAG: ERROR_TOKEN_INVALID_COUNT},
                 )
             )
@@ -605,7 +610,7 @@ class HistorySkill(Skill):
                     Message(
                         prefix=self.server.config.name,
                         command="NOTICE",
-                        params=[client.nick, "Invalid count"],
+                        params=[client.nick, _MSG_INVALID_COUNT],
                         tags={ERROR_TAG: ERROR_TOKEN_INVALID_COUNT},
                     )
                 )
@@ -616,7 +621,7 @@ class HistorySkill(Skill):
                     Message(
                         prefix=self.server.config.name,
                         command="NOTICE",
-                        params=[client.nick, "Invalid count"],
+                        params=[client.nick, _MSG_INVALID_COUNT],
                         tags={ERROR_TAG: ERROR_TOKEN_INVALID_COUNT},
                     )
                 )

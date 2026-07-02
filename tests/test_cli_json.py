@@ -10,7 +10,6 @@ Verifies that:
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import tempfile
 import time
@@ -168,8 +167,6 @@ server:
 """
         config_file.write_text(config_content)
 
-        # Set environment so agentirc uses our temp directories
-        env = os.environ.copy()
         # Override the log directory via a wrapper script or direct call
         # For this test, we'll rely on the .culture/ fallback and just
         # test the PID/port file mechanism with our own setup
@@ -197,7 +194,7 @@ server:
 
         # Wait for the daemon to start and write PID file
         time.sleep(1)
-        stdout, stderr = proc.communicate(timeout=5)
+        _, stderr = proc.communicate(timeout=5)
 
         # Check if the server started successfully
         if proc.returncode != 0:

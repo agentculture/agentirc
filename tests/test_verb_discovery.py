@@ -55,7 +55,7 @@ def _decode_verbs_line(line: str) -> tuple[str, dict]:
     Returns ``(version, payload)``.
     """
     assert line.startswith(":"), f"expected a server-prefixed line, got {line!r}"
-    prefix, rest = line[1:].split(" ", 1)
+    _, rest = line[1:].split(" ", 1)
     verb, version, b64_part = rest.split(" ", 2)
     assert verb == "VERBS"
     assert b64_part.startswith(":")

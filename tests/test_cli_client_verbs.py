@@ -65,8 +65,9 @@ async def _run_cli(*args: str, timeout: float = 20.0) -> tuple[int, str, str]:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+        async with asyncio.timeout(timeout):
+            stdout, stderr = await proc.communicate()
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise
@@ -151,7 +152,7 @@ async def test_send_delivers_message_to_observer(server, make_client):
     await observer.send("JOIN #t11send")
     await observer.recv_all(timeout=0.5)
 
-    rc, out, err = await _run_cli(
+    rc, _, err = await _run_cli(
         "send", "#t11send", "hello from cli",
         "--nick", "testserv-sender1", "--host", "127.0.0.1", "--port", str(server.config.port),
     )
@@ -166,7 +167,7 @@ async def test_send_delivers_message_to_observer(server, make_client):
 async def test_send_dm_to_nick(server, make_client):
     observer = await make_client(nick="testserv-observer2", user="observer2")
 
-    rc, out, err = await _run_cli(
+    rc, _, err = await _run_cli(
         "send", "testserv-observer2", "dm from cli",
         "--nick", "testserv-sender2", "--host", "127.0.0.1", "--port", str(server.config.port),
     )
@@ -191,7 +192,7 @@ async def test_send_uses_default_nick_when_omitted(tmp_path):
         await observer.send("USER observer 0 * :observer")
         await observer.recv_all(timeout=0.5)
 
-        rc, out, err = await _run_cli(
+        rc, _, err = await _run_cli(
             "send", "agent-observer", "dm from cli",
             "--host", "127.0.0.1", "--port", str(ircd.config.port),
         )
@@ -216,7 +217,7 @@ async def test_send_connection_refused_reports_hint():
     closed_port = sock.getsockname()[1]
     sock.close()  # nothing listening on this port now
 
-    rc, out, err = await _run_cli(
+    rc, _, err = await _run_cli(
         "send", "#nowhere", "hi", "--host", "127.0.0.1", "--port", str(closed_port),
     )
     assert rc != 0
@@ -267,7 +268,7 @@ async def test_join_existing_channel_confirms(server, make_client):
 
 @pytest.mark.asyncio
 async def test_join_rejects_channel_without_hash(server):
-    rc, out, err = await _run_cli(
+    rc, _, err = await _run_cli(
         "join", "not-a-channel",
         "--host", "127.0.0.1", "--port", str(server.config.port),
     )
@@ -551,7 +552,7 @@ async def test_send_dm_offline_recipient_exits_nonzero_with_hint(server):
     Regression test: the server replies ERR_NOSUCHNICK (401) and drops the
     DM (offline DMs are deliberately unstored); the CLI has to surface that.
     """
-    rc, out, err = await _run_cli(
+    rc, _, err = await _run_cli(
         "send", "testserv-ghost", "anyone home?",
         "--nick", "testserv-sender-x", "--host", "127.0.0.1", "--port", str(server.config.port),
     )

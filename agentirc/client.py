@@ -412,7 +412,7 @@ class Client:
             )
         )
 
-    def _handle_pong(self, msg: Message) -> None:
+    def _handle_pong(self, _msg: Message) -> None:
         """Client responding to our (server-initiated) liveness PING.
 
         Explicitly stamps ``last_activity`` (t5) so a unit test can drive
@@ -1636,7 +1636,7 @@ class Client:
             verbs.update(skill.commands)
         return sorted(verbs)
 
-    async def _handle_verbs(self, msg: Message) -> None:
+    async def _handle_verbs(self, _msg: Message) -> None:
         """``VERBS`` (task t9): runtime verb-discovery query.
 
         Any *registered* client may issue this -- no ``agentirc.io/bot``

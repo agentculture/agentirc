@@ -123,7 +123,8 @@ async def _read_since_reply(
     """
     entries: list[ReplayEntry] = []
     while True:
-        line = await asyncio.wait_for(raw_iter.__anext__(), timeout=timeout)
+        async with asyncio.timeout(timeout):
+            line = await raw_iter.__anext__()
         msg = Message.parse(line)
         if msg.command == "HISTORY" and msg.params and msg.params[0] == channel:
             entries.append(ReplayEntry(msgid=msg.tags.get(MSGID_TAG), text=msg.params[-1]))
@@ -162,7 +163,8 @@ async def _consume_live(
 ) -> None:
     """Pull exactly ``count`` live messages off ``msgs_iter``, recording msgid -> text."""
     for _ in range(count):
-        incoming = await asyncio.wait_for(msgs_iter.__anext__(), timeout=timeout)
+        async with asyncio.timeout(timeout):
+            incoming = await msgs_iter.__anext__()
         msgid = incoming.tags.get(MSGID_TAG)
         assert msgid, f"expected an IRCv3 msgid tag on a live message-tags delivery: {incoming!r}"
         sink[msgid] = incoming.text

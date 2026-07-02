@@ -178,7 +178,7 @@ async def test_kill_and_restart_reconnects_and_rejoins(tmp_path):
         # models "drop the live client sockets" directly and doesn't rely
         # solely on stop()'s internal behavior. ``clients`` is a public IRCd
         # attribute (see docs/api-stability.md).
-        live_writers = [getattr(c, "writer", None) for c in list(ircd.clients.values())]
+        live_writers = [getattr(c, "writer", None) for c in ircd.clients.values()]
         await ircd.stop()
         for writer in live_writers:
             if writer is not None:

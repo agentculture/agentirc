@@ -293,7 +293,7 @@ async def test_killed_peer_reaped_within_interval_plus_timeout(tmp_path):
                     if data == b"":
                         eof_seen = True
                         break
-        except (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError):
+        except (TimeoutError, OSError):
             pass
         finally:
             try:

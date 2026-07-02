@@ -292,15 +292,12 @@ async def _wait_for_dm_error(
     raw_iter: AsyncIterator[Message], target: str, timeout: float
 ) -> Message | None:
     """Watch the raw stream up to ``timeout`` for a 401 naming ``target``."""
-    deadline = asyncio.get_running_loop().time() + timeout
-    with contextlib.suppress(asyncio.TimeoutError, StopAsyncIteration):
-        while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                return None
-            msg = await asyncio.wait_for(raw_iter.__anext__(), timeout=remaining)
-            if msg.command == ERR_NOSUCHNICK and target in msg.params:
-                return msg
+    with contextlib.suppress(TimeoutError, StopAsyncIteration):
+        async with asyncio.timeout(timeout):
+            while True:
+                msg = await raw_iter.__anext__()
+                if msg.command == ERR_NOSUCHNICK and target in msg.params:
+                    return msg
     return None
 
 
@@ -478,7 +475,7 @@ async def _watch_main(args: argparse.Namespace) -> int:
     try:
         loop.add_signal_handler(signal.SIGINT, stop.set)
         handler_installed = True
-    except (NotImplementedError, RuntimeError):
+    except RuntimeError:
         # Windows / no running loop signal support — SIGINT falls back to
         # the interpreter's default KeyboardInterrupt, which unwinds
         # asyncio.run() and skips straight to our caller's cleanup.
