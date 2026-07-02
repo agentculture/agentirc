@@ -279,7 +279,7 @@ before connecting.
 ## Verification note
 
 Every command above was run against a real daemon in an isolated `HOME`
-(no `~/.culture` on the host was touched) using `python -m agentirc`,
+(nothing under `~/.culture/` on the host was touched) using `python -m agentirc`,
 which is byte-for-byte the same entry point the installed `agentirc` /
 `agentirc-cli` console scripts call (`agentirc.cli:main`). Swap
 `python -m agentirc` for `agentirc` (or `agentirc-cli`) once installed —

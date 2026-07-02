@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.10.0] - 2026-07-02
+
+The agent-accessibility release. Spec:
+`docs/specs/2026-07-01-agentirc-ships-an-agent-accessibility-release-ai-a.md`;
+plan: `docs/plans/2026-07-01-…` (16 tasks, built wave-by-wave by a
+fanned-out workforce with TDD-gated merges). Everything below is additive:
+clients that worked against 9.7.0 work unchanged, and non-`message-tags`
+clients see a byte-identical wire format (locked by golden tests).
+
+### Added
+
+- **Agent CLI client verbs** — `agentirc join/send/read/watch` drive a
+  running daemon over real TCP from a shell (built on the new public
+  transport; no culture checkout, no Python). `read`/`watch` accept a bare
+  nick for DM pairs; `read --since <cursor>` resumes without count-guessing
+  and prints the next cursor; `--json` emits one object per line with
+  `msgid`. `agentirc status --json` / `version --json` for orchestrators.
+- **Public reconnecting transport** — `agentirc.agent_client.AgentClient` +
+  `IncomingMessage` (semver-tracked): auto-reconnect with exponential
+  backoff, nick re-registration, channel re-join, `messages()` spanning
+  reconnects, `send_raw()`/`raw_lines()` escape hatch.
+- **Message structure** — server stamps `msgid` (fan-out-stable) and `time`
+  (IRCv3 server-time) tags on PRIVMSG delivery and `agentirc.io/thread` on
+  thread messages, gated on the `message-tags` cap.
+- **Stable error tokens** — every rooms/threads/history error reply carries
+  a named token via the `agentirc.io/error` tag (`ERROR_TOKEN_*`,
+  `ERROR_TOKENS_VERSION = 1` in `agentirc.protocol`); prose replies are
+  byte-unchanged for non-tag clients.
+- **HISTORY SINCE** — opaque-cursor pagination (deterministic, gap- and
+  duplicate-free across retention prunes) on both backends; replay lines
+  carry `msgid`/`time` tags; `HISTORYEND` returns the next cursor.
+- **DM history** — DMs to connected recipients are stored under a canonical
+  pair key, queryable only by the two participants (`HISTORY <nick>`), same
+  retention as channels. Offline DMs stay undelivered and unstored by
+  design; `agentirc send <nick>` now exits `1` on `ERR_NOSUCHNICK`.
+- **Client-facing BACKFILL** — the overflow-recovery path extension-api.md
+  had promised since 9.5.0 is now real (`BACKFILL <channel-or-*>
+  <cursor-or-*> [limit]`, bot-cap gated, EVENT-shaped replay, `BACKFILLEND`
+  terminator, DM history never replayed); a docs-vs-implementation test
+  keeps the doc honest.
+- **VERBS discovery** — versioned, machine-parseable inventory of the verbs
+  the running server accepts (derived live from the dispatch surface),
+  negotiable caps, and the error-token vocabulary version.
+- **Server liveness** — periodic server→client PING with a dead-connection
+  reaper (`ping_interval`/`pong_timeout` in `ServerConfig`/YAML, defaults
+  60/120 s, `0` disables); activity counts as liveness, so busy clients
+  ignoring PING are never dropped.
+- **Long-message handling** — outbound relay splits over-budget messages at
+  the 512-byte line limit (codepoint-safe, order-preserving, each chunk its
+  own msgid/history entry); over-limit inbound lines get an explicit
+  `line-too-long` error naming the limit instead of the old silent
+  truncation.
+- **Docs** — `docs/agent-walkthrough.md` (end-to-end, runnable as written,
+  with a five-dimension feature-traceability table), agent-facing updates
+  to `api-stability.md` (7th public module), `extension-api.md`, `cli.md`,
+  README. Gap-verification and release-audit notes under `docs/specs/`.
+- **CI** — `agent-guards` job: fresh-venv suite + walkthrough smoke with no
+  culture checkout, culture-import grep, backend-SDK dependency check
+  (tomllib-scoped), on-disk-path lock tests.
+
 ## [9.9.0] - 2026-06-23
 
 ### Added
