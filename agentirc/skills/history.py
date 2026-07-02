@@ -65,6 +65,37 @@ requesting client negotiated ``message-tags``, the line carries
 msgid replay untagged even for message-tags clients, and clients that never
 negotiated ``message-tags`` always get untagged lines. RECENT/SEARCH replay
 lines are never tagged, for anyone.
+
+DM history (task t7)
+---------------------
+DMs share this exact same store — same deque, same SQLite table, same
+retention/prune rules — under a synthetic key that can never collide with a
+real channel name: ``@dm:<nickA>:<nickB>``, the two nicks lowercased and
+sorted (see :func:`_dm_pair_key`). Channel keys are always ``#``-prefixed and
+DM keys are always ``@``-prefixed, so an exact-match lookup against either
+namespace can never return an entry from the other — no query-time filtering
+needed.
+
+Capture: DMs are stored via :meth:`HistorySkill.record_dm`, called directly
+by ``agentirc/client.py``'s ``_send_to_client`` at the DM relay site — NOT
+via the ``on_event`` broadcast every registered skill receives (channel-less
+``MESSAGE`` events still fall through ``on_event`` untouched, same as before
+this task; see ``on_event``'s docstring comment). This keeps DM content off
+the generic per-skill event-hook path and off the event bus entirely: the
+``MESSAGE`` event ``_send_to_client`` emits is byte-for-byte unchanged, so
+whatever could see DM contents via EVENTSUB before this task (if anything)
+sees exactly the same thing after — nothing new is emitted and nothing
+existing is widened.
+
+Query surface: ``HISTORY RECENT/SEARCH/SINCE`` accept a non-``#`` target
+meaning "my DMs with that nick" — the server canonicalizes
+``{requesting-client's own nick, target}`` into the pair key via
+:func:`_dm_pair_key`, so a requester can only ever address a pair they
+themselves belong to (see :meth:`HistorySkill._resolve_history_target`).
+Wire replies always echo back the literal target string the client sent
+(never the internal ``@dm:`` key). Directly naming an ``@``-prefixed target
+is rejected with the existing ``no-such-channel`` token — the internal key
+format is never addressable over the wire.
 """
 
 from __future__ import annotations
@@ -82,6 +113,7 @@ from agentirc.protocol import (
     ERROR_TOKEN_INVALID_COUNT,
     ERROR_TOKEN_INVALID_CURSOR,
     ERROR_TOKEN_MISSING_PARAMS,
+    ERROR_TOKEN_NO_SUCH_CHANNEL,
     ERROR_TOKEN_UNKNOWN_SUBCOMMAND,
     MSGID_TAG,
     SERVER_TIME_TAG,
@@ -126,6 +158,18 @@ def _decode_cursor(cursor: str) -> tuple[float, int] | None:
     if not sep or not ts_str:
         raise ValueError(f"malformed HISTORY SINCE cursor: {cursor!r}")
     return float(ts_str), int(id_str)
+
+
+def _dm_pair_key(nick_a: str, nick_b: str) -> str:
+    """Canonicalize two nicks into the internal DM-history storage key.
+
+    Lowercased and sorted so the same pair of participants always maps to
+    the same key regardless of who's "self" and who's "target", or nick
+    casing. See the module docstring's "DM history (task t7)" section for
+    why the ``@dm:`` prefix can never collide with a channel key.
+    """
+    a, b = sorted((nick_a.lower(), nick_b.lower()))
+    return f"@dm:{a}:{b}"
 
 
 def _format_server_time(timestamp: float) -> str:
@@ -230,28 +274,60 @@ class HistorySkill(Skill):
         self._next_local_id += 1
         return entry_id
 
+    def _append_entry(
+        self, key: str, nick: str, text: str, timestamp: float, msgid: str | None
+    ) -> None:
+        """Persist and buffer one entry under *key* (a channel or DM pair key)."""
+        entry_id = self._record(key, nick, text, timestamp, msgid)
+        buf = self._channels.setdefault(key, deque(maxlen=self.maxlen))
+        buf.append(
+            HistoryEntry(nick=nick, text=text, timestamp=timestamp, id=entry_id, msgid=msgid)
+        )
+
+    def record_dm(
+        self, nick: str, target: str, text: str, timestamp: float, msgid: str | None
+    ) -> None:
+        """Store one DM under the canonical pair key for *nick* and *target*.
+
+        Called directly by ``agentirc/client.py``'s ``_send_to_client`` at
+        the DM relay site — deliberately NOT via the ``on_event`` broadcast
+        every registered skill receives. Two reasons:
+
+        1. Privacy: this keeps DM content off the generic event-hook path
+           entirely, so it can never leak to a skill (or a test's own
+           independently-registered ``HistorySkill`` instance — see
+           ``tests/test_history.py::test_history_does_not_record_dms``,
+           which asserts a *second* instance sees no DM data) that isn't
+           the one instance actually serving live ``HISTORY`` queries
+           (resolved by ``IRCd.get_skill_for_command("HISTORY")``, the same
+           lookup command dispatch uses).
+        2. It does not touch, create, or widen anything on the event bus —
+           the ``MESSAGE`` event ``_send_to_client`` already emits is
+           unchanged by this call and continues to govern (pre-existing,
+           unmodified) EVENTSUB visibility.
+
+        Uses the same ``_append_entry``/``_record`` pipeline as channel
+        messages, so retention/prune apply identically (see the module
+        docstring's "DM history (task t7)" section).
+        """
+        pair_key = _dm_pair_key(nick, target)
+        self._append_entry(pair_key, nick, text, timestamp, msgid)
+
     async def on_event(self, event: Event) -> None:
         if event.type == EventType.MESSAGE and event.channel is not None:
             text = event.data["text"]
             # Defensive .get(): the parallel msgid-passthrough task (t3) may
             # not have landed in every tree yet — see module docstring.
             msgid = event.data.get("msgid")
-            entry_id = self._record(event.channel, event.nick, text, event.timestamp, msgid)
-            buf = self._channels.setdefault(event.channel, deque(maxlen=self.maxlen))
-            buf.append(
-                HistoryEntry(
-                    nick=event.nick,
-                    text=text,
-                    timestamp=event.timestamp,
-                    id=entry_id,
-                    msgid=msgid,
-                )
-            )
+            self._append_entry(event.channel, event.nick, text, event.timestamp, msgid)
             return
 
         # Skip event types that are delivered via their own IRC verbs
         # (THREAD_*, TOPIC) — they have dedicated storage. MESSAGE was
-        # already handled above.
+        # already handled above. Channel-less MESSAGE events (DMs) fall
+        # through to this check too and are dropped here, same as before
+        # this task — see ``record_dm`` above for where DM storage actually
+        # happens instead.
         type_wire = event.type.value if hasattr(event.type, "value") else str(event.type)
         if type_wire in self._NO_STORE_TYPES:
             return
@@ -320,6 +396,33 @@ class HistorySkill(Skill):
         candidates.sort(key=lambda e: (e.timestamp, e.id))
         return candidates[:limit]
 
+    def _resolve_history_target(self, client: Client, requested: str) -> str | None:
+        """Resolve a HISTORY <target> param to an internal store key.
+
+        ``#``-prefixed -> a channel key, used verbatim (unchanged behavior).
+        ``@``-prefixed -> rejected (``None``); ``@dm:...`` is the internal DM
+        pair-key format and is never directly addressable over the wire —
+        the caller must send the ``no-such-channel`` error and stop.
+        Anything else -> treated as a nick; canonicalized with the
+        *requesting client's own* nick into the DM pair key (see
+        ``_dm_pair_key``), so a requester can only ever address a pair they
+        themselves belong to.
+        """
+        if requested.startswith("@"):
+            return None
+        if requested.startswith("#"):
+            return requested
+        return _dm_pair_key(client.nick, requested)
+
+    async def _reject_unaddressable_target(self, client: Client, requested: str) -> None:
+        """Send the ``no-such-channel`` error for a directly-named ``@dm:`` target."""
+        await client.send_numeric(
+            replies.ERR_NOSUCHCHANNEL,
+            requested,
+            replies.MSG_NOSUCHCHANNEL,
+            tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_CHANNEL},
+        )
+
     async def on_command(self, client: Client, msg: Message) -> None:
         if len(msg.params) < 1:
             await client.send_numeric(
@@ -358,6 +461,11 @@ class HistorySkill(Skill):
             return
 
         channel = msg.params[1]
+        store_key = self._resolve_history_target(client, channel)
+        if store_key is None:
+            await self._reject_unaddressable_target(client, channel)
+            return
+
         try:
             count = int(msg.params[2])
         except ValueError:
@@ -382,7 +490,7 @@ class HistorySkill(Skill):
             )
             return
 
-        entries = self.get_recent(channel, count)
+        entries = self.get_recent(store_key, count)
         for entry in entries:
             await client.send(
                 Message(
@@ -410,8 +518,13 @@ class HistorySkill(Skill):
             return
 
         channel = msg.params[1]
+        store_key = self._resolve_history_target(client, channel)
+        if store_key is None:
+            await self._reject_unaddressable_target(client, channel)
+            return
+
         term = msg.params[2]
-        entries = self.search(channel, term)
+        entries = self.search(store_key, term)
         for entry in entries:
             await client.send(
                 Message(
@@ -440,6 +553,11 @@ class HistorySkill(Skill):
             return
 
         channel = msg.params[1]
+        store_key = self._resolve_history_target(client, channel)
+        if store_key is None:
+            await self._reject_unaddressable_target(client, channel)
+            return
+
         cursor_token = msg.params[2]
 
         try:
@@ -481,7 +599,7 @@ class HistorySkill(Skill):
                 )
                 return
 
-        entries = self.get_since(channel, after, limit)
+        entries = self.get_since(store_key, after, limit)
         for entry in entries:
             tags: dict[str, str] = {}
             if entry.msgid is not None:

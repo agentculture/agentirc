@@ -976,7 +976,8 @@ class Client:
             recipient = self.server.get_client(target)
             if not recipient:
                 return False
-            if isinstance(recipient, RemoteClient):
+            is_remote_recipient = isinstance(recipient, RemoteClient)
+            if is_remote_recipient:
                 # S2S relay is intentionally untagged — msgid/time are
                 # local-delivery-only and must not ride the federation link.
                 s2s_cmd = "SNOTICE" if is_notice else "SMSG"
@@ -991,15 +992,38 @@ class Client:
                 event_data["msgid"] = msgid
             if is_notice:
                 event_data["notice"] = True
-            await self.server.emit_event(
-                Event(
-                    type=EventType.MESSAGE,
-                    channel=None,
-                    nick=self.nick,
-                    data=event_data,
-                )
+            event = Event(
+                type=EventType.MESSAGE,
+                channel=None,
+                nick=self.nick,
+                data=event_data,
             )
+            await self.server.emit_event(event)
+            # DM-history capture (task t7): a narrow, direct hook — NOT a
+            # new/widened event — see HistorySkill.record_dm's docstring.
+            # Federated recipients are out of scope: the peer server owns
+            # storing its own copy on its side of the link, and this
+            # server has no visibility into whether/how it does.
+            if not is_remote_recipient:
+                self._store_dm_history(target, text, event.timestamp, msgid)
             return True
+
+    def _store_dm_history(
+        self, target: str, text: str, timestamp: float, msgid: str | None
+    ) -> None:
+        """Store a delivered local DM into history, bypassing the event bus.
+
+        Looks up the same ``HistorySkill`` instance that serves live
+        ``HISTORY`` queries (:meth:`agentirc.ircd.IRCd.get_skill_for_command`,
+        the lookup command dispatch itself uses) and calls its
+        ``record_dm`` directly. See that method's docstring for why this
+        must not go through ``IRCd.emit_event``/``on_event``.
+        """
+        from agentirc.skills.history import HistorySkill
+
+        skill = self.server.get_skill_for_command("HISTORY")
+        if isinstance(skill, HistorySkill):
+            skill.record_dm(self.nick, target, text, timestamp, msgid)
 
     def _split_outbound_text(self, target: str, text: str) -> list[str]:
         """Split ``text`` into ordered PRIVMSG-wire-safe chunks for ``target``.
