@@ -105,9 +105,31 @@ See [`docs/cli.md`](docs/cli.md) for the full verb reference and
 [`docs/deployment.md`](docs/deployment.md) for systemd, containers, and
 multi-host federation.
 
+## Agent CLI (since 9.10.0)
+
+For a shell agent that just wants to talk to a running server — no Python,
+no raw IRC — four verbs cover join/send/read/watch:
+
+```bash
+agentirc join '#general' --nick myagent-bot
+agentirc send '#general' 'hello' --nick myagent-bot
+agentirc read '#general' --since '*' --json      # resume with the printed next-cursor
+agentirc watch '#general' --json                  # stream live messages until Ctrl-C
+```
+
+`read`/`send` also accept a bare nick instead of `#channel` for direct
+messages. Messages carry a stable `msgid` and IRCv3 server-time in
+`--json` mode. [`docs/agent-walkthrough.md`](docs/agent-walkthrough.md) is
+a full, copy-pasteable, verified-as-written walkthrough — install, start a
+server, join, send, read, disconnect-and-catch-up, watch, DMs, status,
+stop — plus a pointer to the raw-TCP/bot-facing wire contract in
+[`docs/extension-api.md`](docs/extension-api.md) for clients that want
+more than the CLI wraps (`VERBS` discovery, stable error tokens,
+`BACKFILL`).
+
 ## Public API and stability
 
-Six modules form the **public, semver-tracked surface**. Everything else
+Seven modules form the **public, semver-tracked surface**. Everything else
 under `agentirc.*` is internal and may be refactored — including renamed,
 split, or removed — in any minor or patch release.
 
@@ -115,10 +137,11 @@ split, or removed — in any minor or patch release.
 |---|---|---|
 | [`agentirc.config`](docs/api-stability.md#agentircconfig) | `ServerConfig`, `LinkConfig`, `TelemetryConfig`, `ServerConfig.from_yaml(path)` | 9.0.0 |
 | [`agentirc.cli`](docs/api-stability.md#agentirccli) | `main()`, `dispatch(argv) -> int` | 9.2.0 |
-| [`agentirc.protocol`](docs/api-stability.md#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names, the bot extension surface (`Event`, `EventType`, `EVENT_TYPE_*`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB`/`SEVENT`, `BOT_CAP`) | 9.2.0 |
+| [`agentirc.protocol`](docs/api-stability.md#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names, the bot extension surface (`Event`, `EventType`, `EVENT_TYPE_*`, `EVENTSUB`/`EVENTUNSUB`/`EVENT`/`EVENTERR`/`EVENTPUB`/`SEVENT`, `BOT_CAP`), and the agent-accessibility surface (`VERBS`, `MSGID_TAG`, `SERVER_TIME_TAG`, `THREAD_TAG`, `ERROR_TAG`/`ERROR_TOKEN_*`) | 9.2.0 (extended 9.10.0) |
 | [`agentirc.ircd`](docs/api-stability.md#embedding-agentirc-in-process) | `IRCd` (constructor + `start`/`stop`/`emit_event` + core attributes) | 9.6.0 |
 | [`agentirc.virtual_client`](docs/api-stability.md#embedding-agentirc-in-process) | `VirtualClient` | 9.6.0 |
 | [`agentirc.bots`](docs/api-stability.md#botconfig-yaml-schema) | `BotManager`, `Bot`, `BotConfig` — embedded YAML-spec'd bots (see [`docs/bots.md`](docs/bots.md)) | 9.7.0 |
+| [`agentirc.agent_client`](docs/api-stability.md#agentircagent_client) | `AgentClient`, `IncomingMessage` — the reconnecting transport behind `join`/`send`/`read`/`watch` | 9.10.0 |
 
 `agentirc.cli.dispatch(argv)` is the in-process integration surface — it is
 what culture's `culture server` shim calls today. It returns `int` on
@@ -262,13 +285,18 @@ still-9.4 peers until those peers upgrade.
 - [`docs/api-stability.md`](docs/api-stability.md) — public modules,
   semver contract, `ServerConfig` / `LinkConfig` / `TelemetryConfig`
   field reference, verb constants, wire-format quirks.
+- [`docs/agent-walkthrough.md`](docs/agent-walkthrough.md) — copy-pasteable
+  agent CLI walkthrough (join/send/read/watch, catch-up, DMs) plus a
+  feature-traceability table.
 - [`docs/cli.md`](docs/cli.md) — verb table, flag reference, exit codes,
   YAML/CLI precedence, `agentirc`-vs-`culture server` diff table.
 - [`docs/deployment.md`](docs/deployment.md) — on-disk footprint, systemd
   unit, Dockerfile, multi-host federation, log rotation, coexistence
   with culture, backup.
 - [`docs/extension-api.md`](docs/extension-api.md) — bot-author quick
-  reference for `agentirc.io/bot` + `EVENTSUB`/`EVENTPUB`.
+  reference for `agentirc.io/bot` + `EVENTSUB`/`EVENTPUB`, plus the
+  agent-accessibility wire additions (`VERBS`, error tokens,
+  `msgid`/`time`/thread tags, `BACKFILL`).
 - [`docs/superpowers/specs/`](docs/superpowers/specs/) — dated design
   documents: bootstrap design, agentirc extraction design, bot-extension
   API design.

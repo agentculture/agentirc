@@ -52,6 +52,9 @@ CLIENT_ISSUABLE_VERBS = frozenset(
         "ROOMCREATE",
         "ROOMARCHIVE",
         "ROOMMETA",
+        # task t9 (agent-accessibility release): runtime verb discovery --
+        # any registered client (no BOT_CAP needed) can issue this.
+        "VERBS",
     }
 )
 
