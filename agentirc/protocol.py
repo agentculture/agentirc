@@ -1,6 +1,6 @@
 """Public protocol surface for agentirc — verbs, numerics, tags, and the bot extension API.
 
-Semver-tracked module. Five categories of public symbols live here:
+Semver-tracked module. Six categories of public symbols live here:
 
 1. **Verb names** — IRC command verbs as bare uppercase tokens. Mostly
    RFC 2812 (PRIVMSG, JOIN, QUIT, ...), plus agentirc skill verbs
@@ -27,6 +27,13 @@ Semver-tracked module. Five categories of public symbols live here:
    ``EVENT``, ``EVENTERR``, ``EVENTPUB`` verb constants and
    ``BOT_CAP = "agentirc.io/bot"``. Reserved in 9.5.0a1; daemon
    behavior wires up in 9.5.0a3 / 9.5.0 final.
+6. **Runtime verb discovery** — ``VERBS`` (the query verb) and
+   ``VERBS_DISCOVERY_VERSION`` (its reply-format version), plus
+   ``ERROR_TOKENS_VERSION`` alongside the ``ERROR_TOKEN_*`` vocabulary in
+   "Stable error tokens" below. Added in task t9 (agent-accessibility
+   release) so a client can ask a running server what it accepts instead
+   of guessing from docs. See ``Client._handle_verbs`` in
+   ``agentirc/client.py`` for the wire shape.
 
 Existing call sites under ``agentirc.ircd``, ``agentirc.server_link``
 and the skills modules still use inline string literals. Migrating them
@@ -268,6 +275,26 @@ BOT_CAP = "agentirc.io/bot"
 
 
 # ---------------------------------------------------------------------------
+# Runtime verb discovery (task t9, agent-accessibility release)
+# ---------------------------------------------------------------------------
+# ``VERBS`` lets any *registered* client -- no ``BOT_CAP`` needed, discovery
+# serves plain agents too -- ask the running server what it actually
+# accepts. Reply is a single ``:<server> VERBS <version> :<base64-json>``
+# line, mirroring the ``EVENT``/``EVENTPUB`` base64-canonical-JSON wire
+# pattern. See ``Client._handle_verbs`` in ``agentirc/client.py`` for the
+# payload shape and the live-enumeration mechanism (no hardcoded verb list).
+VERBS = "VERBS"
+
+# Discovery-*format* version -- the ``<version>`` positional param on the
+# ``VERBS`` reply line. Independent of ``ERROR_TOKENS_VERSION`` (the
+# error-token vocabulary inside the payload) and of ``server_version``
+# (the running agentirc release). Bump this when the payload's key set or
+# semantics change; the four-key v1 shape is
+# ``{verbs, caps, error_tokens_version, server_version}``.
+VERBS_DISCOVERY_VERSION = 1
+
+
+# ---------------------------------------------------------------------------
 # Message-delivery tags (agent-accessibility release)
 # ---------------------------------------------------------------------------
 # Stamped on PRIVMSG delivery for clients that negotiated ``message-tags``:
@@ -329,6 +356,13 @@ THREAD_TAG = "agentirc.io/thread"
 #                              line, resyncs at the next newline, and keeps
 #                              the connection open — see
 #                              Client._send_line_too_long_error
+#
+# ``ERROR_TOKENS_VERSION`` is this vocabulary's first agents-visible freeze
+# (task t9, agent-accessibility release) — the version number a ``VERBS``
+# discovery reply's ``error_tokens_version`` field echoes. Bump it whenever
+# a token above is renamed or removed (additive tokens don't need a bump;
+# consumers must already tolerate unrecognised ones).
+ERROR_TOKENS_VERSION = 1
 
 ERROR_TOKEN_MISSING_PARAMS = "missing-params"
 ERROR_TOKEN_INVALID_CHANNEL_NAME = "invalid-channel-name"
@@ -396,6 +430,7 @@ __all__ = [
     "TRACEPARENT_TAG",
     "TRACESTATE_TAG",
     # Stable error tokens
+    "ERROR_TOKENS_VERSION",
     "ERROR_TOKEN_CHANNEL_ALREADY_EXISTS",
     "ERROR_TOKEN_INVALID_CHANNEL_NAME",
     "ERROR_TOKEN_INVALID_COUNT",
@@ -497,4 +532,7 @@ __all__ = [
     "EVENT_TYPE_USER_JOIN",
     "EVENT_TYPE_USER_PART",
     "EVENT_TYPE_USER_QUIT",
+    # Runtime verb discovery (task t9)
+    "VERBS",
+    "VERBS_DISCOVERY_VERSION",
 ]
