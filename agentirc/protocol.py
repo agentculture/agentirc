@@ -323,6 +323,12 @@ THREAD_TAG = "agentirc.io/thread"
 #                              (bad base64, missing separator, non-numeric
 #                              timestamp/id) — see agentirc/skills/history.py
 #                              module docstring for the cursor encoding
+#   line-too-long           — an inbound line exceeded MAX_INBOUND_LINE
+#                              bytes (agentirc/_internal/constants.py);
+#                              Client.handle()'s read loop discards that one
+#                              line, resyncs at the next newline, and keeps
+#                              the connection open — see
+#                              Client._send_line_too_long_error
 
 ERROR_TOKEN_MISSING_PARAMS = "missing-params"
 ERROR_TOKEN_INVALID_CHANNEL_NAME = "invalid-channel-name"
@@ -342,6 +348,7 @@ ERROR_TOKEN_NO_SUCH_THREAD = "no-such-thread"
 ERROR_TOKEN_THREAD_ARCHIVED = "thread-archived"
 ERROR_TOKEN_INVALID_COUNT = "invalid-count"
 ERROR_TOKEN_INVALID_CURSOR = "invalid-cursor"
+ERROR_TOKEN_LINE_TOO_LONG = "line-too-long"
 
 
 __all__ = [
@@ -395,6 +402,7 @@ __all__ = [
     "ERROR_TOKEN_INVALID_CURSOR",
     "ERROR_TOKEN_INVALID_META_VALUE",
     "ERROR_TOKEN_INVALID_THREAD_NAME",
+    "ERROR_TOKEN_LINE_TOO_LONG",
     "ERROR_TOKEN_MISSING_PARAMS",
     "ERROR_TOKEN_NOT_MANAGED_ROOM",
     "ERROR_TOKEN_NOT_ON_CHANNEL",

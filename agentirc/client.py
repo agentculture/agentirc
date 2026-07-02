@@ -28,9 +28,12 @@ from opentelemetry.trace import Span as _OtelSpan
 from agentirc._internal.aio import maybe_await
 from agentirc._internal.constants import (
     EVENT_TYPE_RE,
+    MAX_INBOUND_LINE,
+    PRIVMSG_WIRE_LIMIT,
     SYSTEM_USER_PREFIX,
     new_msgid,
     server_time_now,
+    split_message_text,
 )
 from agentirc._internal.protocol import replies
 from agentirc._internal.protocol.message import Message
@@ -43,7 +46,14 @@ from agentirc._internal.telemetry.context import (
 )
 from agentirc._internal.telemetry.context import inject_traceparent as _inject_traceparent
 from agentirc.channel import Channel
-from agentirc.protocol import BOT_CAP, EVENTERR, MSGID_TAG, SERVER_TIME_TAG
+from agentirc.protocol import (
+    BOT_CAP,
+    ERROR_TAG,
+    ERROR_TOKEN_LINE_TOO_LONG,
+    EVENTERR,
+    MSGID_TAG,
+    SERVER_TIME_TAG,
+)
 from agentirc.skill import Event, EventType
 
 # OTEL instrumentation name. Kept verbatim ("culture.agentirc") because
@@ -161,16 +171,61 @@ class Client:
         )
         await self.send_tagged(msg)
 
-    async def _process_buffer(self, buffer: str) -> str:
-        """Parse and dispatch all complete lines from buffer, return remainder."""
+    async def _send_line_too_long_error(self) -> None:
+        """Notify the client that an inbound line exceeded ``MAX_INBOUND_LINE`` bytes.
+
+        Names the limit in the NOTICE text and carries the stable
+        ``line-too-long`` reason (``ERROR_TOKEN_LINE_TOO_LONG``) via the
+        ``agentirc.io/error`` tag for message-tags clients, mirroring the t2
+        stable-error-token pattern (``ERROR_TAG`` + ``send_tagged``). The
+        offending line is discarded (see ``_process_buffer``); this method
+        only sends the notice, it does not touch the buffer.
+        """
+        await self.send_tagged(
+            Message(
+                prefix=self.server.config.name,
+                command="NOTICE",
+                params=[
+                    self.nick or "*",
+                    f"Line exceeds the {MAX_INBOUND_LINE}-byte limit and was discarded",
+                ],
+                tags={ERROR_TAG: ERROR_TOKEN_LINE_TOO_LONG},
+            )
+        )
+
+    async def _process_buffer(self, buffer: str, skipping_line: bool = False) -> tuple[str, bool]:
+        """Parse and dispatch all complete lines from buffer.
+
+        Returns ``(remainder, skipping_line)``. ``skipping_line`` tracks an
+        in-progress inbound line that already exceeded ``MAX_INBOUND_LINE``
+        bytes before its terminating ``\\n`` arrived (see ``Client.handle``);
+        while true, bytes are discarded up to and including the next ``\\n``
+        so the real terminator isn't misread as the start of a new command.
+        A line that arrives *complete* (its own ``\\n`` already present) and
+        is over the limit is caught inline by the per-line check below --
+        the ``buffer.split("\\n", 1)`` above it already did the resync, so no
+        state needs to carry over for that case. Both paths discard the
+        oversized line ONLY; every other well-formed line in the buffer is
+        parsed and dispatched exactly as before.
+        """
         # Per-call get_tracer: test fixture swaps provider between tests.
         with _otel_trace.get_tracer(_TRACER_NAME).start_as_current_span(
             "irc.client.process_buffer"
         ) as span:
+            if skipping_line:
+                if "\n" not in buffer:
+                    return "", True
+                _discarded, buffer = buffer.split("\n", 1)
+                skipping_line = False
+
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
                 if not line.strip():
                     continue
+                line_len_bytes = len(line.encode("utf-8"))
+                if line_len_bytes > MAX_INBOUND_LINE:
+                    await self._send_line_too_long_error()
+                    continue  # discard this line only; already resynced by the split above
                 try:
                     msg = Message.parse(line)
                 except Exception as exc:  # noqa: BLE001 -- widen for any parser failure
@@ -185,14 +240,26 @@ class Client:
                     continue
                 # Record received bytes + message size for every successfully-parsed
                 # line.  +2 accounts for the \r\n that was stripped during line-split.
-                line_bytes = len(line.encode("utf-8")) + 2
+                line_bytes = line_len_bytes + 2
                 self.server.metrics.irc_bytes_received.add(line_bytes, {"direction": "c2s"})
                 self.server.metrics.irc_message_size.record(
                     line_bytes, {"verb": msg.command, "direction": "c2s"}
                 )
                 if msg.command:
                     await self._dispatch(msg)
-            return buffer
+
+            # No more complete lines. If the still-unterminated remainder has
+            # already grown past the limit, it will never be a valid line no
+            # matter how much more text follows -- send the error now (rather
+            # than waiting indefinitely for a '\n' that bounds nothing), drop
+            # the buffered bytes to bound memory, and remember to skip ahead
+            # to the next '\n' once it eventually shows up.
+            if len(buffer.encode("utf-8")) > MAX_INBOUND_LINE:
+                await self._send_line_too_long_error()
+                buffer = ""
+                skipping_line = True
+
+            return buffer, skipping_line
 
     def _submit_parse_error_audit(self, line: str, exc: BaseException) -> None:
         """Build and submit a PARSE_ERROR audit record for a malformed inbound line.
@@ -250,20 +317,21 @@ class Client:
             self._session_span = span
             try:
                 buffer = ""
+                # Tracks an in-progress inbound line that already tripped
+                # MAX_INBOUND_LINE before its terminating '\n' arrived; see
+                # _process_buffer's docstring for the full resync story.
+                skipping_line = False
                 if initial_msg:
                     buffer = initial_msg.replace("\r\n", "\n").replace("\r", "\n")
-                    buffer = await self._process_buffer(buffer)
+                    buffer, skipping_line = await self._process_buffer(buffer, skipping_line)
                 while True:
                     data = await self.reader.read(4096)
                     if not data:
                         break
                     buffer += data.decode("utf-8", errors="replace")
-                    # Cap buffer to prevent unbounded memory growth (512 bytes per RFC 2812)
-                    if len(buffer) > 8192:
-                        buffer = buffer[-4096:]
                     # Normalize all line endings to \n for simpler parsing
                     buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
-                    buffer = await self._process_buffer(buffer)
+                    buffer, skipping_line = await self._process_buffer(buffer, skipping_line)
             except (ConnectionError, asyncio.IncompleteReadError):
                 pass
             finally:
@@ -914,6 +982,31 @@ class Client:
             )
             return True
 
+    def _split_outbound_text(self, target: str, text: str) -> list[str]:
+        """Split ``text`` into ordered PRIVMSG-wire-safe chunks for ``target``.
+
+        Splits BEFORE msgid assignment (design choice, see ``_handle_privmsg``):
+        each returned chunk flows through the relay as an independent
+        message with its own fresh msgid/time tags, its own MESSAGE event,
+        and — via history's MESSAGE subscription — its own history entry.
+        There is no "parent" message that owns sub-parts; every wire line is
+        a self-contained, independently addressable PRIVMSG. This keeps the
+        split orthogonal to the existing msgid/history machinery instead of
+        threading a fragmentation concept through it.
+
+        The byte budget is computed conservatively from the sender's own
+        prefix (``self.prefix``, i.e. ``nick!user@host``) because that's the
+        exact prefix stamped on *every* recipient's relayed copy — this
+        server never rewrites the prefix per recipient (see
+        ``_send_to_channel`` / ``_send_to_client``) — so one budget bounds
+        every recipient's wire line. IRCv3 tags are attached after this
+        call and ride in their own tags-excluded budget (they don't count
+        against the classic 512-byte PRIVMSG_WIRE_LIMIT).
+        """
+        overhead = len(f":{self.prefix} PRIVMSG {target} :".encode("utf-8")) + len(b"\r\n")
+        budget = PRIVMSG_WIRE_LIMIT - overhead
+        return split_message_text(text, budget)
+
     async def _handle_privmsg(self, msg: Message) -> None:
         if len(msg.params) < 2:
             await self.send_numeric(
@@ -932,18 +1025,6 @@ class Client:
                 _ATTR_SIZE: len(text),
             },
         ):
-            # One msgid per inbound message, stamped identically on every
-            # recipient's delivery (fan-out stability) and echoed into the
-            # MESSAGE event's data. Tags ride only to message-tags clients —
-            # `_deliver_relay` strips them for everyone else.
-            msgid = new_msgid()
-            relay = Message(
-                prefix=self.prefix,
-                command="PRIVMSG",
-                params=[target, text],
-                tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
-            )
-
             if target.startswith("#"):
                 channel = self.server.channels.get(target)
                 if not channel:
@@ -956,11 +1037,38 @@ class Client:
                         replies.ERR_CANNOTSENDTOCHAN, target, "Cannot send to channel"
                     )
                     return
-                await self._send_to_channel(channel, target, relay, text, False, msgid=msgid)
+                for chunk in self._split_outbound_text(target, text):
+                    # One fresh msgid per chunk, stamped identically on
+                    # every recipient's delivery of *that* chunk (fan-out
+                    # stability) and echoed into that chunk's own MESSAGE
+                    # event data. Tags ride only to message-tags clients —
+                    # `_deliver_relay` strips them for everyone else.
+                    msgid = new_msgid()
+                    relay = Message(
+                        prefix=self.prefix,
+                        command="PRIVMSG",
+                        params=[target, chunk],
+                        tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
+                    )
+                    await self._send_to_channel(
+                        channel, target, relay, chunk, False, msgid=msgid
+                    )
                 await self._notify_mentions(target, text)
             else:
-                found = await self._send_to_client(target, relay, text, False, msgid=msgid)
-                if not found:
+                delivered = False
+                for chunk in self._split_outbound_text(target, text):
+                    msgid = new_msgid()
+                    relay = Message(
+                        prefix=self.prefix,
+                        command="PRIVMSG",
+                        params=[target, chunk],
+                        tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
+                    )
+                    sent = await self._send_to_client(target, relay, chunk, False, msgid=msgid)
+                    if not sent:
+                        break
+                    delivered = True
+                if not delivered:
                     await self.send_numeric(replies.ERR_NOSUCHNICK, target, replies.MSG_NOSUCHNICK)
                     return
                 await self._notify_mentions(None, text)

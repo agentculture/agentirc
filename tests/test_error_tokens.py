@@ -40,6 +40,7 @@ from typing import Awaitable, Callable
 
 import pytest
 
+from agentirc._internal.constants import MAX_INBOUND_LINE
 from agentirc._internal.protocol.message import Message
 from agentirc.protocol import (
     ERROR_TAG,
@@ -49,6 +50,7 @@ from agentirc.protocol import (
     ERROR_TOKEN_INVALID_CURSOR,
     ERROR_TOKEN_INVALID_META_VALUE,
     ERROR_TOKEN_INVALID_THREAD_NAME,
+    ERROR_TOKEN_LINE_TOO_LONG,
     ERROR_TOKEN_MISSING_PARAMS,
     ERROR_TOKEN_NOT_MANAGED_ROOM,
     ERROR_TOKEN_NOT_ON_CHANNEL,
@@ -340,6 +342,16 @@ async def _probe_history_since_invalid_cursor(client, _ctx):
     return await _send_and_recv(client, f"HISTORY SINCE {chan} bm9jb2xvbmhlcmU=")
 
 
+async def _probe_line_too_long(client, _ctx):
+    """Send a single line one byte over MAX_INBOUND_LINE; no trailing content follows.
+
+    Exercises Client._process_buffer's read-loop-level rejection (task t4)
+    rather than a skill's on_command handler -- the only case in this file
+    that isn't a rooms/threads/history call site.
+    """
+    return await _send_and_recv(client, "X" * (MAX_INBOUND_LINE + 1))
+
+
 CASES: list[ErrorCase] = [
     # -- missing-params: ERR_NEEDMOREPARAMS across every rooms/threads/history verb --
     ErrorCase("roomcreate-missing-params", ERROR_TOKEN_MISSING_PARAMS, _bare("ROOMCREATE #x")),
@@ -578,6 +590,16 @@ CASES: list[ErrorCase] = [
         _bare("HISTORY BOGUS"),
         expected_untagged=lambda nick: (
             f":testserv NOTICE {nick} :Unknown HISTORY subcommand: BOGUS"
+        ),
+    ),
+    # -- line-too-long (task t4, Client.handle's read loop, not a skill) --
+    ErrorCase(
+        "client-inbound-line-too-long",
+        ERROR_TOKEN_LINE_TOO_LONG,
+        _probe_line_too_long,
+        expected_untagged=lambda nick: (
+            f":testserv NOTICE {nick} :Line exceeds the {MAX_INBOUND_LINE}-byte"
+            " limit and was discarded"
         ),
     ),
 ]
