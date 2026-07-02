@@ -314,7 +314,11 @@ async def test_killed_peer_reaped_within_interval_plus_timeout(tmp_path):
 async def test_agent_client_survives_liveness_cycles(tmp_path):
     """AgentClient answers server PING transparently (see
     AgentClient._dispatch), so it is never reaped by the liveness sweep."""
-    ircd = await _boot_ircd(tmp_path, ping_interval=0.1, pong_timeout=0.1)
+    # Not 0.1/0.1: with a reap threshold that tight, event-loop starvation
+    # under `-n auto` parallel load can delay the PONG past the deadline and
+    # reap a perfectly healthy client (observed as an intermittent failure).
+    # 0.3/0.7 still exercises multiple ping windows but tolerates jitter.
+    ircd = await _boot_ircd(tmp_path, ping_interval=0.3, pong_timeout=0.7)
     try:
         client = AgentClient("127.0.0.1", ircd.config.port, "testserv-alice")
         await client.connect()
@@ -322,7 +326,7 @@ async def test_agent_client_survives_liveness_cycles(tmp_path):
             assert client.connected is True
             # Outlive several ping_interval + pong_timeout windows while the
             # application layer does nothing — only PONGs keep it alive.
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(1.5)
             assert client.connected is True
             assert "testserv-alice" in ircd.clients
         finally:
