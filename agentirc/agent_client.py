@@ -17,6 +17,12 @@ Design notes
   :meth:`AgentClient.messages` transparently spans reconnects.
 - **No history replay here.** Messages other clients send during an outage
   are lost at this layer; catch-up belongs to a separate HISTORY facility.
+  :meth:`AgentClient.send_raw` (write a raw pre-formatted line) and
+  :meth:`AgentClient.raw_lines` (read every raw wire line, not just
+  PRIVMSGs) are thin, additive escape hatches for callers that drive
+  non-PRIVMSG verbs — e.g. ``HISTORY SINCE <channel> <cursor>`` — directly
+  and need the unfiltered reply; see ``tests/test_reconnect_catchup.py`` for
+  a worked reconnect+catch-up example.
 - **Agents are first-class clients, not bots.** The ``agentirc.io/bot``
   capability is *not* requested by default (that gates bot-only wire
   behaviours like silent joins). ``message-tags`` *is* requested by default
@@ -153,6 +159,10 @@ class AgentClient:
         self._registered_event = asyncio.Event()
         self._connect_error: BaseException | None = None
         self._queue: asyncio.Queue[IncomingMessage] = asyncio.Queue()
+        # Raw-line capture is opt-in (see `raw_lines`) so callers who never
+        # touch it pay no cost: the queue stays empty and unused.
+        self._raw_capture = False
+        self._raw_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
     # -- public state -----------------------------------------------------
 
@@ -214,9 +224,10 @@ class AgentClient:
             self._run_task = None
         self._teardown_connection()
         self._connected = False
-        # Unblock a pending connect() and any messages() consumer.
+        # Unblock a pending connect() and any messages()/raw_lines() consumer.
         self._registered_event.set()
         self._queue.put_nowait(_CLOSE_SENTINEL)
+        self._raw_queue.put_nowait(None)
 
     # -- sending ----------------------------------------------------------
 
@@ -237,6 +248,23 @@ class AgentClient:
         if self._connected and self._writer is not None:
             await self._write("JOIN", channel)
 
+    async def send_raw(self, line: str) -> None:
+        """Send a raw, pre-formatted IRC line verbatim (plus CRLF).
+
+        Escape hatch for verbs :meth:`send`/:meth:`join` don't model — e.g.
+        ``HISTORY SINCE <channel> <cursor>`` catch-up. ``line`` should be a
+        single command without a trailing CRLF; embedded CR/LF are stripped
+        for injection safety, same as :meth:`send`. Raises
+        :class:`ConnectionError` if the client is not currently connected.
+        """
+        if not self._connected:
+            raise ConnectionError(f"AgentClient({self._nick}) is not connected")
+        writer = self._writer
+        if writer is None:
+            raise ConnectionError("no active connection")
+        writer.write(f"{_sanitize(line)}\r\n".encode("utf-8"))
+        await writer.drain()
+
     # -- receiving --------------------------------------------------------
 
     async def messages(self) -> AsyncIterator[IncomingMessage]:
@@ -248,6 +276,25 @@ class AgentClient:
         while True:
             item = await self._queue.get()
             if item is _CLOSE_SENTINEL:
+                return
+            yield item
+
+    async def raw_lines(self) -> AsyncIterator[str]:
+        """Yield every raw wire line received, not just PRIVMSGs.
+
+        Complements :meth:`messages` (which only surfaces parsed PRIVMSGs)
+        for callers driving verbs like ``HISTORY SINCE`` via :meth:`send_raw`
+        that need to read the raw, unfiltered reply (e.g. ``HISTORY`` /
+        ``HISTORYEND`` lines). Capture starts lazily the first time this
+        iterator is consumed, so callers who never use it pay no cost.
+        Transparently spans reconnects, the same way :meth:`messages` does.
+        The iterator terminates when :meth:`close` is called. Intended for a
+        single consumer.
+        """
+        self._raw_capture = True
+        while True:
+            item = await self._raw_queue.get()
+            if item is None:
                 return
             yield item
 
@@ -283,9 +330,11 @@ class AgentClient:
                 break
             await asyncio.sleep(next(delays))
         # Permanent exit (closing, or reconnect disabled after a drop): never
-        # leave connect() blocked, and end any messages() consumer cleanly.
+        # leave connect() blocked, and end any messages()/raw_lines() consumer
+        # cleanly.
         self._registered_event.set()
         self._queue.put_nowait(_CLOSE_SENTINEL)
+        self._raw_queue.put_nowait(None)
 
     async def _connect_once(self) -> None:
         """Open the socket, register, and (re-)join channels."""
@@ -331,6 +380,8 @@ class AgentClient:
             await self._dispatch(msg)
 
     async def _dispatch(self, msg: Message) -> None:
+        if self._raw_capture:
+            self._raw_queue.put_nowait(msg.format().rstrip("\r\n"))
         cmd = msg.command.upper()
         if cmd == "PING":
             await self._write("PONG", msg.params[0] if msg.params else "")
