@@ -23,7 +23,12 @@ from agentirc.protocol import (
     THREAD_TAG,
 )
 from agentirc.skill import Event, EventType, Skill
-from agentirc._internal.constants import new_msgid, server_time_now
+from agentirc._internal.constants import (
+    PRIVMSG_WIRE_LIMIT,
+    new_msgid,
+    server_time_now,
+    split_message_text,
+)
 from agentirc._internal.protocol import replies
 from agentirc._internal.protocol.message import Message
 
@@ -340,28 +345,62 @@ class ThreadsSkill(Skill):
     ) -> str:
         """Send a [thread:name] prefixed PRIVMSG to all channel members except sender.
 
-        Returns the prefixed text for use in event data.
+        Wire delivery is split across multiple consecutive PRIVMSGs (task
+        t4) when the ``[thread:name] `` prefix plus ``text`` would push a
+        recipient's wire line past ``PRIVMSG_WIRE_LIMIT`` -- each chunk
+        re-carries the ``[thread:name] `` prefix so every wire line still
+        reads as belonging to the thread on its own. Unlike the top-level
+        PRIVMSG relay split (``Client._split_outbound_text``), this stays a
+        single *logical* thread message: threads have their own dedicated
+        storage (``self._threads``, not the generic history buffer -- see
+        ``skills/history.py``'s ``_NO_STORE_TYPES``) and a single
+        THREAD_CREATE/THREAD_MESSAGE event carries the full, unsplit text;
+        only the outbound wire lines are chunked to respect the 512-byte
+        limit. Returns the (unsplit) prefixed text for use in event data.
         """
         from agentirc.remote_client import RemoteClient
 
         prefixed = self._format_thread_msg(thread_name, text)
+        thread_prefix = f"[thread:{thread_name}] "
+        # Conservative per-recipient budget: this server always relays with
+        # the sender's own prefix (never rewritten per recipient), so one
+        # budget bounds every recipient's wire line. The thread_prefix is
+        # re-applied to every chunk (see docstring), so it's part of the
+        # fixed overhead subtracted from the 512-byte budget, not the split
+        # text itself. IRCv3 tags ride in their own budget, added after.
+        overhead = (
+            len(f":{sender.prefix} PRIVMSG {channel.name} :{thread_prefix}".encode("utf-8"))
+            + len(b"\r\n")
+        )
+        budget = PRIVMSG_WIRE_LIMIT - overhead
+        chunks = split_message_text(text, budget)
+
+        # Snapshot the recipient set once so every chunk of this one logical
+        # thread message fans out to the same members, matching the
+        # pre-split behavior of a single relay send.
+        recipients = [
+            member
+            for member in [*channel.members]
+            if member is not sender and not isinstance(member, RemoteClient)
+        ]
+
         # message-tags clients get msgid/time plus the thread tag carrying the
         # bare thread name; the legacy `[thread:<name>]` text prefix stays put.
         # `send_tagged` strips the whole block for non-negotiated clients, so
         # their wire line is byte-identical to before. Tags are local delivery
         # only — RemoteClients are excluded here (federation quirk #9 untouched).
-        relay = Message(
-            prefix=sender.prefix,
-            command="PRIVMSG",
-            params=[channel.name, prefixed],
-            tags={
-                MSGID_TAG: new_msgid(),
-                SERVER_TIME_TAG: server_time_now(),
-                THREAD_TAG: thread_name,
-            },
-        )
-        for member in [*channel.members]:
-            if member is not sender and not isinstance(member, RemoteClient):
+        for chunk in chunks:
+            relay = Message(
+                prefix=sender.prefix,
+                command="PRIVMSG",
+                params=[channel.name, f"{thread_prefix}{chunk}"],
+                tags={
+                    MSGID_TAG: new_msgid(),
+                    SERVER_TIME_TAG: server_time_now(),
+                    THREAD_TAG: thread_name,
+                },
+            )
+            for member in recipients:
                 send_tagged = getattr(member, "send_tagged", None)
                 if send_tagged is not None:
                     await send_tagged(relay)
