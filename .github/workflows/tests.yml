@@ -135,6 +135,7 @@ jobs:
   # change that checks out a sibling repo).
   agent-guards:
     needs: lint
+    if: hashFiles('pyproject.toml') != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read

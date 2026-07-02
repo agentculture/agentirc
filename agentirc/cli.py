@@ -733,7 +733,9 @@ def _server_status(args: argparse.Namespace) -> None:
         }
         if stale:
             output["stale"] = True
+            output["port"] = None
             remove_pid(pid_name)
+            remove_port(pid_name)
         print(json.dumps(output))
     else:
         # Text output mode
@@ -747,6 +749,7 @@ def _server_status(args: argparse.Namespace) -> None:
         else:
             print(f"Server '{args.name}': not running (stale PID {pid})")
             remove_pid(pid_name)
+            remove_port(pid_name)
 
 
 def _server_link(args: argparse.Namespace) -> int:

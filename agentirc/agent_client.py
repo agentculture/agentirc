@@ -136,8 +136,11 @@ class AgentClient:
         self._user = user or nick
         self._realname = realname or nick
         # Ordered, de-duplicated set of channels to (re-)join on every connect.
+        # Sanitized the same way `join()` sanitizes: every entry in
+        # `self._channels` must be safe to replay verbatim on reconnect.
         self._channels: list[str] = []
         for chan in channels or ():
+            chan = _sanitize(chan)
             if chan not in self._channels:
                 self._channels.append(chan)
         # Freeze the requested caps; ``agentirc.io/bot`` is intentionally not
@@ -152,7 +155,12 @@ class AgentClient:
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._recv_buffer = ""
+        # Raw bytes awaiting a newline. Kept as bytes (not str) so a
+        # multibyte UTF-8 codepoint split across two `reader.read()` chunks
+        # is never decoded until the full byte sequence has arrived —
+        # decoding a partial chunk would emit a lossy U+FFFD replacement
+        # character for the trailing bytes.
+        self._recv_buffer: bytes = b""
         self._connected = False
         self._closing = False
         self._run_task: asyncio.Task[None] | None = None
@@ -242,7 +250,16 @@ class AgentClient:
         await self._write("PRIVMSG", _sanitize(target), _sanitize(text))
 
     async def join(self, channel: str) -> None:
-        """Join ``channel`` now (if connected) and on every future reconnect."""
+        """Join ``channel`` now (if connected) and on every future reconnect.
+
+        ``channel`` is run through :func:`_sanitize` first, the same as
+        :meth:`send`/:meth:`send_raw` — a channel containing embedded
+        CR/LF would otherwise both emit a malformed/extra wire command on
+        this call *and* get replayed verbatim on every future reconnect via
+        :attr:`_channels`. Sanitizing before the membership check and the
+        store means :attr:`_channels` only ever holds the safe value.
+        """
+        channel = _sanitize(channel)
         if channel not in self._channels:
             self._channels.append(channel)
         if self._connected and self._writer is not None:
@@ -338,7 +355,7 @@ class AgentClient:
 
     async def _connect_once(self) -> None:
         """Open the socket, register, and (re-)join channels."""
-        self._recv_buffer = ""
+        self._recv_buffer = b""
         self._reader, self._writer = await asyncio.open_connection(self._host, self._port)
         await self._register()
         await self._rejoin_channels()
@@ -421,22 +438,32 @@ class AgentClient:
         await writer.drain()
 
     async def _read_message(self) -> Message | None:
-        """Read and parse the next complete line, or ``None`` on EOF."""
+        """Read and parse the next complete line, or ``None`` on EOF.
+
+        Buffers raw bytes and splits on ``b"\\n"`` *before* decoding, so a
+        multibyte UTF-8 codepoint straddling two ``reader.read()`` chunks is
+        held in the buffer intact rather than decoded prematurely (which
+        would silently corrupt it into a U+FFFD replacement character).
+        Only complete lines are decoded, with ``errors="replace"`` still
+        applied so genuinely invalid bytes degrade gracefully instead of
+        raising.
+        """
         reader = self._reader
         if reader is None:
             return None
         while True:
-            newline = self._recv_buffer.find("\n")
+            newline = self._recv_buffer.find(b"\n")
             if newline != -1:
-                line = self._recv_buffer[:newline].rstrip("\r")
+                raw_line = self._recv_buffer[:newline]
                 self._recv_buffer = self._recv_buffer[newline + 1 :]
+                line = raw_line.rstrip(b"\r").decode("utf-8", errors="replace")
                 if not line.strip():
                     continue
                 return Message.parse(line)
             data = await reader.read(4096)
             if not data:
                 return None
-            self._recv_buffer += data.decode("utf-8", errors="replace")
+            self._recv_buffer += data
 
     def _mark_disconnected(self) -> None:
         self._connected = False
@@ -452,7 +479,7 @@ class AgentClient:
                 pass
         self._writer = None
         self._reader = None
-        self._recv_buffer = ""
+        self._recv_buffer = b""
 
 
 # Sentinel pushed onto the message queue by close() so a blocked messages()

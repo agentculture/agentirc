@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -18,6 +19,14 @@ from pathlib import Path
 import pytest
 
 from agentirc import __version__
+from agentirc._internal.pidfile import (
+    read_pid,
+    read_port,
+    remove_pid,
+    remove_port,
+    write_pid,
+    write_port,
+)
 from agentirc.cli import dispatch
 
 
@@ -123,6 +132,71 @@ class TestStatusJson:
         lines = output.split("\n")
         non_empty = [l for l in lines if l.strip()]
         assert len(non_empty) == 1
+
+
+class TestStatusStalePidCleanup:
+    """Tests that `status` clears BOTH the stale `.pid` and `.port` files.
+
+    Regression coverage for a reliability bug (Qodo): the stale branch
+    removed the PID file but left the port file behind, so a later
+    `status` call would report a phantom port for a server that isn't
+    running. `_server_stop`'s equivalent branches always remove both
+    files together; `_server_status` must match that behavior.
+    """
+
+    @staticmethod
+    def _dead_pid() -> int:
+        """Return a PID that is guaranteed to not correspond to a live process."""
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait(timeout=5)
+        return proc.pid
+
+    def test_status_text_removes_stale_pid_and_port_files(self, capsys):
+        """Text mode: a stale PID+port pair is fully cleaned up, not just the PID."""
+        name = "stale-cleanup-text"
+        pid_name = f"server-{name}"
+        dead_pid = self._dead_pid()
+        write_pid(pid_name, dead_pid)
+        write_port(pid_name, 19999)
+        try:
+            rc = dispatch(["status", "--name", name])
+            assert rc == 0
+            output = capsys.readouterr().out.strip()
+            assert "not running" in output
+            assert "stale" in output
+
+            # Both files must be gone after status observes the stale PID.
+            assert read_pid(pid_name) is None
+            assert read_port(pid_name) is None
+        finally:
+            remove_pid(pid_name)
+            remove_port(pid_name)
+
+    def test_status_json_removes_stale_pid_and_port_files(self, capsys):
+        """JSON mode: stale cleanup removes both files and never reports the dead port."""
+        name = "stale-cleanup-json"
+        pid_name = f"server-{name}"
+        dead_pid = self._dead_pid()
+        stale_port = 19998
+        write_pid(pid_name, dead_pid)
+        write_port(pid_name, stale_port)
+        try:
+            rc = dispatch(["status", "--name", name, "--json"])
+            assert rc == 0
+            output = capsys.readouterr().out.strip()
+            data = json.loads(output)
+
+            assert data["running"] is False
+            assert data.get("stale") is True
+            # Must not surface the now-meaningless stale port value.
+            assert data["port"] is None
+            assert data["port"] != stale_port
+
+            assert read_pid(pid_name) is None
+            assert read_port(pid_name) is None
+        finally:
+            remove_pid(pid_name)
+            remove_port(pid_name)
 
 
 class TestStatusJsonWithDaemon:
