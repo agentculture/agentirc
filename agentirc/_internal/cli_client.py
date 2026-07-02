@@ -28,6 +28,16 @@ Wire contract this module relies on (see ``agentirc/skills/history.py`` and
 - A successful ``JOIN`` is followed by ``RPL_NAMREPLY`` (353) then
   ``RPL_ENDOFNAMES`` (366, ``params[1]`` is the channel — numerics carry the
   requesting nick in ``params[0]``); we treat 366 as "join confirmed".
+
+``AgentClient.raw_lines()``/``send_raw()`` shape (post-t13 merge): these are
+the public helpers from ``agentirc.agent_client`` (added by task t13, merged
+into this branch from ``feat/agent-accessibility``) — *not* a bespoke pair
+this module invents. ``send_raw(line: str)`` takes one already-formatted
+wire line (no trailing CRLF); ``raw_lines()`` is an ``async def`` generator
+that yields raw wire-text ``str`` lines and only arms its internal capture
+flag lazily, on the first ``__anext__()`` of the returned generator — see
+``_armed_raw_messages`` below for why this module always primes it before
+``connect()`` rather than relying on that laziness.
 """
 
 from __future__ import annotations
@@ -40,6 +50,7 @@ import secrets
 import signal
 import sys
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 from agentirc._internal.protocol.message import Message
@@ -104,16 +115,75 @@ async def _connect_or_hint(
     return None
 
 
+async def _armed_raw_messages(client: AgentClient) -> AsyncIterator[Message]:
+    """Prime ``client.raw_lines()`` and return a parsed-:class:`Message` iterator.
+
+    ``AgentClient.raw_lines()`` only arms its internal raw-capture flag when
+    its async-generator body actually starts running — i.e. on the first
+    ``__anext__()`` (see ``agent_client.py``). Auto-join happens inside
+    :meth:`AgentClient.connect` (via its internal run task re-joining
+    configured channels right after registration), so a caller that waits
+    until *after* ``connect()`` returns to start consuming ``raw_lines()``
+    can lose a fast same-host join confirmation: the internal run task may
+    already have read and dispatched it — synchronously, with no scheduler
+    hand-off in between — before this coroutine's caller even gets a turn.
+
+    This coroutine closes that race: it creates the generator, schedules a
+    background task that steps it to its first suspension point (arming
+    capture), and yields the event loop once (``asyncio.sleep(0)``) so that
+    step actually runs before returning. Callers must ``await`` this *before*
+    calling :meth:`AgentClient.connect`.
+
+    For request/response call sites where the request is sent and then
+    immediately read back in the same coroutine with no intervening
+    ``await`` that can yield (e.g. ``read``'s ``send_raw`` + drain loop),
+    this priming isn't strictly required — but using it everywhere keeps a
+    single, uniformly-safe pattern rather than two.
+
+    A caller can legitimately abandon the returned iterator without ever
+    consuming it (e.g. ``connect()`` itself fails, so nobody ever gets to
+    ``_wait_for_join``/``_collect_history``) — ``close()`` still resolves
+    ``primer`` at that point (with a ``StopAsyncIteration``, via the
+    ``None`` close-sentinel), but nothing would otherwise retrieve that
+    result once the abandoned iterator is garbage-collected, which asyncio
+    logs as "Task exception was never retrieved". The done-callback below
+    reads (and thereby marks retrieved) whatever ``primer`` resolves to,
+    independent of whether the iterator is ever iterated.
+    """
+    agen = client.raw_lines()
+    primer = asyncio.ensure_future(agen.__anext__())
+    primer.add_done_callback(lambda t: t.exception())
+    await asyncio.sleep(0)  # let `primer` run up to its first suspension
+
+    async def _iterate() -> AsyncIterator[Message]:
+        try:
+            first = await primer
+        except StopAsyncIteration:
+            return
+        yield Message.parse(first)
+        async for line in agen:
+            yield Message.parse(line)
+
+    return _iterate()
+
+
 async def _graceful_quit(client: AgentClient) -> None:
-    """Send a clean QUIT (best-effort) then tear down the connection."""
+    """Send a clean QUIT (best-effort) then tear down the connection.
+
+    Safe to call unconditionally, including after a failed ``connect()`` —
+    :attr:`AgentClient.connected` is ``False`` in that case so the QUIT send
+    is skipped, but ``close()`` still runs, which is what actually retires
+    any ``raw_lines()`` primer task a caller armed via
+    :func:`_armed_raw_messages` before the failed connect.
+    """
     if client.connected:
         with contextlib.suppress(ConnectionError):
-            await client.send_raw("QUIT", "agentirc-cli")
+            await client.send_raw("QUIT :agentirc-cli")
     await client.close()
 
 
 async def _wait_for_join(
-    raw_iter: "asyncio.AsyncIterator[Message]",
+    raw_iter: AsyncIterator[Message],
     channel: str,
     timeout: float = _REPLY_TIMEOUT_SECONDS,
 ) -> tuple[bool, str | None]:
@@ -160,11 +230,12 @@ async def _send_main(args: argparse.Namespace) -> int:
     is_channel = target.startswith("#")
     channels = [target] if is_channel else None
     client = AgentClient(args.host, args.port, nick, channels=channels, reconnect=False)
-    # Armed before connect() whenever we might auto-join — see _wait_for_join.
-    raw_iter = client.raw_lines() if is_channel else None
+    # Armed before connect() whenever we might auto-join — see _armed_raw_messages.
+    raw_iter = await _armed_raw_messages(client) if is_channel else None
 
     rc = await _connect_or_hint(client, args.host, args.port, "send")
     if rc is not None:
+        await _graceful_quit(client)
         return rc
 
     if is_channel:
@@ -212,10 +283,11 @@ async def _join_main(args: argparse.Namespace) -> int:
 
     nick = args.nick or _default_nick()
     client = AgentClient(args.host, args.port, nick, channels=[channel], reconnect=False)
-    raw_iter = client.raw_lines()  # armed before connect() — see AgentClient docstring
+    raw_iter = await _armed_raw_messages(client)  # armed before connect() — see _armed_raw_messages
 
     rc = await _connect_or_hint(client, args.host, args.port, "join")
     if rc is not None:
+        await _graceful_quit(client)
         return rc
 
     try:
@@ -250,7 +322,7 @@ def cmd_join(args: argparse.Namespace) -> int:
 
 
 async def _collect_history(
-    raw_iter: "asyncio.AsyncIterator[Message]",
+    raw_iter: AsyncIterator[Message],
     channel: str,
     timeout: float = _REPLY_TIMEOUT_SECONDS,
 ) -> tuple[list[Message], str | None, str | None]:
@@ -288,17 +360,18 @@ async def _read_main(args: argparse.Namespace) -> int:
         last = DEFAULT_READ_LAST
 
     client = AgentClient(args.host, args.port, nick, reconnect=False)
-    raw_iter = client.raw_lines()  # armed before connect() — see AgentClient docstring
+    raw_iter = await _armed_raw_messages(client)  # armed before connect() — see _armed_raw_messages
 
     rc = await _connect_or_hint(client, args.host, args.port, "read")
     if rc is not None:
+        await _graceful_quit(client)
         return rc
 
     try:
         if since is not None:
-            await client.send_raw("HISTORY", "SINCE", channel, since)
+            await client.send_raw(f"HISTORY SINCE {channel} {since}")
         else:
-            await client.send_raw("HISTORY", "RECENT", channel, str(last))
+            await client.send_raw(f"HISTORY RECENT {channel} {last}")
 
         lines, next_cursor, error_token = await _collect_history(raw_iter, channel)
     finally:
@@ -350,6 +423,7 @@ async def _watch_main(args: argparse.Namespace) -> int:
 
     rc = await _connect_or_hint(client, args.host, args.port, "watch")
     if rc is not None:
+        await _graceful_quit(client)
         return rc
 
     stop = asyncio.Event()
