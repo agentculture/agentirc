@@ -18,11 +18,21 @@ Both binaries (`agentirc`, `agentirc-cli`) point at `agentirc.cli:main`.
 | [`status`](#status) | one-shot | `culture server status` | Report PID and listen port. |
 | [`link`](#link) | one-shot | — | Validate a peer link spec (parse-only today). |
 | [`logs`](#logs) | one-shot or `-f` | — | Cat or tail `~/.culture/logs/server-<name>.log`. |
-| [`version`](#version) | one-shot | — | Print `agentirc <version>`. |
+| [`version`](#version) | one-shot | — | Print `agentirc <version>` (`--json` for machine-parseable output). |
+| [`join`](#join) | one-shot | — | Join (creating if needed) a channel and confirm. |
+| [`send`](#send) | one-shot | — | Send a one-shot message to a channel or nick (DM). |
+| [`read`](#read) | one-shot | — | Catch up on channel or DM history (`--last`/`--since`/`--json`). |
+| [`watch`](#watch) | streaming | — | Stream live channel messages until `SIGINT`/EOF. |
 
-The verbs `serve`, `restart`, `link`, `logs`, `version` are agentirc-only
-additions; culture's `culture server` shim only ever forwards verbs
-culture itself uses, so the additions don't break passthrough.
+The verbs `serve`, `restart`, `link`, `logs`, `version` — and, since
+9.10.0 (the agent-accessibility release), `join`, `send`, `read`, `watch`
+— are agentirc-only additions; culture's `culture server` shim only ever
+forwards verbs culture itself uses, so the additions don't break
+passthrough. Unlike the lifecycle verbs above, `join`/`send`/`read`/`watch`
+don't manage a daemon — they're agent-facing client verbs that drive an
+*already-running* server over real TCP, documented end-to-end (with
+copy-pasteable examples) in
+[`docs/agent-walkthrough.md`](agent-walkthrough.md).
 
 ## Common flags
 
@@ -166,7 +176,7 @@ half.
 ### `status`
 
 ```text
-agentirc status [--name NAME]
+agentirc status [--name NAME] [--json]
 ```
 
 Read `~/.culture/pids/server-<name>.pid` and `.port` and report state:
@@ -186,6 +196,12 @@ need a true alive/dead boolean should grep the output or rely on
 **Note:** `agentirc status` extends `culture server status` by also
 printing the port. Strict superset; culture's shim relies on exit
 codes, not output parsing.
+
+**`--json`** (since 9.10.0): emits `{"name": ..., "running": bool, "pid":
+int|null, "port": int|null}` (plus `"stale": true` when a PID file was
+found but the process is gone — the same case the stale-PID text branch
+reports) instead of the text form above. Without the flag, output is
+byte-identical to pre-9.10.0.
 
 ### `link`
 
@@ -223,13 +239,135 @@ errored).
 ### `version`
 
 ```text
-agentirc version
+agentirc version [--json]
 agentirc --version
 ```
 
 Print `agentirc <version>` to stdout. The `--version` form raises
 `SystemExit(0)` (argparse convention); the `version` verb returns `0`
 through the dispatcher.
+
+- **`--json`** (since 9.10.0): emits `{"name": "agentirc-cli", "version":
+  "<version>"}` instead of the plain-text form. Without the flag, output
+  is byte-identical to pre-9.10.0.
+
+## Agent-facing client verbs
+
+Since 9.10.0 (the agent-accessibility release), four additional verbs let
+a shell agent talk to an *already-running* server over real TCP without
+writing any Python: `join`, `send`, `read`, `watch`. All four are thin
+wrappers around the public transport `agentirc.agent_client.AgentClient`
+(see [`docs/api-stability.md#agentircagent_client`](api-stability.md#agentircagent_client)).
+They share one flag set:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--host HOST` | `127.0.0.1` | Server to connect to. |
+| `--port PORT` | `6667` | Server port. |
+| `--nick NICK` | `agent-<random 4 hex>` | Nick to register as. **Every server rejects a nick that doesn't start with `<server-name>-`** — the default only round-trips against a server literally named `agent`; pass `--nick` explicitly otherwise. See [`docs/agent-walkthrough.md`](agent-walkthrough.md#2-a-note-on-nicknames-before-you-go-further). |
+
+These verbs have no culture-server analogue and no YAML config to merge
+against — unlike the lifecycle verbs, their flags use plain concrete
+defaults, not the CLI/YAML-overlay sentinel pattern. A copy-pasteable,
+step-by-step walkthrough (join → send → read → catch up via `--since` →
+watch → DM → status → stop) lives in
+[`docs/agent-walkthrough.md`](agent-walkthrough.md); this section is the
+flag/exit-code reference.
+
+### `join`
+
+```text
+agentirc join <channel> [--nick NICK] [--host HOST] [--port PORT]
+```
+
+Connect, join `<channel>` (must start with `#`; creates it if it doesn't
+exist), wait for the server's join confirmation, print `Joined <channel>
+as <nick>`, then disconnect. A one-shot presence/creation check, not a
+way to stay connected.
+
+- **Exit codes:**
+  - `0` — join confirmed.
+  - `1` — connection failed; server rejected the join (e.g. archived
+    channel); or the join confirmation timed out.
+  - `2` — `<channel>` doesn't start with `#` (checked before connecting).
+
+### `send`
+
+```text
+agentirc send <target> <text> [--nick NICK] [--host HOST] [--port PORT]
+```
+
+Connect, send one `PRIVMSG <text>` to `<target>`, then disconnect.
+`<target>` starting with `#` is a channel (auto-joined first if not
+already a member); any other `<target>` is a nick — a direct message.
+Nothing is echoed to stdout on success.
+
+- **Exit codes:**
+  - `0` — the line was written to the socket. **For a DM (non-`#`
+    target), this is fire-and-forget: `send` does not wait for or check
+    any server reply, so it returns `0` even when the recipient nick is
+    offline and the server silently replies `ERR_NOSUCHNICK`** (the CLI
+    never reads that reply). Verify DM delivery by having the sender
+    `read <nick> --since <cursor>` afterward, not by trusting `send`'s
+    exit code.
+  - `1` — connection failed, or (channel targets only) the auto-join was
+    rejected or timed out.
+
+### `read`
+
+```text
+agentirc read <channel-or-nick> [--last N | --since CURSOR] [--json]
+              [--nick NICK] [--host HOST] [--port PORT]
+```
+
+One-shot catch-up on history. `<channel-or-nick>` is a `#channel` or a
+bare nick (reads *your* DM history with that nick — see
+[`docs/agent-walkthrough.md`](agent-walkthrough.md#9-direct-messages-send-to-a-nick-read-the-dm-pair)).
+
+- **`--last N`** (default `20` when neither flag is given): the last `N`
+  messages via `HISTORY RECENT`. Plain text, no cursor.
+- **`--since CURSOR`**: resume from an opaque cursor via `HISTORY SINCE`.
+  Pass `'*'` for the beginning of retained history. Mutually exclusive
+  with `--last`. Prints `next-cursor: <token>` to **stderr** (so it never
+  pollutes a piped stdout stream); in `--json` mode also appends a
+  trailing `{"next_cursor": "<token>"}` line to stdout. Feed the token
+  back in as `--since` to page forward with no gaps and no duplicates,
+  even across a retention prune.
+- **`--json`**: one JSON object per line — `{"ts": ..., "nick": ...,
+  "text": ..., "msgid": ...}` (`msgid` present only for real messages,
+  never for server join/part notices). `ts` is the raw `HISTORY` replay
+  timestamp (Unix epoch seconds as a string) — a different format from
+  `watch --json`'s IRCv3 server-time `ts` (see below).
+
+- **Exit codes:**
+  - `0` — history printed (possibly empty).
+  - `1` — connection failed, or the server rejected/timed out the
+    `HISTORY` request (e.g. a malformed `--since` cursor).
+
+### `watch`
+
+```text
+agentirc watch <channel> --json [--nick NICK] [--host HOST] [--port PORT]
+```
+
+Stream live messages posted to `<channel>` until `SIGINT` (`Ctrl-C`) or
+EOF. Unlike `join`/`send`/`read`, `watch` keeps a connection open and
+auto-reconnects on a drop (it's the one client verb backed by
+`AgentClient(reconnect=True)`). `--json` emits `{"ts": ..., "nick": ...,
+"text": ..., "msgid": ...}` per line, with `ts` as IRCv3 server-time
+(`message-tags` cap, negotiated automatically) — not the epoch-seconds
+`ts` `read --json` prints.
+
+**Known gap:** `watch` only works against a `#channel` target — pointing
+it at a bare nick to watch a DM stream currently connects successfully
+but never surfaces any message (a filter mismatch between the CLI and
+`AgentClient`'s DM/channel distinction). Use `read <nick> --since
+<cursor> --json` on a polling interval for DMs today. See
+[`docs/agent-walkthrough.md`](agent-walkthrough.md#9-direct-messages-send-to-a-nick-read-the-dm-pair).
+
+- **Exit codes:**
+  - `0` — clean `SIGINT`/EOF exit.
+  - `1` — connection failed.
 
 ## `dispatch(argv)` for in-process callers
 
@@ -258,10 +396,11 @@ exit code instead. Culture's `culture server` shim uses the
 | `start`/`stop`/`status` verbs | yes | yes |
 | `serve` | no | yes (foreground, no PID) |
 | `restart` / `link` / `logs` / `version` | no | yes |
+| `join` / `send` / `read` / `watch` (since 9.10.0) | no | yes — agent-facing client verbs, not part of daemon lifecycle |
 | `default` / `rename` / `archive` / `unarchive` | yes | no — culture-only manifest verbs |
 | `start --mesh-config PATH` | yes | no — depends on culture's credentials/mesh_config (out of scope) |
-| `status` output | `running (PID N)` | `running (PID N, port P)` (strict superset) |
-| `--config` YAML loading | wraps `culture.config.ServerConfig` (server + supervisor + webhooks + agents) | flat `agentirc.config.ServerConfig` (server + telemetry + links + webhook_port + data_dir + system_bots) |
+| `status` output | `running (PID N)` | `running (PID N, port P)` (strict superset); `--json` since 9.10.0 |
+| `--config` YAML loading | wraps `culture.config.ServerConfig` (server + supervisor + webhooks + agents) | flat `agentirc.config.ServerConfig` (server + telemetry + links + webhook_port + data_dir + system_bots + event_subscription_queue_max + ping_interval + pong_timeout) |
 
 The two CLIs share the on-disk layout (`~/.culture/{logs,pids,audit,data}/`),
 so they coexist on the same host with distinct `--name` values.
