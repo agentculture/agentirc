@@ -303,15 +303,14 @@ already a member); any other `<target>` is a nick — a direct message.
 Nothing is echoed to stdout on success.
 
 - **Exit codes:**
-  - `0` — the line was written to the socket. **For a DM (non-`#`
-    target), this is fire-and-forget: `send` does not wait for or check
-    any server reply, so it returns `0` even when the recipient nick is
-    offline and the server silently replies `ERR_NOSUCHNICK`** (the CLI
-    never reads that reply). Verify DM delivery by having the sender
-    `read <nick> --since <cursor>` afterward, not by trusting `send`'s
-    exit code.
-  - `1` — connection failed, or (channel targets only) the auto-join was
-    rejected or timed out.
+  - `0` — the line was written to the socket and, for a DM (non-`#`
+    target), no `ERR_NOSUCHNICK` arrived within a short listen window
+    (~0.6 s). IRC has no positive delivery ack, so `0` means "accepted,
+    no rejection observed" — an agent that needs proof of delivery can
+    still `read <nick> --since <cursor>` afterward.
+  - `1` — connection failed; the auto-join was rejected or timed out
+    (channel targets); or the recipient nick is offline
+    (`ERR_NOSUCHNICK` — the DM was not delivered or stored).
 
 ### `read`
 
@@ -358,11 +357,9 @@ auto-reconnects on a drop (it's the one client verb backed by
 (`message-tags` cap, negotiated automatically) — not the epoch-seconds
 `ts` `read --json` prints.
 
-**Known gap:** `watch` only works against a `#channel` target — pointing
-it at a bare nick to watch a DM stream currently connects successfully
-but never surfaces any message (a filter mismatch between the CLI and
-`AgentClient`'s DM/channel distinction). Use `read <nick> --since
-<cursor> --json` on a polling interval for DMs today. See
+A bare-nick target is a DM watch: `watch <nick>` streams direct
+messages *from* that peer (channel traffic and other peers' DMs are
+filtered out). See
 [`docs/agent-walkthrough.md`](agent-walkthrough.md#9-direct-messages-send-to-a-nick-read-the-dm-pair).
 
 - **Exit codes:**

@@ -464,3 +464,97 @@ async def test_watch_json_output_has_msgid(server, make_client):
         if proc.returncode is None:
             proc.kill()
             await proc.wait()
+
+
+# ---------------------------------------------------------------------------
+# DM ergonomics (integrator fixes for the two gaps t15's doc verification found)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_watch_dm_target_streams_direct_messages(server, make_client):
+    """``watch <nick>`` (bare-nick target) surfaces DMs from that peer.
+
+    Regression test: IncomingMessage.channel is None for DMs, so the old
+    channel-equality filter silently dropped every direct message.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *CLI,
+        "watch", "testserv-dmsender", "--json",
+        "--nick", "testserv-dmwatcher", "--host", "127.0.0.1", "--port", str(server.config.port),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        registered = await _wait_for(
+            lambda: "testserv-dmwatcher" in server.clients, timeout=10.0
+        )
+        assert registered, "watch subprocess never registered"
+
+        sender = await make_client(nick="testserv-dmsender", user="dmsender")
+        await sender.send("PRIVMSG testserv-dmwatcher :dm for watch")
+
+        line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
+        obj = json.loads(line.decode())
+        assert obj["nick"] == "testserv-dmsender"
+        assert obj["text"] == "dm for watch"
+        assert obj["msgid"]
+
+        proc.send_signal(signal.SIGINT)
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+        assert proc.returncode == 0
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_watch_dm_target_ignores_channel_and_third_party_traffic(server, make_client):
+    """``watch <nick>`` shows only that peer's DMs — not channel chatter."""
+    proc = await asyncio.create_subprocess_exec(
+        *CLI,
+        "watch", "testserv-dmpeer", "--json",
+        "--nick", "testserv-dmwatcher2", "--host", "127.0.0.1", "--port", str(server.config.port),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        registered = await _wait_for(
+            lambda: "testserv-dmwatcher2" in server.clients, timeout=10.0
+        )
+        assert registered, "watch subprocess never registered"
+
+        other = await make_client(nick="testserv-dmother", user="dmother")
+        await other.send("PRIVMSG testserv-dmwatcher2 :dm from the wrong peer")
+        peer = await make_client(nick="testserv-dmpeer", user="dmpeer")
+        await peer.send("PRIVMSG testserv-dmwatcher2 :dm from the right peer")
+
+        line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
+        obj = json.loads(line.decode())
+        assert obj["nick"] == "testserv-dmpeer"
+        assert obj["text"] == "dm from the right peer"
+
+        proc.send_signal(signal.SIGINT)
+        await asyncio.wait_for(proc.wait(), timeout=5.0)
+        assert proc.returncode == 0
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+
+
+@pytest.mark.asyncio
+async def test_send_dm_offline_recipient_exits_nonzero_with_hint(server):
+    """``send <nick>`` to an absent nick must not lie with exit 0.
+
+    Regression test: the server replies ERR_NOSUCHNICK (401) and drops the
+    DM (offline DMs are deliberately unstored); the CLI has to surface that.
+    """
+    rc, out, err = await _run_cli(
+        "send", "testserv-ghost", "anyone home?",
+        "--nick", "testserv-sender-x", "--host", "127.0.0.1", "--port", str(server.config.port),
+    )
+    assert rc != 0
+    assert "testserv-ghost" in err
+    assert "no such nick" in err.lower()

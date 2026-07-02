@@ -55,7 +55,13 @@ from typing import Any
 
 from agentirc._internal.protocol.message import Message
 from agentirc.agent_client import AgentClient
-from agentirc.protocol import ERROR_TAG, MSGID_TAG, RPL_ENDOFNAMES, SERVER_TIME_TAG
+from agentirc.protocol import (
+    ERR_NOSUCHNICK,
+    ERROR_TAG,
+    MSGID_TAG,
+    RPL_ENDOFNAMES,
+    SERVER_TIME_TAG,
+)
 
 # Default page size for `read` when neither --last nor --since is given.
 DEFAULT_READ_LAST = 20
@@ -230,8 +236,9 @@ async def _send_main(args: argparse.Namespace) -> int:
     is_channel = target.startswith("#")
     channels = [target] if is_channel else None
     client = AgentClient(args.host, args.port, nick, channels=channels, reconnect=False)
-    # Armed before connect() whenever we might auto-join — see _armed_raw_messages.
-    raw_iter = await _armed_raw_messages(client) if is_channel else None
+    # Armed before connect() in both modes — channel sends need the JOIN
+    # confirmation sequence, DM sends need to catch a 401 (see below).
+    raw_iter = await _armed_raw_messages(client)
 
     rc = await _connect_or_hint(client, args.host, args.port, "send")
     if rc is not None:
@@ -239,7 +246,6 @@ async def _send_main(args: argparse.Namespace) -> int:
         return rc
 
     if is_channel:
-        assert raw_iter is not None
         confirmed, error_token = await _wait_for_join(raw_iter, target)
         if error_token is not None:
             print(
@@ -262,8 +268,40 @@ async def _send_main(args: argparse.Namespace) -> int:
         await _graceful_quit(client)
         return 1
 
+    if not is_channel:
+        # IRC has no positive delivery ack, but an absent recipient does get
+        # a definite ERR_NOSUCHNICK — and the server drops the DM (offline
+        # DMs are deliberately unstored). A short bounded listen turns that
+        # silent loss into a non-zero exit; silence within the window is
+        # taken as delivered.
+        error = await _wait_for_dm_error(raw_iter, target, timeout=0.6)
+        if error is not None:
+            print(
+                f"agentirc send: no such nick {target}"
+                " (recipient not connected; the DM was not delivered or stored)",
+                file=sys.stderr,
+            )
+            await _graceful_quit(client)
+            return 1
+
     await _graceful_quit(client)
     return 0
+
+
+async def _wait_for_dm_error(
+    raw_iter: AsyncIterator[Message], target: str, timeout: float
+) -> Message | None:
+    """Watch the raw stream up to ``timeout`` for a 401 naming ``target``."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    with contextlib.suppress(asyncio.TimeoutError, StopAsyncIteration):
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return None
+            msg = await asyncio.wait_for(raw_iter.__anext__(), timeout=remaining)
+            if msg.command == ERR_NOSUCHNICK and target in msg.params:
+                return msg
+    return None
 
 
 def cmd_send(args: argparse.Namespace) -> int:
@@ -417,9 +455,17 @@ def cmd_read(args: argparse.Namespace) -> int:
 async def _watch_main(args: argparse.Namespace) -> int:
     channel = args.channel
     nick = args.nick or _default_nick()
+    is_channel = channel.startswith("#")
     # Auto-reconnect ON (the AgentClient default) — watch is meant to run
-    # unattended and ride out transient server-side blips.
-    client = AgentClient(args.host, args.port, nick, channels=[channel], reconnect=True)
+    # unattended and ride out transient server-side blips. A bare-nick target
+    # is a DM watch: nothing to JOIN.
+    client = AgentClient(
+        args.host,
+        args.port,
+        nick,
+        channels=[channel] if is_channel else None,
+        reconnect=True,
+    )
 
     rc = await _connect_or_hint(client, args.host, args.port, "watch")
     if rc is not None:
@@ -440,7 +486,12 @@ async def _watch_main(args: argparse.Namespace) -> int:
 
     async def _consume() -> None:
         async for msg in client.messages():
-            if msg.channel != channel:
+            if is_channel:
+                if msg.channel != channel:
+                    continue
+            elif msg.channel is not None or msg.sender != channel:
+                # DM watch: IncomingMessage.channel is None for DMs, so
+                # match on the sending peer instead.
                 continue
             ts = msg.tags.get(SERVER_TIME_TAG) or f"{time.time():.6f}"
             msgid = msg.tags.get(MSGID_TAG)

@@ -81,10 +81,13 @@ agentirc send '#hello' 'hi' --nick walkthrough-agent --host 127.0.0.1 --port 666
 `send` is also one-shot: connect, auto-join the target channel if it
 starts with `#`, send the `PRIVMSG`, disconnect. No output on success
 (exit code `0`); a non-zero exit and a stderr message on failure (refused
-connection, rejected join, etc.). For a DM target (see
-[step 9](#9-direct-messages-send-to-a-nick-read-the-dm-pair)), `send` is
-fire-and-forget: it doesn't wait for any server reply, so exit `0` only
-means "the line was written," not "the recipient received it."
+connection, rejected join, an offline DM recipient, etc.). For a DM
+target (see [step 9](#9-direct-messages-send-to-a-nick-read-the-dm-pair)),
+`send` listens briefly (~0.6 s) for the server's `ERR_NOSUCHNICK` before
+declaring success, so sending to an offline nick exits `1` with a stderr
+hint instead of silently losing the message. IRC has no positive delivery
+ack, so exit `0` still means "accepted, no rejection observed" rather
+than a receipt.
 
 Because `send`/`join`/`read` each open and close their own connection,
 every call to one of them against a channel produces its own JOIN — that's
@@ -200,16 +203,18 @@ verbs draw from different wire paths and don't share a timestamp format.
 ## 9. Direct messages: send to a nick, read the DM pair
 
 DMs are stored and queryable the same way channel history is — just
-address a **bare nick** instead of a `#channel` to `send`/`read`. One
-catch: **the recipient nick must currently be connected** at send time,
-same as ordinary IRC DMs — an offline target gets `ERR_NOSUCHNICK` and,
-deliberately, nothing is stored. The easiest way to have a second identity
-"online" from the shell is another `watch` process — it holds a live
-connection open under that nick, which is all presence requires here (it
-won't actually *print* the DM it receives; see the callout below):
+address a **bare nick** instead of a `#channel` to `send`/`read`/`watch`.
+One catch: **the recipient nick must currently be connected** at send
+time, same as ordinary IRC DMs — an offline target gets `ERR_NOSUCHNICK`
+(which `send` surfaces as exit `1`) and, deliberately, nothing is stored.
+The easiest way to have a second identity "online" from the shell is
+another `watch` process — it holds a live connection open under that
+nick. A bare-nick `watch` target names the **peer** whose DMs you want to
+see, so the buddy watches the *agent's* nick and prints the incoming DM
+live:
 
 ```bash
-agentirc watch walkthrough-buddy --nick walkthrough-buddy --host 127.0.0.1 --port 6667 &
+agentirc watch walkthrough-agent --nick walkthrough-buddy --host 127.0.0.1 --port 6667 &
 sleep 1
 ```
 
@@ -234,19 +239,13 @@ server's internal pair-key. Only the two participants can ever see a
 given DM pair; a third party asking about a pair they're not in gets an
 empty result, not an error.
 
-Note `send`'s exit code (step 4's caveat) doesn't confirm DM delivery —
-that's exactly what the `read` above is doing: it's how you'd actually
-verify the message landed, not the `0` from `send`.
+Note `send`'s exit code reports rejection (offline recipient → exit
+`1`), not receipt — the `read` above is how you get positive proof the
+message landed in the pair history.
 
-> **Known gap (verify before relying on it):** unlike `read`, `watch` of a
-> bare-nick DM target does **not** currently surface anything — the
-> watching client connects fine, but the CLI's live-message filter only
-> matches `#channel` targets, so an incoming DM is silently dropped by the
-> CLI, forever. This was checked directly against a running server for
-> this doc (the `walkthrough-buddy` watcher above prints nothing even
-> though the DM was delivered and is readable via `read`). If you need
-> live DM notifications today, poll `read <nick> --since <cursor> --json`
-> on an interval instead of `watch <nick>`.
+The buddy's `watch walkthrough-agent` stream prints the DM as it
+arrives, filtered to that peer: channel traffic and DMs from other nicks
+never appear in a bare-nick watch.
 
 Stop the background watcher:
 
@@ -316,9 +315,9 @@ structure, missing features). No dimension is empty.
 | Feature | CLI ergonomics | Clarity | Reliability | Message structure | Missing features |
 |---|---|---|---|---|---|
 | `agentirc.agent_client.AgentClient` (public reconnecting transport) | Backs all four client verbs below; not directly CLI-exposed itself | Docstring is explicit that it does *not* replay history — catch-up is `HISTORY`'s job, not the transport's | Auto-reconnect with exponential backoff (1s→60s), re-registers and re-joins on every reconnect | `IncomingMessage` dataclass (`channel`/`sender`/`text`/`tags`/`raw`) gives structured access instead of raw line parsing | `messages()` only surfaces `PRIVMSG`; everything else needs the `raw_lines()`/`send_raw()` escape hatch |
-| `agentirc send`/`join`/`read`/`watch` CLI verbs | The headline feature — a shell agent never has to speak IRC directly | Each verb has one job (one-shot vs. streaming clearly separated) | `join`/`read` fail fast with a clear stderr hint (`connection refused`, `registration rejected`, timeout) rather than hanging; `join` distinguishes a bad channel name (exit `2`) from a connection/server failure (exit `1`) | — | **Confirmed gap:** `send` to a DM target is fire-and-forget — exit `0` only means "written to the socket," not "delivered" (an offline recipient's `ERR_NOSUCHNICK` is never read); no CLI verb wraps `EVENTSUB`/`EVENTPUB`/`BACKFILL`/`VERBS` either — those need raw TCP (see [raw-TCP pointer](#for-raw-tcp--bot-agents)) |
+| `agentirc send`/`join`/`read`/`watch` CLI verbs | The headline feature — a shell agent never has to speak IRC directly | Each verb has one job (one-shot vs. streaming clearly separated) | `send`/`join`/`read` fail fast with a clear stderr hint (`connection refused`, `registration rejected`, timeout, offline DM recipient) rather than hanging; `join` distinguishes a bad channel name (exit `2`) from a connection/server failure (exit `1`); `send` to an offline DM recipient exits `1` (bounded listen for `ERR_NOSUCHNICK`) | — | No CLI verb wraps `EVENTSUB`/`EVENTPUB`/`BACKFILL`/`VERBS` — those need raw TCP (see [raw-TCP pointer](#for-raw-tcp--bot-agents)) |
 | `--last`/`--since`/`--json` on `read`; `--json` on `watch` | Purpose-built flags for the two most common agent patterns (page vs. tail) | `next-cursor` on stderr keeps stdout pure JSON when piping | `--since` pagination is gap-free and duplicate-free across a retention prune (verified in step 7 above) | `--json` emits one object per line (`ts`/`nick`/`text`[/`msgid`]) plus a `{"next_cursor": ...}` trailer | `read`/`watch --json` use two different `ts` formats (epoch-seconds vs. IRCv3 server-time) — see step 8 |
-| Bare-nick target = DM history (`read`/`watch`) | One target syntax for both channels and DMs — no separate DM verb to learn | Reply echoes back the literal nick you asked about, not the internal pair-key | Participant-only: a third party querying a pair they're not in gets an empty result, never someone else's DMs | Same `HISTORY`/`msgid`/`time` shape as channel history | **Confirmed broken:** `watch <nick>` never surfaces DM messages (filter bug — see step 9's callout); only `read <nick>` works |
+| Bare-nick target = DM history (`read`/`watch`) | One target syntax for both channels and DMs — no separate DM verb to learn | Reply echoes back the literal nick you asked about, not the internal pair-key; `watch <nick>` streams DMs *from* that peer only | Participant-only: a third party querying a pair they're not in gets an empty result, never someone else's DMs | Same `HISTORY`/`msgid`/`time` shape as channel history | Offline DMs remain undelivered and unstored by design (`send` exits `1`) — store-and-forward is an explicit non-goal this release |
 | `agentirc status --json` / `agentirc version --json` | Machine-parseable process/version checks for supervisors and pre-flight scripts | Plain-text output is untouched — `--json` is strictly additive | — | Stable, documented JSON schema (`name`/`running`/`pid`/`port`; `name`/`version`) | — |
 | `msgid`/`time` tags on `PRIVMSG` delivery (message-tags cap) | — | Opt-in via `CAP REQ message-tags`; non-cap clients see byte-identical wire output | `msgid` is identical across channel fan-out, so a client can dedupe a message it somehow receives twice | The core structural upgrade this release makes to message delivery | Tags are local-delivery only for federation edge cases the design spec calls out (e.g. the thread tag doesn't ride S2S) |
 | `agentirc.io/thread` tag on thread messages | — | Rides *alongside*, not instead of, the legacy `[thread:name]` text prefix — no silent behavior change for existing parsers | — | Machine-parseable thread identity without text-scraping the prefix | Thread create-vs-reply distinction still collapses across federation (`STHREAD`, pre-existing quirk #9, out of scope here) |
