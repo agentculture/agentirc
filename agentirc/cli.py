@@ -34,6 +34,10 @@ Verbs:
   link spec; runtime mesh-mutation lands later.
 - ``logs`` — print or tail ``~/.culture/logs/server-<name>.log``.
 - ``version`` — print ``agentirc <version>``.
+- ``send``/``read``/``watch``/``join`` — agent-facing client verbs that
+  drive a *running* daemon over real TCP from a shell (implementations in
+  ``agentirc/_internal/cli_client.py``, built on the public
+  ``agentirc.agent_client.AgentClient`` transport).
 
 Culture-specific verbs from ``culture/cli/server.py``
 (``default``/``rename``/``archive``/``unarchive``) are deliberately
@@ -57,6 +61,7 @@ from typing import Sequence
 import yaml
 
 from agentirc import __version__
+from agentirc._internal.cli_client import DEFAULT_READ_LAST
 from agentirc._internal.cli_shared.constants import (
     DEFAULT_CONFIG,
     LOG_DIR,
@@ -311,10 +316,70 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("version", help="Print agentirc version")
 
+    _add_client_verbs(sub)
+
     from agentirc.bots.cli import register as _register_bot_verb
     _register_bot_verb(sub)
 
     return parser
+
+
+def _add_client_flags(parser: argparse.ArgumentParser) -> None:
+    """Attach the shared --host/--port/--nick flags for the agent-facing
+    client verbs (send/read/watch/join). Unlike the lifecycle flags, these
+    use concrete defaults (not the CLI/YAML-overlay sentinel pattern) since
+    the client verbs have no YAML config to merge against.
+    """
+    parser.add_argument("--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)")
+    parser.add_argument(
+        "--port", type=int, default=6667, help="Server port (default: 6667)"
+    )
+    parser.add_argument(
+        "--nick", default=None, help="Nick to register as (default: agent-<random 4 hex>)"
+    )
+
+
+def _add_client_verbs(sub: argparse._SubParsersAction) -> None:
+    """Register the agent-facing client verbs: send, read, watch, join.
+
+    These drive a running daemon over real TCP from a shell — implementations
+    live in ``agentirc/_internal/cli_client.py`` to keep this module thin.
+    """
+    p_send = sub.add_parser(
+        "send", help="Send a one-shot message to a channel or nick"
+    )
+    p_send.add_argument("target", help="Channel (e.g. #general) or nick to send to")
+    p_send.add_argument("text", help="Message text")
+    _add_client_flags(p_send)
+
+    p_read = sub.add_parser(
+        "read", help="One-shot catch-up on channel history"
+    )
+    p_read.add_argument("channel", help="Channel to read history from")
+    read_group = p_read.add_mutually_exclusive_group()
+    read_group.add_argument(
+        "--last", type=int, default=None,
+        help=f"Return the last N messages via HISTORY RECENT (default: {DEFAULT_READ_LAST})",
+    )
+    read_group.add_argument(
+        "--since", default=None,
+        help="Resume from an opaque cursor via HISTORY SINCE; pass '*' for the beginning",
+    )
+    p_read.add_argument("--json", action="store_true", help="Emit one JSON object per line")
+    _add_client_flags(p_read)
+
+    p_watch = sub.add_parser(
+        "watch", help="Stream live channel messages until SIGINT/EOF"
+    )
+    p_watch.add_argument("channel", help="Channel to watch")
+    p_watch.add_argument("--json", action="store_true", help="Emit one JSON object per line")
+    _add_client_flags(p_watch)
+
+    p_join = sub.add_parser(
+        "join", help="Join (creating if needed) a channel and confirm"
+    )
+    p_join.add_argument("channel", help="Channel to join (must start with '#')")
+    _add_client_flags(p_join)
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +804,30 @@ def _bot_dispatch(args: argparse.Namespace) -> int:
     return _bot_cli_dispatch(args)
 
 
+def _client_send(args: argparse.Namespace) -> int:
+    """Route to agentirc._internal.cli_client.cmd_send."""
+    from agentirc._internal.cli_client import cmd_send
+    return cmd_send(args)
+
+
+def _client_read(args: argparse.Namespace) -> int:
+    """Route to agentirc._internal.cli_client.cmd_read."""
+    from agentirc._internal.cli_client import cmd_read
+    return cmd_read(args)
+
+
+def _client_watch(args: argparse.Namespace) -> int:
+    """Route to agentirc._internal.cli_client.cmd_watch."""
+    from agentirc._internal.cli_client import cmd_watch
+    return cmd_watch(args)
+
+
+def _client_join(args: argparse.Namespace) -> int:
+    """Route to agentirc._internal.cli_client.cmd_join."""
+    from agentirc._internal.cli_client import cmd_join
+    return cmd_join(args)
+
+
 _HANDLERS = {
     "serve": _server_serve,
     "start": _server_start,
@@ -748,6 +837,10 @@ _HANDLERS = {
     "link": _server_link,
     "logs": _server_logs,
     "bot": _bot_dispatch,
+    "send": _client_send,
+    "read": _client_read,
+    "watch": _client_watch,
+    "join": _client_join,
 }
 
 

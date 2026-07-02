@@ -21,6 +21,14 @@ Design notes
   capability is *not* requested by default (that gates bot-only wire
   behaviours like silent joins). ``message-tags`` *is* requested by default
   so parsed IRCv3 tags are surfaced on each :class:`IncomingMessage`.
+- **Raw escape hatch.** :meth:`AgentClient.send_raw` writes an arbitrary
+  command/params line, and :meth:`AgentClient.raw_lines` yields every parsed
+  incoming line (all commands, not just PRIVMSG) — the pair a caller needs to
+  drive request/response protocol traffic this module doesn't model directly
+  (e.g. ``HISTORY RECENT``/``HISTORY SINCE``). Call ``raw_lines()`` *before*
+  awaiting anything that might produce the reply you want to see (ideally
+  before :meth:`connect`) — the call synchronously arms the underlying queue,
+  closing the race where a reply arrives before a consumer starts reading.
 
 This module is a semver-tracked public surface (see
 ``docs/api-stability.md``); the public members are :class:`AgentClient` and
@@ -31,6 +39,7 @@ detail and may change without a major bump.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
@@ -153,6 +162,10 @@ class AgentClient:
         self._registered_event = asyncio.Event()
         self._connect_error: BaseException | None = None
         self._queue: asyncio.Queue[IncomingMessage] = asyncio.Queue()
+        # Lazily armed by raw_lines(); None until a consumer opts in, so
+        # callers that never touch the raw escape hatch pay no extra queue
+        # upkeep. See raw_lines() for the arm-before-connect race note.
+        self._raw_queue: asyncio.Queue[Message | None] | None = None
 
     # -- public state -----------------------------------------------------
 
@@ -203,7 +216,17 @@ class AgentClient:
             raise self._connect_error
 
     async def close(self) -> None:
-        """Stop the client, tear down the connection, and end ``messages()``."""
+        """Stop the client, tear down the connection, and end ``messages()``/``raw_lines()``.
+
+        Awaits the writer's ``wait_closed()`` after ``close()`` so any bytes
+        handed to :meth:`send`/:meth:`send_raw` immediately before this call
+        are actually flushed to the OS socket before this coroutine returns.
+        Without that, a process that calls ``close()`` right after its last
+        write (every one-shot CLI verb built on this client does exactly
+        that) can race its own exit and silently drop the final write —
+        observed in practice with ``agentirc send``: the PRIVMSG landed on
+        the wire only intermittently until this awaited close was added.
+        """
         self._closing = True
         if self._run_task is not None:
             self._run_task.cancel()
@@ -212,11 +235,17 @@ class AgentClient:
             except asyncio.CancelledError:
                 pass
             self._run_task = None
+        writer = self._writer
         self._teardown_connection()
         self._connected = False
-        # Unblock a pending connect() and any messages() consumer.
+        if writer is not None:
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        # Unblock a pending connect() and any messages()/raw_lines() consumer.
         self._registered_event.set()
         self._queue.put_nowait(_CLOSE_SENTINEL)
+        if self._raw_queue is not None:
+            self._raw_queue.put_nowait(None)
 
     # -- sending ----------------------------------------------------------
 
@@ -237,6 +266,21 @@ class AgentClient:
         if self._connected and self._writer is not None:
             await self._write("JOIN", channel)
 
+    async def send_raw(self, command: str, *params: str) -> None:
+        """Write an arbitrary ``command params...`` line to the wire.
+
+        Escape hatch for protocol traffic this module doesn't model as a
+        dedicated method (e.g. ``HISTORY RECENT``/``HISTORY SINCE``
+        requests). Params are passed through verbatim — no CR/LF
+        sanitization is applied, unlike :meth:`send`, since callers using
+        this method are constructing protocol lines rather than forwarding
+        free-form user text. Raises :class:`ConnectionError` if not
+        currently connected.
+        """
+        if not self._connected:
+            raise ConnectionError(f"AgentClient({self._nick}) is not connected")
+        await self._write(command, *params)
+
     # -- receiving --------------------------------------------------------
 
     async def messages(self) -> AsyncIterator[IncomingMessage]:
@@ -248,6 +292,36 @@ class AgentClient:
         while True:
             item = await self._queue.get()
             if item is _CLOSE_SENTINEL:
+                return
+            yield item
+
+    def raw_lines(self) -> AsyncIterator[Message]:
+        """Return an async iterator over every parsed incoming line.
+
+        Unlike :meth:`messages` (PRIVMSG only), this surfaces the full
+        protocol stream — numerics, ``HISTORY``/``HISTORYEND`` replies,
+        JOIN echoes, NOTICEs, everything :meth:`_dispatch` sees — so a
+        caller can drive request/response exchanges :class:`AgentClient`
+        doesn't model directly. Transparently spans reconnects and
+        terminates when :meth:`close` is called, same as :meth:`messages`.
+
+        This is a plain (non-``async``) method: calling it synchronously
+        arms the underlying queue before returning the iterator, so a reply
+        that arrives between "call raw_lines()" and "start iterating it"
+        is never lost. Call it before :meth:`connect` (or before writing
+        the request whose reply you want to observe) to close that race.
+        Intended for a single consumer.
+        """
+        if self._raw_queue is None:
+            self._raw_queue = asyncio.Queue()
+        return self._consume_raw()
+
+    async def _consume_raw(self) -> AsyncIterator[Message]:
+        queue = self._raw_queue
+        assert queue is not None  # armed synchronously by raw_lines()
+        while True:
+            item = await queue.get()
+            if item is None:
                 return
             yield item
 
@@ -283,9 +357,12 @@ class AgentClient:
                 break
             await asyncio.sleep(next(delays))
         # Permanent exit (closing, or reconnect disabled after a drop): never
-        # leave connect() blocked, and end any messages() consumer cleanly.
+        # leave connect() blocked, and end any messages()/raw_lines() consumer
+        # cleanly.
         self._registered_event.set()
         self._queue.put_nowait(_CLOSE_SENTINEL)
+        if self._raw_queue is not None:
+            self._raw_queue.put_nowait(None)
 
     async def _connect_once(self) -> None:
         """Open the socket, register, and (re-)join channels."""
@@ -332,6 +409,8 @@ class AgentClient:
 
     async def _dispatch(self, msg: Message) -> None:
         cmd = msg.command.upper()
+        if self._raw_queue is not None:
+            await self._raw_queue.put(msg)
         if cmd == "PING":
             await self._write("PONG", msg.params[0] if msg.params else "")
             return
@@ -340,7 +419,8 @@ class AgentClient:
             if incoming is not None:
                 await self._queue.put(incoming)
         # All other traffic (numerics, JOIN/PART echoes, NOTICE, ...) is
-        # consumed but not surfaced through messages().
+        # consumed but not surfaced through messages() — use raw_lines() for
+        # the full stream.
 
     @staticmethod
     def _build_incoming(msg: Message) -> IncomingMessage | None:
