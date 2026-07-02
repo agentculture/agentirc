@@ -40,6 +40,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "pytest-xdist>=3",
+    "pytest-timeout>=2.4.0",
     "black",
     "isort",
     "flake8",
@@ -75,6 +76,17 @@ testpaths = [
 markers = [
     "walkthrough: end-to-end agent-facing CLI smoke test that drives a real daemon subprocess over TCP (start/join/send/read/watch/stop). Runs in the normal suite too; CI's agent-guards job also invokes it by name via `pytest -m walkthrough`.",
 ]
+# Safety net (t17): a single wedged test used to be able to burn the entire
+# 6h GitHub Actions job timeout (see the ``IRCd.stop()`` fix in
+# ``agentirc/ircd.py`` for the actual hang this caught). The slowest test in
+# the suite runs ~12s; 60s leaves generous headroom for CI-runner jitter
+# while still failing fast — with a traceback pointing at the exact blocking
+# call — instead of wedging the whole job. "thread" (not the default
+# "signal") avoids interfering with tests that send real signals
+# (SIGINT/SIGTERM) to subprocesses or install their own asyncio signal
+# handlers.
+timeout = 60
+timeout_method = "thread"
 
 [tool.citation.packages.culture-aio]
 schema = 2

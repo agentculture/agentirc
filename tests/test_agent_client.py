@@ -168,11 +168,16 @@ async def test_kill_and_restart_reconnects_and_rejoins(tmp_path):
             and any(m.nick == "testserv-alice" for m in ircd.channels["#general"].members)
         )
 
-        # Kill the server abruptly. A graceful IRCd.stop() closes the listener
-        # but leaves already-accepted sockets half-open (the per-connection
-        # handler tasks keep running), so to model a real server death we also
-        # drop the live client sockets — the client then sees EOF. ``clients``
-        # is a public IRCd attribute (see docs/api-stability.md).
+        # Kill the server abruptly. IRCd.stop() itself now closes every
+        # still-connected client's socket before returning (see ircd.py's
+        # stop() — needed since Python 3.12.1, asyncio.Server.wait_closed()
+        # blocks until all accepted connections have actually detached, so
+        # stop() would otherwise hang forever with a client still attached).
+        # The explicit close below is therefore redundant (a harmless
+        # no-op on an already-closing transport) but kept so this test still
+        # models "drop the live client sockets" directly and doesn't rely
+        # solely on stop()'s internal behavior. ``clients`` is a public IRCd
+        # attribute (see docs/api-stability.md).
         live_writers = [getattr(c, "writer", None) for c in list(ircd.clients.values())]
         await ircd.stop()
         for writer in live_writers:
