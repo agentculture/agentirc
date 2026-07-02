@@ -427,6 +427,33 @@ class IRCd:
                 return bot.virtual_client
         return None
 
+    def _close_local_client_connections(self) -> None:
+        """Close every local TCP client's writer, for graceful shutdown.
+
+        Since Python 3.12.1, ``asyncio.Server.wait_closed()`` blocks until
+        every accepted connection has actually detached, not just until
+        ``close()`` was called (3.11 and earlier returned immediately
+        regardless of active connections — see
+        ``asyncio.base_events.Server.wait_closed``'s own historical note).
+        Without closing clients first, a still-connected client leaves
+        ``stop()``'s ``wait_closed()`` waiting forever for a disconnect that
+        never comes — hanging every graceful stop with at least one registered
+        client on Python >= 3.12.1 (reproduced via
+        ``tests/test_agent_client.py::test_kill_and_restart_reconnects_and_rejoins``,
+        which used to hang the whole CI job for 6h). Mirrors ``_reap_client``:
+        close the writer only, no QUIT broadcast — each client's own
+        ``handle()`` loop unwinds through its existing disconnect path when it
+        sees the resulting EOF.
+        """
+        from agentirc.client import Client
+
+        for client in [*self.clients.values()]:
+            if isinstance(client, Client):
+                try:
+                    client.writer.close()
+                except OSError:
+                    pass
+
     async def stop(self) -> None:
         """Shut down the server. Concurrent callers await the same teardown.
 
@@ -478,30 +505,10 @@ class IRCd:
                 except OSError:
                     pass
             self.links.clear()
-            # Close all local TCP client connections *before* waiting on the
-            # server. Since Python 3.12.1, ``asyncio.Server.wait_closed()``
-            # blocks until every accepted connection has actually detached,
-            # not just until ``close()`` was called (3.11 and earlier
-            # returned immediately regardless of active connections — see
-            # ``asyncio.base_events.Server.wait_closed``'s own historical
-            # note). Without this, a still-connected client left
-            # ``wait_closed()`` waiting forever for a disconnect that would
-            # never come, since nothing prompts the client to leave on its
-            # own — hanging every graceful stop with at least one
-            # registered client on Python >= 3.12.1 (reproduced via
-            # ``tests/test_agent_client.py::test_kill_and_restart_reconnects_and_rejoins``,
-            # which used to hang the whole CI job for 6h). Mirrors
-            # ``_reap_client``: close the writer only, no QUIT broadcast —
-            # each client's own ``handle()`` loop unwinds through its
-            # existing disconnect path when it sees the resulting EOF.
-            from agentirc.client import Client
-
-            for client in [*self.clients.values()]:
-                if isinstance(client, Client):
-                    try:
-                        client.writer.close()
-                    except OSError:
-                        pass
+            # Close local TCP client connections before waiting on the server
+            # (see ``_close_local_client_connections`` for the Python 3.12.1
+            # ``wait_closed()`` rationale).
+            self._close_local_client_connections()
             if self._server:
                 self._server.close()
                 await self._server.wait_closed()
