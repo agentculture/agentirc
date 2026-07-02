@@ -51,10 +51,13 @@ from agentirc.protocol import (
     BOT_CAP,
     ERROR_TAG,
     ERROR_TOKEN_LINE_TOO_LONG,
+    ERROR_TOKENS_VERSION,
     EVENT,
     EVENTERR,
     MSGID_TAG,
     SERVER_TIME_TAG,
+    VERBS,
+    VERBS_DISCOVERY_VERSION,
 )
 from agentirc.skill import Event, EventType
 
@@ -1580,3 +1583,107 @@ class Client:
             next_cursor = cursor_token
 
         await self.send_raw(f":{server_name} {BACKFILLEND} {channel_param} {next_cursor}")
+
+    # --- Runtime verb discovery (task t9) ---
+    # Unlike the bot-extension verbs above, ``VERBS`` needs no ``BOT_CAP`` --
+    # discovery serves plain agents too, not just capability-negotiated bots.
+
+    # Real IRC command tokens are letters only (RFC 2812 §2.3.1:
+    # ``command = 1*letter / 3digit``, and the 3-digit form is a numeric
+    # reply, never client-issued) -- so this is a protocol-grammar filter,
+    # not a hand-picked exclusion list. It exists because `_dispatch`'s
+    # ``getattr(self, f"_handle_{msg.command.lower()}")`` would also
+    # resolve `_handle_channel_mode`/`_handle_user_mode` if a client sent
+    # the literal (nonsensical) commands "CHANNEL_MODE"/"USER_MODE" --
+    # those are `_handle_mode`'s internal routing targets, not verbs any
+    # real client is meant to address directly, and their underscored
+    # names fail this shape check.
+    _VERB_TOKEN_RE = re.compile(r"^[A-Z]+$")
+
+    def _live_verbs(self) -> list[str]:
+        """Enumerate every wire verb the running server actually dispatches.
+
+        Reads the same two structures ``_dispatch`` itself consults, so
+        this list can never drift from what the server really does:
+
+        - Every ``Client._handle_<verb>`` method, via the exact
+          ``getattr(self, f"_handle_{msg.command.lower()}")`` convention
+          ``_dispatch`` uses -- filtered through ``_VERB_TOKEN_RE`` (see
+          its comment) to drop the two internal MODE-routing helpers that
+          share the naming convention but aren't real verbs.
+        - Every verb a registered skill claims via its ``commands`` set
+          (``IRCd.get_skill_for_command``'s own lookup structure).
+
+        Nothing here is a hand-maintained list -- add a new
+        ``_handle_frob`` method or register a new skill and the very next
+        ``VERBS`` query reflects it, no edit to this method required.
+
+        ``PASS`` is deliberately absent: on this server it's consumed by
+        ``IRCd._handle_connection``'s S2S/C2S sniff before a ``Client``
+        even exists (this server repurposes RFC 2812's client-registration
+        ``PASS`` as the S2S-link auth handshake instead) -- a live
+        ``Client`` has no ``_handle_pass`` and no skill claims it, so
+        listing it here would violate the "every listed verb is genuinely
+        dispatchable" guarantee ``_handle_verbs`` makes.
+        """
+        verbs = {
+            name[len("_handle_") :].upper()
+            for name in dir(type(self))
+            if name.startswith("_handle_")
+        }
+        verbs = {v for v in verbs if self._VERB_TOKEN_RE.match(v)}
+        for skill in self.server.skills:
+            verbs.update(skill.commands)
+        return sorted(verbs)
+
+    async def _handle_verbs(self, msg: Message) -> None:
+        """``VERBS`` (task t9): runtime verb-discovery query.
+
+        Any *registered* client may issue this -- no ``agentirc.io/bot``
+        capability required, unlike ``EVENTSUB``/``EVENTPUB``/``BACKFILL``.
+        An unregistered connection gets the same silent no-op every other
+        pre-registration verb gets on this server (see ``_handle_join``):
+        no reply, connection stays open.
+
+        Reply is a single line::
+
+            :<server> VERBS <version> :<base64-json>
+
+        mirroring the ``EVENT``/``EVENTPUB`` base64-canonical-JSON wire
+        pattern (canonical = keys sorted, ``","``/``":"`` separators,
+        UTF-8; see ``docs/extension-api.md``). ``<version>`` is
+        ``VERBS_DISCOVERY_VERSION`` -- the reply *format's* version,
+        independent of the ``error_tokens_version`` and ``server_version``
+        fields carried inside the payload.
+
+        Payload::
+
+            {
+                "verbs": [...],               # sorted; see _live_verbs
+                "caps": [...],                 # sorted Client._SUPPORTED_CAPS
+                "error_tokens_version": int,   # protocol.ERROR_TOKENS_VERSION
+                "server_version": str,         # agentirc.__version__
+            }
+
+        ``verbs`` is derived live from the actual dispatch surface (never
+        a hardcoded list) -- see ``_live_verbs`` for the enumeration
+        mechanism and why ``PASS`` is deliberately excluded. ``VERBS``
+        itself always appears in its own ``verbs`` list, since this
+        handler is discovered the same way as any other.
+        """
+        if not self._registered:
+            return
+
+        from agentirc import __version__ as _agentirc_version
+
+        payload = {
+            "verbs": self._live_verbs(),
+            "caps": sorted(self._SUPPORTED_CAPS),
+            "error_tokens_version": ERROR_TOKENS_VERSION,
+            "server_version": _agentirc_version,
+        }
+        encoded = base64.b64encode(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).decode("ascii")
+        server_name = self.server.config.name
+        await self.send_raw(f":{server_name} {VERBS} {VERBS_DISCOVERY_VERSION} :{encoded}")
