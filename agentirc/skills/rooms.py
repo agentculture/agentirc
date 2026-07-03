@@ -6,6 +6,19 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Callable
 
+from agentirc.protocol import (
+    ERROR_TAG,
+    ERROR_TOKEN_CHANNEL_ALREADY_EXISTS,
+    ERROR_TOKEN_INVALID_CHANNEL_NAME,
+    ERROR_TOKEN_INVALID_META_VALUE,
+    ERROR_TOKEN_MISSING_PARAMS,
+    ERROR_TOKEN_NOT_MANAGED_ROOM,
+    ERROR_TOKEN_NO_SUCH_CHANNEL,
+    ERROR_TOKEN_NO_SUCH_NICK,
+    ERROR_TOKEN_PERMISSION_DENIED,
+    ERROR_TOKEN_READONLY_META_KEY,
+    ERROR_TOKEN_USER_NOT_IN_CHANNEL,
+)
 from agentirc.rooms_util import generate_room_id, parse_room_meta
 from agentirc.skill import Event, EventType, Skill
 from agentirc._internal.aio import maybe_await
@@ -35,24 +48,31 @@ class RoomsSkill(Skill):
     async def _handle_roomcreate(self, client: Client, msg: Message) -> None:
         if len(msg.params) < 2:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "ROOMCREATE", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "ROOMCREATE",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
         channel_name = msg.params[0]
         if not channel_name.startswith("#"):
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, "Channel name must start with #"],
+                    tags={ERROR_TAG: ERROR_TOKEN_INVALID_CHANNEL_NAME},
                 )
             )
             return
 
         if channel_name in self.server.channels:
             await client.send_numeric(
-                replies.ERR_NOSUCHCHANNEL, channel_name, "Channel already exists"
+                replies.ERR_NOSUCHCHANNEL,
+                channel_name,
+                "Channel already exists",
+                tags={ERROR_TAG: ERROR_TOKEN_CHANNEL_ALREADY_EXISTS},
             )
             return
 
@@ -147,7 +167,10 @@ class RoomsSkill(Skill):
     async def _handle_roommeta(self, client: Client, msg: Message) -> None:
         if not msg.params:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "ROOMMETA", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "ROOMMETA",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -156,16 +179,20 @@ class RoomsSkill(Skill):
 
         if not channel:
             await client.send_numeric(
-                replies.ERR_NOSUCHCHANNEL, channel_name, replies.MSG_NOSUCHCHANNEL
+                replies.ERR_NOSUCHCHANNEL,
+                channel_name,
+                replies.MSG_NOSUCHCHANNEL,
+                tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_CHANNEL},
             )
             return
 
         if not channel.is_managed:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, f"{channel_name} is not a managed room"],
+                    tags={ERROR_TAG: ERROR_TOKEN_NOT_MANAGED_ROOM},
                 )
             )
             return
@@ -305,26 +332,29 @@ class RoomsSkill(Skill):
                 replies.ERR_CHANOPRIVSNEEDED,
                 channel_name,
                 "You do not have permission to update room metadata",
+                tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
             )
             return
 
         if key in read_only_keys:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, f"{key} is read-only"],
+                    tags={ERROR_TAG: ERROR_TOKEN_READONLY_META_KEY},
                 )
             )
             return
 
         error = await self._apply_meta_update(channel, key, value)
         if error:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, error],
+                    tags={ERROR_TAG: ERROR_TOKEN_INVALID_META_VALUE},
                 )
             )
             return
@@ -397,7 +427,10 @@ class RoomsSkill(Skill):
     async def _handle_tags(self, client: Client, msg: Message) -> None:
         if not msg.params:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "TAGS", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "TAGS",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -407,7 +440,12 @@ class RoomsSkill(Skill):
             # Query tags for nick
             target = self.server.clients.get(nick)
             if not target:
-                await client.send_numeric(replies.ERR_NOSUCHNICK, nick, replies.MSG_NOSUCHNICK)
+                await client.send_numeric(
+                    replies.ERR_NOSUCHNICK,
+                    nick,
+                    replies.MSG_NOSUCHNICK,
+                    tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_NICK},
+                )
                 return
 
             tags_str = ",".join(target.tags)
@@ -431,7 +469,7 @@ class RoomsSkill(Skill):
             tags_value = msg.params[1]
 
             if nick != client.nick:
-                await client.send(
+                await client.send_tagged(
                     Message(
                         prefix=self.server.config.name,
                         command="NOTICE",
@@ -439,13 +477,19 @@ class RoomsSkill(Skill):
                             client.nick,
                             "You do not have permission to set tags for other users",
                         ],
+                        tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
                     )
                 )
                 return
 
             target = self.server.clients.get(nick)
             if not target:
-                await client.send_numeric(replies.ERR_NOSUCHNICK, nick, replies.MSG_NOSUCHNICK)
+                await client.send_numeric(
+                    replies.ERR_NOSUCHNICK,
+                    nick,
+                    replies.MSG_NOSUCHNICK,
+                    tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_NICK},
+                )
                 return
 
             old_tags = set(target.tags)
@@ -522,7 +566,10 @@ class RoomsSkill(Skill):
 
         if len(msg.params) < 2:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "ROOMINVITE", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "ROOMINVITE",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -532,13 +579,21 @@ class RoomsSkill(Skill):
         channel = self.server.channels.get(channel_name)
         if not channel:
             await client.send_numeric(
-                replies.ERR_NOSUCHCHANNEL, channel_name, replies.MSG_NOSUCHCHANNEL
+                replies.ERR_NOSUCHCHANNEL,
+                channel_name,
+                replies.MSG_NOSUCHCHANNEL,
+                tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_CHANNEL},
             )
             return
 
         target = self.server.clients.get(target_nick)
         if not target:
-            await client.send_numeric(replies.ERR_NOSUCHNICK, target_nick, replies.MSG_NOSUCHNICK)
+            await client.send_numeric(
+                replies.ERR_NOSUCHNICK,
+                target_nick,
+                replies.MSG_NOSUCHNICK,
+                tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_NICK},
+            )
             return
 
         # Don't send to RemoteClients
@@ -583,7 +638,10 @@ class RoomsSkill(Skill):
     async def _handle_roomkick(self, client: Client, msg: Message) -> None:
         if len(msg.params) < 2:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "ROOMKICK", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "ROOMKICK",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -593,23 +651,27 @@ class RoomsSkill(Skill):
         channel = self.server.channels.get(channel_name)
         if not channel:
             await client.send_numeric(
-                replies.ERR_NOSUCHCHANNEL, channel_name, replies.MSG_NOSUCHCHANNEL
+                replies.ERR_NOSUCHCHANNEL,
+                channel_name,
+                replies.MSG_NOSUCHCHANNEL,
+                tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_CHANNEL},
             )
             return
 
         if not channel.is_managed:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, f"{channel_name} is not a managed room"],
+                    tags={ERROR_TAG: ERROR_TOKEN_NOT_MANAGED_ROOM},
                 )
             )
             return
 
         # Owner-only permission check
         if channel.owner != client.nick:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
@@ -617,6 +679,7 @@ class RoomsSkill(Skill):
                         client.nick,
                         f"You do not have permission to kick members from {channel_name}",
                     ],
+                    tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
                 )
             )
             return
@@ -628,6 +691,7 @@ class RoomsSkill(Skill):
                 target_nick,
                 channel_name,
                 "They aren't on that channel",
+                tags={ERROR_TAG: ERROR_TOKEN_USER_NOT_IN_CHANNEL},
             )
             return
 
@@ -693,7 +757,10 @@ class RoomsSkill(Skill):
     async def _handle_roomarchive(self, client: Client, msg: Message) -> None:
         if not msg.params:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "ROOMARCHIVE", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "ROOMARCHIVE",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -702,16 +769,20 @@ class RoomsSkill(Skill):
 
         if not channel:
             await client.send_numeric(
-                replies.ERR_NOSUCHCHANNEL, channel_name, replies.MSG_NOSUCHCHANNEL
+                replies.ERR_NOSUCHCHANNEL,
+                channel_name,
+                replies.MSG_NOSUCHCHANNEL,
+                tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_CHANNEL},
             )
             return
 
         if not channel.is_managed:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, f"{channel_name} is not a managed room"],
+                    tags={ERROR_TAG: ERROR_TOKEN_NOT_MANAGED_ROOM},
                 )
             )
             return
@@ -720,11 +791,12 @@ class RoomsSkill(Skill):
         is_owner = channel.owner == client.nick
         is_operator = channel.is_operator(client)
         if not is_owner and not is_operator:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, f"You do not have permission to archive {channel_name}"],
+                    tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
                 )
             )
             return

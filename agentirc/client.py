@@ -26,7 +26,15 @@ from opentelemetry.context import Context as _OtelContext
 from opentelemetry.trace import Span as _OtelSpan
 
 from agentirc._internal.aio import maybe_await
-from agentirc._internal.constants import EVENT_TYPE_RE, SYSTEM_USER_PREFIX
+from agentirc._internal.constants import (
+    EVENT_TYPE_RE,
+    MAX_INBOUND_LINE,
+    PRIVMSG_WIRE_LIMIT,
+    SYSTEM_USER_PREFIX,
+    new_msgid,
+    server_time_now,
+    split_message_text,
+)
 from agentirc._internal.protocol import replies
 from agentirc._internal.protocol.message import Message
 from agentirc._internal.telemetry.audit import utc_iso_timestamp as _utc_iso_timestamp
@@ -38,7 +46,19 @@ from agentirc._internal.telemetry.context import (
 )
 from agentirc._internal.telemetry.context import inject_traceparent as _inject_traceparent
 from agentirc.channel import Channel
-from agentirc.protocol import BOT_CAP, EVENTERR
+from agentirc.protocol import (
+    BACKFILLEND,
+    BOT_CAP,
+    ERROR_TAG,
+    ERROR_TOKEN_LINE_TOO_LONG,
+    ERROR_TOKENS_VERSION,
+    EVENT,
+    EVENTERR,
+    MSGID_TAG,
+    SERVER_TIME_TAG,
+    VERBS,
+    VERBS_DISCOVERY_VERSION,
+)
 from agentirc.skill import Event, EventType
 
 # OTEL instrumentation name. Kept verbatim ("culture.agentirc") because
@@ -56,6 +76,7 @@ _ATTR_CHANNEL = "irc.channel"
 
 if TYPE_CHECKING:
     from agentirc.ircd import IRCd
+    from agentirc.skills.history import HistoryEntry
 
 
 class Client:
@@ -81,6 +102,13 @@ class Client:
         self.modes: set[str] = set()
         self.icon: str | None = None
         self._session_span: _OtelSpan | None = None
+        # Server liveness (t5): stamped on every inbound chunk (see `handle`)
+        # and explicitly by `_handle_pong` — any traffic from the client
+        # counts as liveness, not just PONG replies. `last_ping_sent` lets
+        # the IRCd liveness sweep send at most one keepalive PING per idle
+        # window instead of re-sending on every sweep tick.
+        self.last_activity: float = time.time()
+        self.last_ping_sent: float | None = None
 
     @property
     def prefix(self) -> str:
@@ -137,25 +165,80 @@ class Client:
             )
         await self.send(msg)
 
-    async def send_numeric(self, code: str, *params: str) -> None:
+    async def send_numeric(
+        self, code: str, *params: str, tags: dict[str, str] | None = None
+    ) -> None:
+        """Send a numeric reply, optionally carrying additive IRCv3 tags.
+
+        ``tags`` (e.g. the ``agentirc.io/error`` reason token skills attach
+        to error replies) rides through ``send_tagged`` so it is stripped
+        for clients that haven't negotiated ``message-tags`` — callers that
+        never pass ``tags`` see byte-identical behavior to before.
+        """
         target = self.nick or "*"
         msg = Message(
             prefix=self.server.config.name,
             command=code,
             params=[target, *params],
+            tags=dict(tags) if tags else {},
         )
-        await self.send(msg)
+        await self.send_tagged(msg)
 
-    async def _process_buffer(self, buffer: str) -> str:
-        """Parse and dispatch all complete lines from buffer, return remainder."""
+    async def _send_line_too_long_error(self) -> None:
+        """Notify the client that an inbound line exceeded ``MAX_INBOUND_LINE`` bytes.
+
+        Names the limit in the NOTICE text and carries the stable
+        ``line-too-long`` reason (``ERROR_TOKEN_LINE_TOO_LONG``) via the
+        ``agentirc.io/error`` tag for message-tags clients, mirroring the t2
+        stable-error-token pattern (``ERROR_TAG`` + ``send_tagged``). The
+        offending line is discarded (see ``_process_buffer``); this method
+        only sends the notice, it does not touch the buffer.
+        """
+        await self.send_tagged(
+            Message(
+                prefix=self.server.config.name,
+                command="NOTICE",
+                params=[
+                    self.nick or "*",
+                    f"Line exceeds the {MAX_INBOUND_LINE}-byte limit and was discarded",
+                ],
+                tags={ERROR_TAG: ERROR_TOKEN_LINE_TOO_LONG},
+            )
+        )
+
+    async def _process_buffer(self, buffer: str, skipping_line: bool = False) -> tuple[str, bool]:
+        """Parse and dispatch all complete lines from buffer.
+
+        Returns ``(remainder, skipping_line)``. ``skipping_line`` tracks an
+        in-progress inbound line that already exceeded ``MAX_INBOUND_LINE``
+        bytes before its terminating ``\\n`` arrived (see ``Client.handle``);
+        while true, bytes are discarded up to and including the next ``\\n``
+        so the real terminator isn't misread as the start of a new command.
+        A line that arrives *complete* (its own ``\\n`` already present) and
+        is over the limit is caught inline by the per-line check below --
+        the ``buffer.split("\\n", 1)`` above it already did the resync, so no
+        state needs to carry over for that case. Both paths discard the
+        oversized line ONLY; every other well-formed line in the buffer is
+        parsed and dispatched exactly as before.
+        """
         # Per-call get_tracer: test fixture swaps provider between tests.
         with _otel_trace.get_tracer(_TRACER_NAME).start_as_current_span(
             "irc.client.process_buffer"
         ) as span:
+            if skipping_line:
+                if "\n" not in buffer:
+                    return "", True
+                _discarded, buffer = buffer.split("\n", 1)
+                skipping_line = False
+
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
                 if not line.strip():
                     continue
+                line_len_bytes = len(line.encode("utf-8"))
+                if line_len_bytes > MAX_INBOUND_LINE:
+                    await self._send_line_too_long_error()
+                    continue  # discard this line only; already resynced by the split above
                 try:
                     msg = Message.parse(line)
                 except Exception as exc:  # noqa: BLE001 -- widen for any parser failure
@@ -170,14 +253,26 @@ class Client:
                     continue
                 # Record received bytes + message size for every successfully-parsed
                 # line.  +2 accounts for the \r\n that was stripped during line-split.
-                line_bytes = len(line.encode("utf-8")) + 2
+                line_bytes = line_len_bytes + 2
                 self.server.metrics.irc_bytes_received.add(line_bytes, {"direction": "c2s"})
                 self.server.metrics.irc_message_size.record(
                     line_bytes, {"verb": msg.command, "direction": "c2s"}
                 )
                 if msg.command:
                     await self._dispatch(msg)
-            return buffer
+
+            # No more complete lines. If the still-unterminated remainder has
+            # already grown past the limit, it will never be a valid line no
+            # matter how much more text follows -- send the error now (rather
+            # than waiting indefinitely for a '\n' that bounds nothing), drop
+            # the buffered bytes to bound memory, and remember to skip ahead
+            # to the next '\n' once it eventually shows up.
+            if len(buffer.encode("utf-8")) > MAX_INBOUND_LINE:
+                await self._send_line_too_long_error()
+                buffer = ""
+                skipping_line = True
+
+            return buffer, skipping_line
 
     def _submit_parse_error_audit(self, line: str, exc: BaseException) -> None:
         """Build and submit a PARSE_ERROR audit record for a malformed inbound line.
@@ -235,20 +330,26 @@ class Client:
             self._session_span = span
             try:
                 buffer = ""
+                # Tracks an in-progress inbound line that already tripped
+                # MAX_INBOUND_LINE before its terminating '\n' arrived; see
+                # _process_buffer's docstring for the full resync story.
+                skipping_line = False
                 if initial_msg:
+                    self.last_activity = time.time()
                     buffer = initial_msg.replace("\r\n", "\n").replace("\r", "\n")
-                    buffer = await self._process_buffer(buffer)
+                    buffer, skipping_line = await self._process_buffer(buffer, skipping_line)
                 while True:
                     data = await self.reader.read(4096)
                     if not data:
                         break
+                    # Server liveness (t5): any inbound bytes count as activity,
+                    # not just PONG replies — see the field docstring on
+                    # `last_activity` in __init__.
+                    self.last_activity = time.time()
                     buffer += data.decode("utf-8", errors="replace")
-                    # Cap buffer to prevent unbounded memory growth (512 bytes per RFC 2812)
-                    if len(buffer) > 8192:
-                        buffer = buffer[-4096:]
                     # Normalize all line endings to \n for simpler parsing
                     buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
-                    buffer = await self._process_buffer(buffer)
+                    buffer, skipping_line = await self._process_buffer(buffer, skipping_line)
             except (ConnectionError, asyncio.IncompleteReadError):
                 pass
             finally:
@@ -311,8 +412,15 @@ class Client:
             )
         )
 
-    def _handle_pong(self, msg: Message) -> None:
-        pass  # Client responding to our ping
+    def _handle_pong(self, _msg: Message) -> None:
+        """Client responding to our (server-initiated) liveness PING.
+
+        Explicitly stamps ``last_activity`` (t5) so a unit test can drive
+        this handler directly without going through the socket read loop
+        (which also stamps liveness for every inbound chunk — this is the
+        belt-and-suspenders half of that, not the only place it happens).
+        """
+        self.last_activity = time.time()
 
     # Capabilities advertised in CAP LS and accepted in CAP REQ. Adding
     # a new cap here is a minor bump per docs/api-stability.md; removing
@@ -814,7 +922,7 @@ class Client:
         mode_str = "+" + "".join(sorted(self.modes)) if self.modes else "+"
         await self.send_numeric(replies.RPL_UMODEIS, mode_str)
 
-    async def _send_to_channel(self, channel, target, relay, text, is_notice):
+    async def _send_to_channel(self, channel, target, relay, text, is_notice, msgid=None):
         with _otel_trace.get_tracer(_TRACER_NAME).start_as_current_span(
             "irc.privmsg.deliver.channel",
             attributes={
@@ -826,9 +934,11 @@ class Client:
         ):
             for member in [*channel.members]:
                 if member is not self:
-                    await member.send(relay)
+                    await self._deliver_relay(member, relay)
             self.server.metrics.privmsg_delivered.add(1, {"kind": "channel", "channel": target})
             event_data = {"text": text}
+            if msgid is not None:
+                event_data["msgid"] = msgid
             if is_notice:
                 event_data["notice"] = True
             await self.server.emit_event(
@@ -840,7 +950,24 @@ class Client:
                 )
             )
 
-    async def _send_to_client(self, target, relay, text, is_notice):
+    @staticmethod
+    async def _deliver_relay(member, relay: Message) -> None:
+        """Deliver a relayed message, stripping tags for non-message-tags clients.
+
+        Local :class:`Client` recipients go through ``send_tagged`` so any
+        ``msgid``/``time``/``agentirc.io/thread`` tags on ``relay`` are dropped
+        for clients that didn't negotiate ``message-tags`` (byte-identical wire
+        output). ``RemoteClient``/``VirtualClient`` have no ``send_tagged`` and
+        a no-op ``send`` — federation delivers to remotes via the S2S path, so
+        the tag block never rides the link (quirk #9 stays local-only).
+        """
+        send_tagged = getattr(member, "send_tagged", None)
+        if send_tagged is not None:
+            await send_tagged(relay)
+        else:
+            await member.send(relay)
+
+    async def _send_to_client(self, target, relay, text, is_notice, msgid=None):
         from agentirc.remote_client import RemoteClient
 
         with _otel_trace.get_tracer(_TRACER_NAME).start_as_current_span(
@@ -855,26 +982,79 @@ class Client:
             recipient = self.server.get_client(target)
             if not recipient:
                 return False
-            if isinstance(recipient, RemoteClient):
+            is_remote_recipient = isinstance(recipient, RemoteClient)
+            if is_remote_recipient:
+                # S2S relay is intentionally untagged — msgid/time are
+                # local-delivery-only and must not ride the federation link.
                 s2s_cmd = "SNOTICE" if is_notice else "SMSG"
                 await recipient.link.send_raw(
                     f":{self.server.config.name} {s2s_cmd} {target} {self.nick} :{text}"
                 )
             else:
-                await recipient.send(relay)
+                await self._deliver_relay(recipient, relay)
             self.server.metrics.privmsg_delivered.add(1, {"kind": "dm"})
             event_data = {"text": text, "target": target}
+            if msgid is not None:
+                event_data["msgid"] = msgid
             if is_notice:
                 event_data["notice"] = True
-            await self.server.emit_event(
-                Event(
-                    type=EventType.MESSAGE,
-                    channel=None,
-                    nick=self.nick,
-                    data=event_data,
-                )
+            event = Event(
+                type=EventType.MESSAGE,
+                channel=None,
+                nick=self.nick,
+                data=event_data,
             )
+            await self.server.emit_event(event)
+            # DM-history capture (task t7): a narrow, direct hook — NOT a
+            # new/widened event — see HistorySkill.record_dm's docstring.
+            # Federated recipients are out of scope: the peer server owns
+            # storing its own copy on its side of the link, and this
+            # server has no visibility into whether/how it does.
+            if not is_remote_recipient:
+                self._store_dm_history(target, text, event.timestamp, msgid)
             return True
+
+    def _store_dm_history(
+        self, target: str, text: str, timestamp: float, msgid: str | None
+    ) -> None:
+        """Store a delivered local DM into history, bypassing the event bus.
+
+        Looks up the same ``HistorySkill`` instance that serves live
+        ``HISTORY`` queries (:meth:`agentirc.ircd.IRCd.get_skill_for_command`,
+        the lookup command dispatch itself uses) and calls its
+        ``record_dm`` directly. See that method's docstring for why this
+        must not go through ``IRCd.emit_event``/``on_event``.
+        """
+        from agentirc.skills.history import HistorySkill
+
+        skill = self.server.get_skill_for_command("HISTORY")
+        if isinstance(skill, HistorySkill):
+            skill.record_dm(self.nick, target, text, timestamp, msgid)
+
+    def _split_outbound_text(self, target: str, text: str) -> list[str]:
+        """Split ``text`` into ordered PRIVMSG-wire-safe chunks for ``target``.
+
+        Splits BEFORE msgid assignment (design choice, see ``_handle_privmsg``):
+        each returned chunk flows through the relay as an independent
+        message with its own fresh msgid/time tags, its own MESSAGE event,
+        and — via history's MESSAGE subscription — its own history entry.
+        There is no "parent" message that owns sub-parts; every wire line is
+        a self-contained, independently addressable PRIVMSG. This keeps the
+        split orthogonal to the existing msgid/history machinery instead of
+        threading a fragmentation concept through it.
+
+        The byte budget is computed conservatively from the sender's own
+        prefix (``self.prefix``, i.e. ``nick!user@host``) because that's the
+        exact prefix stamped on *every* recipient's relayed copy — this
+        server never rewrites the prefix per recipient (see
+        ``_send_to_channel`` / ``_send_to_client``) — so one budget bounds
+        every recipient's wire line. IRCv3 tags are attached after this
+        call and ride in their own tags-excluded budget (they don't count
+        against the classic 512-byte PRIVMSG_WIRE_LIMIT).
+        """
+        overhead = len(f":{self.prefix} PRIVMSG {target} :".encode("utf-8")) + len(b"\r\n")
+        budget = PRIVMSG_WIRE_LIMIT - overhead
+        return split_message_text(text, budget)
 
     async def _handle_privmsg(self, msg: Message) -> None:
         if len(msg.params) < 2:
@@ -894,8 +1074,6 @@ class Client:
                 _ATTR_SIZE: len(text),
             },
         ):
-            relay = Message(prefix=self.prefix, command="PRIVMSG", params=[target, text])
-
             if target.startswith("#"):
                 channel = self.server.channels.get(target)
                 if not channel:
@@ -908,14 +1086,53 @@ class Client:
                         replies.ERR_CANNOTSENDTOCHAN, target, "Cannot send to channel"
                     )
                     return
-                await self._send_to_channel(channel, target, relay, text, False)
+                for chunk in self._split_outbound_text(target, text):
+                    # One fresh msgid per chunk, stamped identically on
+                    # every recipient's delivery of *that* chunk (fan-out
+                    # stability) and echoed into that chunk's own MESSAGE
+                    # event data. Tags ride only to message-tags clients —
+                    # `_deliver_relay` strips them for everyone else.
+                    msgid = new_msgid()
+                    relay = Message(
+                        prefix=self.prefix,
+                        command="PRIVMSG",
+                        params=[target, chunk],
+                        tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
+                    )
+                    await self._send_to_channel(
+                        channel, target, relay, chunk, False, msgid=msgid
+                    )
                 await self._notify_mentions(target, text)
             else:
-                found = await self._send_to_client(target, relay, text, False)
-                if not found:
-                    await self.send_numeric(replies.ERR_NOSUCHNICK, target, replies.MSG_NOSUCHNICK)
-                    return
-                await self._notify_mentions(None, text)
+                await self._relay_direct_privmsg(target, text)
+
+    async def _relay_direct_privmsg(self, target: str, text: str) -> None:
+        """Split, relay, and mention-notify a direct (non-channel) PRIVMSG.
+
+        Extracted from ``_handle_privmsg`` (S3776 cognitive-complexity fix):
+        the direct-message half of PRIVMSG dispatch, unchanged apart from
+        living in its own method. Sends ``ERR_NOSUCHNICK`` if not even the
+        first chunk could be delivered (target offline / unknown) — the
+        same ``delivered`` bookkeeping ``_handle_privmsg`` used inline
+        before this extraction.
+        """
+        delivered = False
+        for chunk in self._split_outbound_text(target, text):
+            msgid = new_msgid()
+            relay = Message(
+                prefix=self.prefix,
+                command="PRIVMSG",
+                params=[target, chunk],
+                tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
+            )
+            sent = await self._send_to_client(target, relay, chunk, False, msgid=msgid)
+            if not sent:
+                break
+            delivered = True
+        if not delivered:
+            await self.send_numeric(replies.ERR_NOSUCHNICK, target, replies.MSG_NOSUCHNICK)
+            return
+        await self._notify_mentions(None, text)
 
     async def _notify_mentions(self, channel_name: str | None, text: str) -> None:
         from agentirc.remote_client import RemoteClient
@@ -1094,10 +1311,12 @@ class Client:
 
         raise ConnectionError("Client quit")
 
-    # --- Bot extension verbs (9.5.0) ---
+    # --- Bot extension verbs (9.5.0; BACKFILL added in task t8) ---
     # Spec: docs/superpowers/specs/2026-05-01-bot-extension-api-design.md
     # § Decision B (EVENTSUB/EVENTUNSUB) and § Decision E (EVENTPUB).
-    # All three require:
+    # docs/extension-api.md's "Recovering with BACKFILL" section documents
+    # the client-facing BACKFILL verb this same gate now also covers.
+    # All four require:
     #   1. The ``agentirc.io/bot`` capability — without it, the server
     #      replies ``EVENTERR <id> :bot-capability-required``.
     #   2. A registered connection (post-NICK/USER) — without it, the
@@ -1107,8 +1326,16 @@ class Client:
 
     _SUB_ID_RE = re.compile(r"^[A-Za-z0-9._:\-]{1,32}$")
 
+    # Reserved sub-id token BACKFILL-replayed ``EVENT`` lines carry in the
+    # ``<sub-id>`` slot — BACKFILL isn't tied to any live subscription, so
+    # there's no real sub-id to put there. Lets a bot's existing EVENT
+    # parser handle replay lines unmodified while still being able to tell
+    # "this is a replay" from "this is live" by checking
+    # ``sub_id == _BACKFILL_EVENT_SUB_ID``. See ``_handle_backfill``.
+    _BACKFILL_EVENT_SUB_ID = "backfill"
+
     async def _bot_verb_gate(self, verb_id: str) -> bool:
-        """Common bot-CAP + registration gate for EVENTSUB/EVENTUNSUB/EVENTPUB.
+        """Common bot-CAP + registration gate for EVENTSUB/EVENTUNSUB/EVENTPUB/BACKFILL.
 
         Sends the appropriate ``EVENTERR`` and returns ``False`` on
         rejection; returns ``True`` if the caller may proceed.
@@ -1229,3 +1456,285 @@ class Client:
             timestamp=time.time(),
         )
         await self.server.emit_event(ev)
+
+    async def _handle_backfill(self, msg: Message) -> None:
+        """``BACKFILL <channel-or-*> <cursor-or-*> [limit]`` (task t8).
+
+        Makes good on the recovery path ``docs/extension-api.md``'s
+        Backpressure section promises: after an
+        ``EVENTERR <sub-id> :backpressure-overflow``, a bot re-subscribes
+        and issues ``BACKFILL`` to catch up on what it missed. Gated
+        identically to ``EVENTSUB``/``EVENTUNSUB``/``EVENTPUB`` via
+        ``_bot_verb_gate`` — the ``EVENTERR`` reply's second token echoes
+        back whatever ``<channel-or-*>`` was sent, mirroring how
+        ``_handle_eventpub`` echoes back ``<type>``.
+
+        Only stored ``message`` events (ordinary channel ``PRIVMSG``s) are
+        replayed — lifecycle entries (``user.join``, ``topic``, …) that also
+        land in the history store are skipped. They're identified by their
+        synthetic ``system-``-prefixed nick (see
+        ``HistorySkill.on_event``); a real client nick can never start with
+        that prefix (``_handle_nick`` rejects it at registration time), so
+        this is an exact filter, not a heuristic.
+
+        Replayed events reuse the ``EVENT`` wire shape with the reserved
+        sub-id token ``_BACKFILL_EVENT_SUB_ID`` (never a live subscription
+        id) so a bot's existing ``EVENT`` parser handles them without a new
+        code path.
+
+        ``<channel-or-*>`` is either an exact, currently-existing channel
+        name (``self.server.channels``) or the literal ``*`` meaning "every
+        channel I'm currently joined to" (``self.channels``). DM history
+        (the internal ``@dm:...`` history-store keys — see
+        ``agentirc.skills.history``'s module docstring) is never resolved or
+        reachable through this verb at any spelling: only ``#``-prefixed
+        names are ever looked up, so a bare nick or a directly-named
+        ``@dm:...`` target both fail the ``#``-prefix check and get
+        ``no-such-channel``, exactly like a channel that never existed.
+
+        ``<cursor-or-*>`` reuses the exact ``HISTORY SINCE`` cursor codec
+        (``agentirc.skills.history.decode_since_cursor``/
+        ``encode_since_cursor``) so a bot can track one cursor concept
+        across both verbs.
+
+        A page may legitimately replay zero ``EVENT`` lines while the
+        terminator's cursor still advances (e.g. a page consisting entirely
+        of skipped lifecycle entries) — this mirrors ``HISTORY SINCE``'s own
+        paging semantics; callers loop on the terminator's cursor until an
+        empty page whose cursor stops advancing.
+        """
+        channel_param = msg.params[0] if msg.params else "?"
+        if not await self._bot_verb_gate(channel_param):
+            return
+        if len(msg.params) < 2:
+            await self.send_raw(f"{EVENTERR} {channel_param} :missing-params")
+            return
+        cursor_token = msg.params[1]
+
+        from agentirc.skills.history import (
+            DEFAULT_SINCE_LIMIT,
+            decode_since_cursor,
+            encode_since_cursor,
+        )
+
+        limit = DEFAULT_SINCE_LIMIT
+        if len(msg.params) >= 3:
+            try:
+                limit = int(msg.params[2])
+            except ValueError:
+                await self.send_raw(f"{EVENTERR} {channel_param} :invalid-count")
+                return
+            if limit < 0:
+                await self.send_raw(f"{EVENTERR} {channel_param} :invalid-count")
+                return
+
+        try:
+            after = decode_since_cursor(cursor_token)
+        except ValueError:
+            await self.send_raw(f"{EVENTERR} {channel_param} :invalid-cursor")
+            return
+
+        channels = await self._resolve_backfill_channels(channel_param)
+        if channels is None:
+            return
+
+        merged = self._collect_backfill_entries(channels, after, limit)
+        await self._emit_backfill_entries(merged)
+
+        if merged:
+            last_entry = merged[-1][1]
+            next_cursor = encode_since_cursor(last_entry.timestamp, last_entry.id)
+        elif after is None:
+            next_cursor = "*"
+        else:
+            next_cursor = cursor_token
+
+        server_name = self.server.config.name
+        await self.send_raw(f":{server_name} {BACKFILLEND} {channel_param} {next_cursor}")
+
+    async def _resolve_backfill_channels(self, channel_param: str) -> list[str] | None:
+        """Resolve ``BACKFILL``'s ``<channel-or-*>`` into a channel-name list.
+
+        Extracted from ``_handle_backfill`` (S3776 cognitive-complexity fix).
+        ``"*"`` means "every channel I'm currently joined to"
+        (``self.channels``); anything else must be an exact,
+        currently-existing ``#``-prefixed channel name
+        (``self.server.channels``) — see ``_handle_backfill``'s docstring
+        for why DM history is never reachable here. On an invalid name,
+        sends the ``EVENTERR ... :no-such-channel`` reply itself and
+        returns ``None`` so the caller knows to stop.
+        """
+        if channel_param == "*":
+            return sorted(ch.name for ch in self.channels)
+        if not channel_param.startswith("#") or channel_param not in self.server.channels:
+            await self.send_raw(f"{EVENTERR} {channel_param} :no-such-channel")
+            return None
+        return [channel_param]
+
+    def _collect_backfill_entries(
+        self, channels: list[str], after: tuple[float, int] | None, limit: int
+    ) -> list[tuple[str, "HistoryEntry"]]:
+        """Fetch and merge per-channel history entries for ``BACKFILL``.
+
+        Extracted from ``_handle_backfill`` (S3776 cognitive-complexity fix).
+        Per-channel fetch capped at `limit` each, then merged and
+        re-truncated to a global `limit` — a standard bounded k-way merge:
+        since the final result is at most `limit` entries wide, no single
+        channel can contribute more than `limit` of them, so fetching up
+        to `limit` from every channel independently can never short-change
+        the merge. The next-cursor is derived from this *raw* (pre-filter)
+        truncated batch, exactly mirroring HISTORY SINCE's own
+        last-entry-in-the-page cursor derivation, so pagination stays
+        non-overlapping and exactly-once even though some raw entries are
+        skipped (not emitted) by ``_emit_backfill_entries`` for being
+        lifecycle, not message.
+        """
+        from agentirc.skills.history import HistorySkill
+
+        history_skill = self.server.get_skill_for_command("HISTORY")
+        merged: list[tuple[str, "HistoryEntry"]] = []
+        if isinstance(history_skill, HistorySkill):
+            for ch in channels:
+                for entry in history_skill.get_since(ch, after, limit):
+                    merged.append((ch, entry))
+        merged.sort(key=lambda pair: (pair[1].timestamp, pair[1].id))
+        return merged[:limit]
+
+    async def _emit_backfill_entries(
+        self, merged: list[tuple[str, "HistoryEntry"]]
+    ) -> None:
+        """Replay ``merged`` history entries as ``EVENT`` lines for ``BACKFILL``.
+
+        Extracted from ``_handle_backfill`` (S3776 cognitive-complexity fix).
+        Only stored ``message`` events are replayed — lifecycle entries
+        (identified by their synthetic ``system-``-prefixed nick, see
+        ``HistorySkill.on_event``) are skipped. See ``_handle_backfill``'s
+        docstring for the full rationale and the reserved
+        ``_BACKFILL_EVENT_SUB_ID`` wire shape.
+        """
+        from agentirc.ircd import IRCd
+
+        server_name = self.server.config.name
+        for ch, entry in merged:
+            if entry.nick.startswith(SYSTEM_USER_PREFIX):
+                continue
+            data = {"text": entry.text}
+            if entry.msgid is not None:
+                data["msgid"] = entry.msgid
+            event = Event(
+                type=EventType.MESSAGE,
+                channel=ch,
+                nick=entry.nick,
+                data=data,
+                timestamp=entry.timestamp,
+            )
+            envelope = IRCd._build_event_envelope(event)
+            encoded = IRCd._encode_event_data(envelope, EventType.MESSAGE.value)
+            await self.send_raw(
+                f":{server_name} {EVENT} {self._BACKFILL_EVENT_SUB_ID} "
+                f"{EventType.MESSAGE.value} {ch} {entry.nick} :{encoded}"
+            )
+
+    # --- Runtime verb discovery (task t9) ---
+    # Unlike the bot-extension verbs above, ``VERBS`` needs no ``BOT_CAP`` --
+    # discovery serves plain agents too, not just capability-negotiated bots.
+
+    # Real IRC command tokens are letters only (RFC 2812 §2.3.1:
+    # ``command = 1*letter / 3digit``, and the 3-digit form is a numeric
+    # reply, never client-issued) -- so this is a protocol-grammar filter,
+    # not a hand-picked exclusion list. It exists because `_dispatch`'s
+    # ``getattr(self, f"_handle_{msg.command.lower()}")`` would also
+    # resolve `_handle_channel_mode`/`_handle_user_mode` if a client sent
+    # the literal (nonsensical) commands "CHANNEL_MODE"/"USER_MODE" --
+    # those are `_handle_mode`'s internal routing targets, not verbs any
+    # real client is meant to address directly, and their underscored
+    # names fail this shape check.
+    _VERB_TOKEN_RE = re.compile(r"^[A-Z]+$")
+
+    def _live_verbs(self) -> list[str]:
+        """Enumerate every wire verb the running server actually dispatches.
+
+        Reads the same two structures ``_dispatch`` itself consults, so
+        this list can never drift from what the server really does:
+
+        - Every ``Client._handle_<verb>`` method, via the exact
+          ``getattr(self, f"_handle_{msg.command.lower()}")`` convention
+          ``_dispatch`` uses -- filtered through ``_VERB_TOKEN_RE`` (see
+          its comment) to drop the two internal MODE-routing helpers that
+          share the naming convention but aren't real verbs.
+        - Every verb a registered skill claims via its ``commands`` set
+          (``IRCd.get_skill_for_command``'s own lookup structure).
+
+        Nothing here is a hand-maintained list -- add a new
+        ``_handle_frob`` method or register a new skill and the very next
+        ``VERBS`` query reflects it, no edit to this method required.
+
+        ``PASS`` is deliberately absent: on this server it's consumed by
+        ``IRCd._handle_connection``'s S2S/C2S sniff before a ``Client``
+        even exists (this server repurposes RFC 2812's client-registration
+        ``PASS`` as the S2S-link auth handshake instead) -- a live
+        ``Client`` has no ``_handle_pass`` and no skill claims it, so
+        listing it here would violate the "every listed verb is genuinely
+        dispatchable" guarantee ``_handle_verbs`` makes.
+        """
+        verbs = {
+            name[len("_handle_") :].upper()
+            for name in dir(type(self))
+            if name.startswith("_handle_")
+        }
+        verbs = {v for v in verbs if self._VERB_TOKEN_RE.match(v)}
+        for skill in self.server.skills:
+            verbs.update(skill.commands)
+        return sorted(verbs)
+
+    async def _handle_verbs(self, _msg: Message) -> None:
+        """``VERBS`` (task t9): runtime verb-discovery query.
+
+        Any *registered* client may issue this -- no ``agentirc.io/bot``
+        capability required, unlike ``EVENTSUB``/``EVENTPUB``/``BACKFILL``.
+        An unregistered connection gets the same silent no-op every other
+        pre-registration verb gets on this server (see ``_handle_join``):
+        no reply, connection stays open.
+
+        Reply is a single line::
+
+            :<server> VERBS <version> :<base64-json>
+
+        mirroring the ``EVENT``/``EVENTPUB`` base64-canonical-JSON wire
+        pattern (canonical = keys sorted, ``","``/``":"`` separators,
+        UTF-8; see ``docs/extension-api.md``). ``<version>`` is
+        ``VERBS_DISCOVERY_VERSION`` -- the reply *format's* version,
+        independent of the ``error_tokens_version`` and ``server_version``
+        fields carried inside the payload.
+
+        Payload::
+
+            {
+                "verbs": [...],               # sorted; see _live_verbs
+                "caps": [...],                 # sorted Client._SUPPORTED_CAPS
+                "error_tokens_version": int,   # protocol.ERROR_TOKENS_VERSION
+                "server_version": str,         # agentirc.__version__
+            }
+
+        ``verbs`` is derived live from the actual dispatch surface (never
+        a hardcoded list) -- see ``_live_verbs`` for the enumeration
+        mechanism and why ``PASS`` is deliberately excluded. ``VERBS``
+        itself always appears in its own ``verbs`` list, since this
+        handler is discovered the same way as any other.
+        """
+        if not self._registered:
+            return
+
+        from agentirc import __version__ as _agentirc_version
+
+        payload = {
+            "verbs": self._live_verbs(),
+            "caps": sorted(self._SUPPORTED_CAPS),
+            "error_tokens_version": ERROR_TOKENS_VERSION,
+            "server_version": _agentirc_version,
+        }
+        encoded = base64.b64encode(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).decode("ascii")
+        server_name = self.server.config.name
+        await self.send_raw(f":{server_name} {VERBS} {VERBS_DISCOVERY_VERSION} :{encoded}")

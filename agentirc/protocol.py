@@ -1,6 +1,6 @@
 """Public protocol surface for agentirc — verbs, numerics, tags, and the bot extension API.
 
-Semver-tracked module. Five categories of public symbols live here:
+Semver-tracked module. Six categories of public symbols live here:
 
 1. **Verb names** — IRC command verbs as bare uppercase tokens. Mostly
    RFC 2812 (PRIVMSG, JOIN, QUIT, ...), plus agentirc skill verbs
@@ -13,7 +13,10 @@ Semver-tracked module. Five categories of public symbols live here:
    stays the single source of truth; this module re-exports so external
    consumers don't reach into the underscore namespace.
 3. **Message tag names** — IRCv3 tag keys for traceparent/tracestate
-   and agentirc-specific event tags.
+   and agentirc-specific event tags, plus ``ERROR_TAG`` (the
+   ``agentirc.io/error`` tag carrying a stable error-reason token,
+   see "Stable error tokens" below) and its ``ERROR_TOKEN_*``
+   vocabulary.
 4. **Event types and the Event dataclass** — :class:`EventType`
    (a :class:`enum.StrEnum` of 20 dotted-lowercase wire strings) and
    :class:`Event` (a frozen-shape dataclass). Plus 20 ``EVENT_TYPE_*``
@@ -24,6 +27,13 @@ Semver-tracked module. Five categories of public symbols live here:
    ``EVENT``, ``EVENTERR``, ``EVENTPUB`` verb constants and
    ``BOT_CAP = "agentirc.io/bot"``. Reserved in 9.5.0a1; daemon
    behavior wires up in 9.5.0a3 / 9.5.0 final.
+6. **Runtime verb discovery** — ``VERBS`` (the query verb) and
+   ``VERBS_DISCOVERY_VERSION`` (its reply-format version), plus
+   ``ERROR_TOKENS_VERSION`` alongside the ``ERROR_TOKEN_*`` vocabulary in
+   "Stable error tokens" below. Added in task t9 (agent-accessibility
+   release) so a client can ask a running server what it accepts instead
+   of guessing from docs. See ``Client._handle_verbs`` in
+   ``agentirc/client.py`` for the wire shape.
 
 Existing call sites under ``agentirc.ircd``, ``agentirc.server_link``
 and the skills modules still use inline string literals. Migrating them
@@ -49,7 +59,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Numeric reply codes (re-exported from the internal module)
 # ---------------------------------------------------------------------------
-from agentirc._internal.constants import EVENT_TAG_DATA, EVENT_TAG_TYPE
+from agentirc._internal.constants import ERROR_TAG, EVENT_TAG_DATA, EVENT_TAG_TYPE
 from agentirc._internal.protocol.replies import (
     ERR_ALREADYREGISTRED,
     ERR_CANNOTSENDTOCHAN,
@@ -264,6 +274,117 @@ EVENTPUB = "EVENTPUB"
 BOT_CAP = "agentirc.io/bot"
 
 
+# ---------------------------------------------------------------------------
+# Runtime verb discovery (task t9, agent-accessibility release)
+# ---------------------------------------------------------------------------
+# ``VERBS`` lets any *registered* client -- no ``BOT_CAP`` needed, discovery
+# serves plain agents too -- ask the running server what it actually
+# accepts. Reply is a single ``:<server> VERBS <version> :<base64-json>``
+# line, mirroring the ``EVENT``/``EVENTPUB`` base64-canonical-JSON wire
+# pattern. See ``Client._handle_verbs`` in ``agentirc/client.py`` for the
+# payload shape and the live-enumeration mechanism (no hardcoded verb list).
+VERBS = "VERBS"
+
+# Discovery-*format* version -- the ``<version>`` positional param on the
+# ``VERBS`` reply line. Independent of ``ERROR_TOKENS_VERSION`` (the
+# error-token vocabulary inside the payload) and of ``server_version``
+# (the running agentirc release). Bump this when the payload's key set or
+# semantics change; the four-key v1 shape is
+# ``{verbs, caps, error_tokens_version, server_version}``.
+VERBS_DISCOVERY_VERSION = 1
+
+
+# ---------------------------------------------------------------------------
+# Message-delivery tags (agent-accessibility release)
+# ---------------------------------------------------------------------------
+# Stamped on PRIVMSG delivery for clients that negotiated ``message-tags``:
+# ``msgid`` (unique per message, identical across channel fan-out — every
+# recipient sees the same id) and ``time`` (IRCv3 server-time, ISO8601 UTC).
+# Thread messages additionally carry ``agentirc.io/thread=<name>`` alongside
+# the legacy ``[thread:<name>]`` text prefix (which stays for compatibility;
+# the tag is local-delivery-only and does not ride the S2S link — quirk #9
+# stays untouched). The MESSAGE event's ``data["msgid"]`` carries the same id
+# to in-process consumers (history, event subscriptions).
+MSGID_TAG = "msgid"
+SERVER_TIME_TAG = "time"
+THREAD_TAG = "agentirc.io/thread"
+
+
+# ---------------------------------------------------------------------------
+# Stable error tokens (rooms / threads / history skills)
+# ---------------------------------------------------------------------------
+# Every error reply in ``agentirc.skills.{rooms,threads,history}`` carries
+# one of these tokens as the ``agentirc.io/error`` IRCv3 message tag
+# (``ERROR_TAG``) whenever the receiving client negotiated ``message-tags``
+# via ``CAP REQ``. The tag rides additively — reply numerics, NOTICE prose,
+# and ad-hoc numeric-looking commands ("400"/"404"/"405") are byte-identical
+# to before for clients that haven't negotiated ``message-tags``. Vendored
+# namespace + EVENTERR-style naming: lowercase-hyphenated reason strings.
+#
+#   missing-params          — ERR_NEEDMOREPARAMS on any rooms/threads/history verb
+#   invalid-channel-name    — ROOMCREATE target doesn't start with '#'
+#   channel-already-exists  — ROOMCREATE name collision; THREADCLOSE PROMOTE
+#                              breakout-channel name collision
+#   no-such-channel         — ROOMMETA/ROOMINVITE/ROOMKICK/ROOMARCHIVE on an
+#                              unknown channel
+#   not-managed-room        — ROOMMETA/ROOMKICK/ROOMARCHIVE on a channel that
+#                              wasn't created via ROOMCREATE
+#   permission-denied       — any owner/operator/authorization check failure
+#                              across ROOMMETA, ROOMKICK, ROOMARCHIVE, TAGS,
+#                              THREADCLOSE, and THREADCLOSE PROMOTE
+#   readonly-meta-key       — ROOMMETA attempt to set a read-only key
+#   invalid-meta-value      — ROOMMETA value fails per-key validation (e.g.
+#                              non-integer agent_limit)
+#   no-such-nick            — TAGS / ROOMINVITE target nick isn't connected
+#   user-not-in-channel     — ROOMKICK target isn't a member of the channel
+#   unknown-subcommand      — THREAD / HISTORY unrecognised subcommand
+#   not-on-channel          — THREAD CREATE/REPLY/THREADS/THREADCLOSE(/PROMOTE)
+#                              issued by a non-member
+#   invalid-thread-name     — THREAD CREATE name fails the format regex
+#   thread-already-exists   — THREAD CREATE duplicate (channel, name) pair
+#   no-such-thread          — THREAD REPLY/THREADCLOSE(/PROMOTE) unknown thread
+#   thread-archived         — THREAD REPLY/THREADCLOSE(/PROMOTE) on a closed thread
+#   invalid-count           — HISTORY RECENT / HISTORY SINCE non-integer or
+#                              negative count/limit
+#   invalid-cursor          — HISTORY SINCE cursor token fails to decode
+#                              (bad base64, missing separator, non-numeric
+#                              timestamp/id) — see agentirc/skills/history.py
+#                              module docstring for the cursor encoding
+#   line-too-long           — an inbound line exceeded MAX_INBOUND_LINE
+#                              bytes (agentirc/_internal/constants.py);
+#                              Client.handle()'s read loop discards that one
+#                              line, resyncs at the next newline, and keeps
+#                              the connection open — see
+#                              Client._send_line_too_long_error
+#
+# ``ERROR_TOKENS_VERSION`` is this vocabulary's first agents-visible freeze
+# (task t9, agent-accessibility release) — the version number a ``VERBS``
+# discovery reply's ``error_tokens_version`` field echoes. Bump it whenever
+# a token above is renamed or removed (additive tokens don't need a bump;
+# consumers must already tolerate unrecognised ones).
+ERROR_TOKENS_VERSION = 1
+
+ERROR_TOKEN_MISSING_PARAMS = "missing-params"
+ERROR_TOKEN_INVALID_CHANNEL_NAME = "invalid-channel-name"
+ERROR_TOKEN_CHANNEL_ALREADY_EXISTS = "channel-already-exists"
+ERROR_TOKEN_NO_SUCH_CHANNEL = "no-such-channel"
+ERROR_TOKEN_NOT_MANAGED_ROOM = "not-managed-room"
+ERROR_TOKEN_PERMISSION_DENIED = "permission-denied"
+ERROR_TOKEN_READONLY_META_KEY = "readonly-meta-key"
+ERROR_TOKEN_INVALID_META_VALUE = "invalid-meta-value"
+ERROR_TOKEN_NO_SUCH_NICK = "no-such-nick"
+ERROR_TOKEN_USER_NOT_IN_CHANNEL = "user-not-in-channel"
+ERROR_TOKEN_UNKNOWN_SUBCOMMAND = "unknown-subcommand"
+ERROR_TOKEN_NOT_ON_CHANNEL = "not-on-channel"
+ERROR_TOKEN_INVALID_THREAD_NAME = "invalid-thread-name"
+ERROR_TOKEN_THREAD_ALREADY_EXISTS = "thread-already-exists"
+ERROR_TOKEN_NO_SUCH_THREAD = "no-such-thread"
+ERROR_TOKEN_THREAD_ARCHIVED = "thread-archived"
+ERROR_TOKEN_INVALID_COUNT = "invalid-count"
+ERROR_TOKEN_INVALID_CURSOR = "invalid-cursor"
+ERROR_TOKEN_LINE_TOO_LONG = "line-too-long"
+
+
 __all__ = [
     # Numerics
     "ERR_ALREADYREGISTRED",
@@ -300,10 +421,35 @@ __all__ = [
     "RPL_WHOREPLY",
     "RPL_YOURHOST",
     # Tags
+    "ERROR_TAG",
     "EVENT_TAG_DATA",
     "EVENT_TAG_TYPE",
+    "MSGID_TAG",
+    "SERVER_TIME_TAG",
+    "THREAD_TAG",
     "TRACEPARENT_TAG",
     "TRACESTATE_TAG",
+    # Stable error tokens
+    "ERROR_TOKENS_VERSION",
+    "ERROR_TOKEN_CHANNEL_ALREADY_EXISTS",
+    "ERROR_TOKEN_INVALID_CHANNEL_NAME",
+    "ERROR_TOKEN_INVALID_COUNT",
+    "ERROR_TOKEN_INVALID_CURSOR",
+    "ERROR_TOKEN_INVALID_META_VALUE",
+    "ERROR_TOKEN_INVALID_THREAD_NAME",
+    "ERROR_TOKEN_LINE_TOO_LONG",
+    "ERROR_TOKEN_MISSING_PARAMS",
+    "ERROR_TOKEN_NOT_MANAGED_ROOM",
+    "ERROR_TOKEN_NOT_ON_CHANNEL",
+    "ERROR_TOKEN_NO_SUCH_CHANNEL",
+    "ERROR_TOKEN_NO_SUCH_NICK",
+    "ERROR_TOKEN_NO_SUCH_THREAD",
+    "ERROR_TOKEN_PERMISSION_DENIED",
+    "ERROR_TOKEN_READONLY_META_KEY",
+    "ERROR_TOKEN_THREAD_ALREADY_EXISTS",
+    "ERROR_TOKEN_THREAD_ARCHIVED",
+    "ERROR_TOKEN_UNKNOWN_SUBCOMMAND",
+    "ERROR_TOKEN_USER_NOT_IN_CHANNEL",
     # Standard verbs
     "CAP",
     "ERROR",
@@ -386,4 +532,7 @@ __all__ = [
     "EVENT_TYPE_USER_JOIN",
     "EVENT_TYPE_USER_PART",
     "EVENT_TYPE_USER_QUIT",
+    # Runtime verb discovery (task t9)
+    "VERBS",
+    "VERBS_DISCOVERY_VERSION",
 ]

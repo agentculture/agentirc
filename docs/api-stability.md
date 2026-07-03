@@ -1,10 +1,10 @@
 # Public API stability
 
-`agentirc-cli` exposes six public modules; everything else is internal
+`agentirc-cli` exposes seven public modules; everything else is internal
 and may be refactored without a major version bump. Downstream consumers
 (notably `culture`, which pins `agentirc-cli>=9.0,<10` and calls
 `agentirc.cli.dispatch(argv)` from its `culture server` shim) should
-import only from these six modules.
+import only from these seven modules.
 
 | Module | Members | Stability |
 |---|---|---|
@@ -14,6 +14,7 @@ import only from these six modules.
 | [`agentirc.ircd`](#agentircircd) | `IRCd` (constructor + `start`/`stop`/`emit_event`/`subscription_registry`/`clients`/`channels`/`config`/`system_client`) | Public, semver-tracked (since 9.6.0) |
 | [`agentirc.virtual_client`](#agentircvirtual_client) | `VirtualClient` | Public, semver-tracked (since 9.6.0) |
 | [`agentirc.bots`](#agentircbots) | `BotManager`, `Bot`, `BotConfig` | Public, semver-tracked (since 9.7.0) |
+| [`agentirc.agent_client`](#agentircagent_client) | `AgentClient`, `IncomingMessage` | Public, semver-tracked (since 9.10.0) |
 
 **Bot extension API (shipped in 9.5.0):**
 
@@ -272,6 +273,106 @@ public contract is read-only:
 Semver contract: direct instantiation of `Bot` is not recommended; use
 `BotManager.register_bot(config)` or `BotManager.load_bots()` instead.
 
+## `agentirc.agent_client`
+
+Public since **9.10.0** (agent-accessibility release). The client-side
+counterpart to `agentirc.ircd.IRCd`: a small, self-reconnecting asyncio IRC
+client for agent harnesses that connect over real TCP — local or against a
+federated peer — rather than embedding an `IRCd` in-process. Public
+members are `AgentClient` and `IncomingMessage`. It backs the agent-facing
+CLI verbs (`agentirc send`/`join`/`read`/`watch`; see
+[`docs/cli.md`](cli.md)) and is documented from the agent point of view,
+with a worked example, in
+[`docs/agent-walkthrough.md`](agent-walkthrough.md).
+
+### `AgentClient`
+
+```python
+class AgentClient:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        nick: str,
+        channels: Sequence[str] | None = None,
+        *,
+        user: str | None = None,
+        realname: str | None = None,
+        caps: Sequence[str] = ("message-tags",),
+        reconnect: bool = True,
+        initial_backoff: float = 1.0,
+        max_backoff: float = 60.0,
+        backoff_factor: float = 2.0,
+        register_timeout: float = 30.0,
+    ) -> None: ...
+
+    nick: str            # property
+    caps: tuple[str, ...]        # property
+    channels: tuple[str, ...]    # property — (re-)joined on every connect
+    connected: bool               # property — live registered-connection state
+
+    async def connect(self) -> None: ...
+    async def close(self) -> None: ...
+    async def send(self, target: str, text: str) -> None: ...
+    async def join(self, channel: str) -> None: ...
+    async def send_raw(self, line: str) -> None: ...
+    async def messages(self) -> AsyncIterator[IncomingMessage]: ...
+    async def raw_lines(self) -> AsyncIterator[str]: ...
+
+    async def __aenter__(self) -> "AgentClient": ...
+    async def __aexit__(self, *exc: object) -> None: ...
+```
+
+Contract:
+
+- **Reconnect is internal and transparent.** The consumer never manages
+  the socket. On any disconnect, an internal run loop reconnects with
+  exponential backoff (default `1s` doubling to a `60s` ceiling, tunable
+  via the constructor), re-runs the `NICK`/`USER`/`CAP` handshake (waiting
+  for `001 RPL_WELCOME`), and re-joins every channel the client had
+  joined — including channels added later via `join()`. `connected`
+  reflects live state; `messages()`/`raw_lines()` transparently span
+  reconnects and only end when `close()` is called.
+- **No history replay at this layer.** Messages sent during an outage are
+  lost to `AgentClient` itself — catch-up is `HISTORY SINCE`'s job (drive
+  it via `send_raw`/`raw_lines`, or use the CLI's `read --since`). See
+  `tests/test_reconnect_catchup.py` for a worked reconnect-plus-catch-up
+  example.
+- **Agents are first-class clients, not bots.** The constructor's default
+  `caps` is `("message-tags",)` only — `agentirc.io/bot` is *not*
+  requested automatically (a caller that wants bot-CAP behavior passes it
+  explicitly via `caps=`).
+- **`send_raw`/`raw_lines` are additive escape hatches.** `messages()`
+  only surfaces parsed `PRIVMSG`s as `IncomingMessage` objects; a caller
+  driving a verb `AgentClient` doesn't model as a first-class method (e.g.
+  `HISTORY SINCE`, `VERBS`, `EVENTSUB`) sends the raw line via `send_raw`
+  and reads the raw, unfiltered reply stream via `raw_lines`. Both are
+  thin over the same connection `messages()`/`send()` use.
+- **`send`/`join`/`send_raw` raise `ConnectionError`** if called while not
+  currently connected (e.g. mid-reconnect) rather than silently
+  no-op'ing or blocking.
+
+### `IncomingMessage`
+
+```python
+@dataclass
+class IncomingMessage:
+    channel: str | None      # the #channel, or None for a DM
+    sender: str               # nick portion of the message prefix
+    text: str                  # message body
+    tags: dict[str, str] = field(default_factory=dict)  # parsed IRCv3 tags
+    raw: str = ""               # original wire line, minus trailing CRLF
+```
+
+Yielded by `AgentClient.messages()`. Only channel/DM `PRIVMSG`s are
+surfaced this way; other protocol traffic (numerics, JOIN echoes,
+`NOTICE`, `PING`) is handled internally and never reaches this iterator —
+use `raw_lines()` for those. `tags` is populated whenever the client
+negotiated `message-tags` and the sender's message carried any (e.g.
+`msgid`/`time`/`agentirc.io/thread` — see
+[`docs/extension-api.md#message-tags-on-delivery`](extension-api.md#message-tags-on-delivery));
+it's an empty dict otherwise, never `None`.
+
 ## Semver contract
 
 Following [SemVer 2.0](https://semver.org/):
@@ -321,6 +422,9 @@ class ServerConfig:
     links: list[LinkConfig] = field(default_factory=list)
     system_bots: dict = field(default_factory=dict)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    event_subscription_queue_max: int = 1024   # since 9.5.0a1 (EVENTSUB queue bound)
+    ping_interval: float = 60.0                # since 9.10.0 (agent-accessibility)
+    pong_timeout: float = 120.0                # since 9.10.0 (agent-accessibility)
 ```
 
 Plus, since 9.4.0:
@@ -332,12 +436,23 @@ def from_yaml(cls, path: str | Path) -> ServerConfig
 
 Loads a `ServerConfig` from `~/.culture/server.yaml` (or any YAML file).
 Recognised top-level keys: `server` (with `name`/`host`/`port`),
-`telemetry`, `links`, `webhook_port`, `data_dir`, `system_bots`.
-Unknown top-level keys (`supervisor`, `agents`, `buffer_size`,
-`poll_interval`, `sleep_start`, `sleep_end`, `webhooks`) are silently
-ignored — those belong to culture's broader process supervisor, and
-agentirc must coexist with culture using the same config file. Missing
-files return defaults; malformed YAML raises `yaml.YAMLError`.
+`telemetry`, `links`, `webhook_port`, `data_dir`, `system_bots`,
+`event_subscription_queue_max`, and — since 9.10.0 — `ping_interval` /
+`pong_timeout`. Unknown top-level keys (`supervisor`, `agents`,
+`buffer_size`, `poll_interval`, `sleep_start`, `sleep_end`, `webhooks`)
+are silently ignored — those belong to culture's broader process
+supervisor, and agentirc must coexist with culture using the same config
+file. Missing files return defaults; malformed YAML raises
+`yaml.YAMLError`.
+
+`ping_interval`/`pong_timeout` (seconds) configure the server's liveness
+sweep for local TCP clients: after `ping_interval` seconds of inbound
+idle time, the server sends a keepalive `PING`; after a further
+`pong_timeout` seconds without a reply, the connection is reaped through
+the normal disconnect path. `ping_interval <= 0` disables the sweep
+entirely. **Not currently exposed as a CLI flag** — `agentirc
+start`/`serve` has no `--ping-interval`/`--pong-timeout`; set these via
+`--config` YAML only (see [`docs/cli.md`](cli.md)).
 
 ### `LinkConfig`
 
@@ -435,6 +550,9 @@ About 40 module-level uppercase string constants:
 - **Server-to-server federation verbs:** `SERVER`, `SNICK`, `SJOIN`,
   `SPART`, `SQUITUSER`, `SMSG`, `SNOTICE`, `STOPIC`, `SROOMMETA`,
   `SROOMARCHIVE`, `STAGS`, `STHREAD`, `BACKFILL`, `BACKFILLEND`.
+- **Runtime discovery verb (since 9.10.0):** `VERBS` — see [Runtime verb
+  discovery](#runtime-verb-discovery-and-message-delivery-tags-agent-accessibility-release-9100)
+  below.
 
 ### Numeric reply codes
 
@@ -447,6 +565,9 @@ Re-exported from `agentirc._internal.protocol.replies`. About 33 names:
 
 Re-exported from `agentirc._internal.telemetry.context`:
 `TRACEPARENT_TAG`, `TRACESTATE_TAG`, `EVENT_TAG_TYPE`, `EVENT_TAG_DATA`.
+Since 9.10.0, also `MSGID_TAG` (`"msgid"`), `SERVER_TIME_TAG` (`"time"`),
+`THREAD_TAG` (`"agentirc.io/thread"`), and `ERROR_TAG`
+(`"agentirc.io/error"`) — see below.
 
 ### Bot extension surface (shipped in 9.5.0)
 
@@ -477,6 +598,57 @@ The `ServerConfig` additions (one new field
 `event_subscription_queue_max: int = 1024`) and the `webhook_port`
 binding-removal are described under
 [`agentirc.config`](#agentircconfig).
+
+### Runtime verb discovery and message-delivery tags (agent-accessibility release, 9.10.0)
+
+Agent-facing additions shipped as a single minor bump on the 9.x line.
+The agent point of view — worked examples, wire traces — lives in
+[`docs/extension-api.md`](extension-api.md); this section is the Python
+symbol reference.
+
+- **`VERBS = "VERBS"`** and **`VERBS_DISCOVERY_VERSION = 1`** — the
+  runtime verb-discovery verb and its reply-*format* version. Any
+  registered client (no `agentirc.io/bot` capability needed) can send a
+  bare `VERBS` and get back `:<server> VERBS <version> :<base64-json>`
+  carrying `{verbs, caps, error_tokens_version, server_version}`, all
+  derived live from the running server's actual dispatch surface — never
+  a hardcoded snapshot. See
+  [`docs/extension-api.md#discovering-server-capabilities-verbs`](extension-api.md#discovering-server-capabilities-verbs).
+- **`MSGID_TAG = "msgid"`, `SERVER_TIME_TAG = "time"`, `THREAD_TAG =
+  "agentirc.io/thread"`** — IRCv3 message tags stamped on `PRIVMSG`
+  delivery (and on `HISTORY SINCE` replay lines) for clients that
+  negotiated `message-tags`. `msgid` is unique per message and identical
+  across channel fan-out; `time` is IRCv3 server-time; `THREAD_TAG` rides
+  alongside (not instead of) the legacy `[thread:name]` text prefix on
+  thread messages. Clients that never negotiate `message-tags` see
+  byte-identical wire output — this is purely additive. See
+  [`docs/extension-api.md#message-tags-on-delivery`](extension-api.md#message-tags-on-delivery).
+- **`ERROR_TAG = "agentirc.io/error"`, the `ERROR_TOKEN_*` constants, and
+  `ERROR_TOKENS_VERSION = 1`** — every error reply from the
+  `rooms`/`threads`/`history` skills (plus the inbound line-too-long
+  guard) carries one of 19 stable, lowercase-hyphenated tokens
+  (`ERROR_TOKEN_MISSING_PARAMS = "missing-params"`,
+  `ERROR_TOKEN_INVALID_CURSOR = "invalid-cursor"`,
+  `ERROR_TOKEN_LINE_TOO_LONG = "line-too-long"`, …) as the `ERROR_TAG`
+  value, for `message-tags` clients. Non-cap clients see the exact same
+  numeric/`NOTICE` reply text as before — the tag rides additively.
+  `ERROR_TOKENS_VERSION` bumps only when a token is renamed or removed
+  (additive tokens don't need a bump); it's echoed back in `VERBS`
+  replies so a client can check compatibility instead of assuming. Full
+  vocabulary and per-token descriptions: the `agentirc.protocol` module
+  docstring, and
+  [`docs/extension-api.md#stable-error-tokens`](extension-api.md#stable-error-tokens).
+
+The public reconnecting transport that consumes these tags
+(`agentirc.agent_client.AgentClient`/`IncomingMessage`) is documented
+under [`agentirc.agent_client`](#agentircagent_client) above. `HISTORY
+SINCE <target> <cursor> [limit]` (opaque cursor, `HISTORYEND` carries the
+next cursor, works for both `#channels` and DM targets) and the
+`agentirc send`/`join`/`read`/`watch` CLI verbs that drive it remain
+internal wire/CLI surface — not part of the semver-tracked Python API —
+and are documented from the agent point of view in
+[`docs/agent-walkthrough.md`](agent-walkthrough.md) and
+[`docs/cli.md`](cli.md).
 
 ### Wire-format quirks (preserved verbatim)
 

@@ -59,15 +59,24 @@ class ServerConfig:
     # 9.5.0a3; the field is exposed in 9.5.0a1 so consumers can pin against the
     # public surface.
     event_subscription_queue_max: int = 1024
+    # Server liveness (t5): seconds of inbound-idle time on a local TCP
+    # client before the server sends a keepalive `PING :<server-name>`, and
+    # additional seconds of idle time past that before the connection is
+    # reaped (closed through the normal disconnect path). `0` or negative
+    # disables the liveness sweep loop entirely.
+    ping_interval: float = 60.0
+    pong_timeout: float = 120.0
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ServerConfig":
         """Load a ServerConfig from a YAML file.
 
         Recognises top-level ``server`` (host/port/name), ``telemetry``,
-        ``links``, ``webhook_port``, ``data_dir``, ``system_bots``, and
+        ``links``, ``webhook_port``, ``data_dir``, ``system_bots``,
         ``event_subscription_queue_max`` (added in 9.5.0a1; consumed by
-        the subscription registry that lands in 9.5.0a3).
+        the subscription registry that lands in 9.5.0a3), and
+        ``ping_interval``/``pong_timeout`` (t5: server liveness sweep —
+        see ``ServerConfig.ping_interval``/``pong_timeout``).
         Unknown top-level keys (``supervisor``, ``agents``, ``buffer_size``,
         ``poll_interval``, ``sleep_start``, ``sleep_end``) are silently
         ignored — those belong to culture's broader process supervisor,
@@ -112,7 +121,13 @@ def _yaml_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
     for key in ("name", "host", "port"):
         if key in server_section:
             kwargs[key] = server_section[key]
-    for key in ("webhook_port", "data_dir", "event_subscription_queue_max"):
+    for key in (
+        "webhook_port",
+        "data_dir",
+        "event_subscription_queue_max",
+        "ping_interval",
+        "pong_timeout",
+    ):
         if key in raw:
             kwargs[key] = raw[key]
     links_section = raw.get("links") or []

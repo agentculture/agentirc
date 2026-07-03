@@ -7,7 +7,28 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from agentirc.protocol import (
+    ERROR_TAG,
+    ERROR_TOKEN_CHANNEL_ALREADY_EXISTS,
+    ERROR_TOKEN_INVALID_THREAD_NAME,
+    ERROR_TOKEN_MISSING_PARAMS,
+    ERROR_TOKEN_NOT_ON_CHANNEL,
+    ERROR_TOKEN_NO_SUCH_THREAD,
+    ERROR_TOKEN_PERMISSION_DENIED,
+    ERROR_TOKEN_THREAD_ALREADY_EXISTS,
+    ERROR_TOKEN_THREAD_ARCHIVED,
+    ERROR_TOKEN_UNKNOWN_SUBCOMMAND,
+    MSGID_TAG,
+    SERVER_TIME_TAG,
+    THREAD_TAG,
+)
 from agentirc.skill import Event, EventType, Skill
+from agentirc._internal.constants import (
+    PRIVMSG_WIRE_LIMIT,
+    new_msgid,
+    server_time_now,
+    split_message_text,
+)
 from agentirc._internal.protocol import replies
 from agentirc._internal.protocol.message import Message
 
@@ -118,7 +139,10 @@ class ThreadsSkill(Skill):
     async def _handle_thread(self, client: Client, msg: Message) -> None:
         if not msg.params:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "THREAD", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "THREAD",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -128,11 +152,12 @@ class ThreadsSkill(Skill):
         elif subcmd == "REPLY":
             await self._handle_reply(client, msg)
         else:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
                     params=[client.nick, f"Unknown THREAD subcommand: {subcmd}"],
+                    tags={ERROR_TAG: ERROR_TOKEN_UNKNOWN_SUBCOMMAND},
                 )
             )
 
@@ -140,7 +165,10 @@ class ThreadsSkill(Skill):
         # THREAD CREATE #channel thread-name :initial message
         if len(msg.params) < 4:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "THREAD CREATE", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "THREAD CREATE",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -152,13 +180,16 @@ class ThreadsSkill(Skill):
         channel = self.server.channels.get(channel_name)
         if not channel or client not in channel.members:
             await client.send_numeric(
-                replies.ERR_NOTONCHANNEL, channel_name, replies.MSG_NOTONCHANNEL
+                replies.ERR_NOTONCHANNEL,
+                channel_name,
+                replies.MSG_NOTONCHANNEL,
+                tags={ERROR_TAG: ERROR_TOKEN_NOT_ON_CHANNEL},
             )
             return
 
         # Validate thread name format
         if not _THREAD_NAME_RE.match(thread_name):
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="400",
@@ -167,6 +198,7 @@ class ThreadsSkill(Skill):
                         thread_name,
                         "Invalid thread name (alphanumeric + hyphens, 1-32 chars)",
                     ],
+                    tags={ERROR_TAG: ERROR_TOKEN_INVALID_THREAD_NAME},
                 )
             )
             return
@@ -174,11 +206,12 @@ class ThreadsSkill(Skill):
         # Check for duplicate
         key = (channel_name, thread_name)
         if key in self._threads:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="400",
                     params=[client.nick or "*", thread_name, "Thread already exists"],
+                    tags={ERROR_TAG: ERROR_TOKEN_THREAD_ALREADY_EXISTS},
                 )
             )
             return
@@ -247,7 +280,10 @@ class ThreadsSkill(Skill):
         # THREAD REPLY #channel thread-name :reply text
         if len(msg.params) < 4:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "THREAD REPLY", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "THREAD REPLY",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -259,7 +295,10 @@ class ThreadsSkill(Skill):
         channel = self.server.channels.get(channel_name)
         if not channel or client not in channel.members:
             await client.send_numeric(
-                replies.ERR_NOTONCHANNEL, channel_name, replies.MSG_NOTONCHANNEL
+                replies.ERR_NOTONCHANNEL,
+                channel_name,
+                replies.MSG_NOTONCHANNEL,
+                tags={ERROR_TAG: ERROR_TOKEN_NOT_ON_CHANNEL},
             )
             return
 
@@ -267,22 +306,24 @@ class ThreadsSkill(Skill):
         key = (channel_name, thread_name)
         thread = self._threads.get(key)
         if not thread:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="404",
                     params=[client.nick or "*", thread_name, replies.MSG_NOSUCHTHREAD],
+                    tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_THREAD},
                 )
             )
             return
 
         # Check if archived
         if thread.archived:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="405",
                     params=[client.nick or "*", thread_name, "Thread is closed"],
+                    tags={ERROR_TAG: ERROR_TOKEN_THREAD_ARCHIVED},
                 )
             )
             return
@@ -304,19 +345,67 @@ class ThreadsSkill(Skill):
     ) -> str:
         """Send a [thread:name] prefixed PRIVMSG to all channel members except sender.
 
-        Returns the prefixed text for use in event data.
+        Wire delivery is split across multiple consecutive PRIVMSGs (task
+        t4) when the ``[thread:name] `` prefix plus ``text`` would push a
+        recipient's wire line past ``PRIVMSG_WIRE_LIMIT`` -- each chunk
+        re-carries the ``[thread:name] `` prefix so every wire line still
+        reads as belonging to the thread on its own. Unlike the top-level
+        PRIVMSG relay split (``Client._split_outbound_text``), this stays a
+        single *logical* thread message: threads have their own dedicated
+        storage (``self._threads``, not the generic history buffer -- see
+        ``skills/history.py``'s ``_NO_STORE_TYPES``) and a single
+        THREAD_CREATE/THREAD_MESSAGE event carries the full, unsplit text;
+        only the outbound wire lines are chunked to respect the 512-byte
+        limit. Returns the (unsplit) prefixed text for use in event data.
         """
         from agentirc.remote_client import RemoteClient
 
         prefixed = self._format_thread_msg(thread_name, text)
-        relay = Message(
-            prefix=sender.prefix,
-            command="PRIVMSG",
-            params=[channel.name, prefixed],
+        thread_prefix = f"[thread:{thread_name}] "
+        # Conservative per-recipient budget: this server always relays with
+        # the sender's own prefix (never rewritten per recipient), so one
+        # budget bounds every recipient's wire line. The thread_prefix is
+        # re-applied to every chunk (see docstring), so it's part of the
+        # fixed overhead subtracted from the 512-byte budget, not the split
+        # text itself. IRCv3 tags ride in their own budget, added after.
+        overhead = (
+            len(f":{sender.prefix} PRIVMSG {channel.name} :{thread_prefix}".encode("utf-8"))
+            + len(b"\r\n")
         )
-        for member in [*channel.members]:
-            if member is not sender and not isinstance(member, RemoteClient):
-                await member.send(relay)
+        budget = PRIVMSG_WIRE_LIMIT - overhead
+        chunks = split_message_text(text, budget)
+
+        # Snapshot the recipient set once so every chunk of this one logical
+        # thread message fans out to the same members, matching the
+        # pre-split behavior of a single relay send.
+        recipients = [
+            member
+            for member in [*channel.members]
+            if member is not sender and not isinstance(member, RemoteClient)
+        ]
+
+        # message-tags clients get msgid/time plus the thread tag carrying the
+        # bare thread name; the legacy `[thread:<name>]` text prefix stays put.
+        # `send_tagged` strips the whole block for non-negotiated clients, so
+        # their wire line is byte-identical to before. Tags are local delivery
+        # only — RemoteClients are excluded here (federation quirk #9 untouched).
+        for chunk in chunks:
+            relay = Message(
+                prefix=sender.prefix,
+                command="PRIVMSG",
+                params=[channel.name, f"{thread_prefix}{chunk}"],
+                tags={
+                    MSGID_TAG: new_msgid(),
+                    SERVER_TIME_TAG: server_time_now(),
+                    THREAD_TAG: thread_name,
+                },
+            )
+            for member in recipients:
+                send_tagged = getattr(member, "send_tagged", None)
+                if send_tagged is not None:
+                    await send_tagged(relay)
+                else:
+                    await member.send(relay)
 
         await self._notify_mentioned_in_thread(sender, channel, thread_name, text)
 
@@ -364,7 +453,10 @@ class ThreadsSkill(Skill):
         # THREADS #channel
         if not msg.params:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "THREADS", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "THREADS",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -372,7 +464,10 @@ class ThreadsSkill(Skill):
         channel = self.server.channels.get(channel_name)
         if not channel or client not in channel.members:
             await client.send_numeric(
-                replies.ERR_NOTONCHANNEL, channel_name, replies.MSG_NOTONCHANNEL
+                replies.ERR_NOTONCHANNEL,
+                channel_name,
+                replies.MSG_NOTONCHANNEL,
+                tags={ERROR_TAG: ERROR_TOKEN_NOT_ON_CHANNEL},
             )
             return
 
@@ -448,7 +543,10 @@ class ThreadsSkill(Skill):
         # THREADCLOSE PROMOTE #channel thread-name [#breakout-name]
         if not msg.params:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "THREADCLOSE", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "THREADCLOSE",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -459,7 +557,10 @@ class ThreadsSkill(Skill):
 
         if len(msg.params) < 2:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "THREADCLOSE", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "THREADCLOSE",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -475,7 +576,10 @@ class ThreadsSkill(Skill):
         # Authorization: thread participants or channel operators
         if client.nick not in thread.participants and not channel.is_operator(client):
             await client.send_numeric(
-                replies.ERR_CHANOPRIVSNEEDED, channel_name, "Not authorized to close this thread"
+                replies.ERR_CHANOPRIVSNEEDED,
+                channel_name,
+                "Not authorized to close this thread",
+                tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
             )
             return
 
@@ -496,28 +600,33 @@ class ThreadsSkill(Skill):
         channel = self.server.channels.get(channel_name)
         if not channel or client not in channel.members:
             await client.send_numeric(
-                replies.ERR_NOTONCHANNEL, channel_name, replies.MSG_NOTONCHANNEL
+                replies.ERR_NOTONCHANNEL,
+                channel_name,
+                replies.MSG_NOTONCHANNEL,
+                tags={ERROR_TAG: ERROR_TOKEN_NOT_ON_CHANNEL},
             )
             return None
 
         key = (channel_name, thread_name)
         thread = self._threads.get(key)
         if not thread:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="404",
                     params=[client.nick or "*", thread_name, replies.MSG_NOSUCHTHREAD],
+                    tags={ERROR_TAG: ERROR_TOKEN_NO_SUCH_THREAD},
                 )
             )
             return None
 
         if thread.archived:
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="405",
                     params=[client.nick or "*", thread_name, "Thread is already closed"],
+                    tags={ERROR_TAG: ERROR_TOKEN_THREAD_ARCHIVED},
                 )
             )
             return None
@@ -586,7 +695,10 @@ class ThreadsSkill(Skill):
         # THREADCLOSE PROMOTE #channel thread-name [#breakout-name]
         if len(msg.params) < 3:
             await client.send_numeric(
-                replies.ERR_NEEDMOREPARAMS, "THREADCLOSE PROMOTE", replies.MSG_NEEDMOREPARAMS
+                replies.ERR_NEEDMOREPARAMS,
+                "THREADCLOSE PROMOTE",
+                replies.MSG_NEEDMOREPARAMS,
+                tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
             return
 
@@ -602,7 +714,10 @@ class ThreadsSkill(Skill):
         # Authorization: thread creator or channel operators
         if client.nick != thread.creator and not channel.is_operator(client):
             await client.send_numeric(
-                replies.ERR_CHANOPRIVSNEEDED, channel_name, "Not authorized to promote this thread"
+                replies.ERR_CHANOPRIVSNEEDED,
+                channel_name,
+                "Not authorized to promote this thread",
+                tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
             )
             return
 
@@ -641,11 +756,12 @@ class ThreadsSkill(Skill):
             existing.extra_meta.get("thread_parent") != channel_name
             or existing.extra_meta.get("thread_name") != thread_name
         ):
-            await client.send(
+            await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="400",
                     params=[client.nick or "*", breakout_name, "Channel already exists"],
+                    tags={ERROR_TAG: ERROR_TOKEN_CHANNEL_ALREADY_EXISTS},
                 )
             )
             return None

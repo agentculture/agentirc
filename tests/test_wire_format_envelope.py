@@ -323,3 +323,242 @@ async def test_handle_sevent_decodes_legacy_data_only(linked_servers):
     # Legacy peers don't ship a timestamp; receiver fills with time.time().
     assert before <= ev.timestamp <= after
     assert ev.data["_origin"] == alpha.config.name
+
+
+# ---------------------------------------------------------------------------
+# Client wire-shape characterization (task t1, agent-accessibility release)
+# ---------------------------------------------------------------------------
+#
+# These lock the CURRENT client-facing wire shape ahead of
+# docs/specs/2026-07-01-agentirc-ships-an-agent-accessibility-release-ai-a.md.
+# They are characterization tests — they assert what the server does
+# *today*, not what it should do — so later tasks in that release can prove
+# they preserve backward compat. The spec's honesty condition that "the
+# 9.5.0a2 wire-format golden tests pass unmodified; any client that worked
+# against 9.7.0 registers and chats against this release with no changes"
+# extends to three additional surfaces baselined here: PRIVMSG relay, skill
+# NOTICE/ad-hoc-numeric error replies, and HISTORY replay lines. Values were
+# captured by driving a real server via the `server`/`make_client` fixtures
+# (raw TCP, no guessing) — see
+# docs/specs/2026-07-02-agent-accessibility-gap-verification.md for the
+# corresponding before-state citation re-verification.
+
+
+@pytest.mark.asyncio
+async def test_client_privmsg_channel_relay_wire_shape(server, make_client):
+    """Locks the literal wire line a channel member sees for a PRIVMSG relay.
+
+    Sender prefix is ``nick!user@host`` built from ``Client.prefix``
+    (agentirc/client.py); no IRCv3 tags are present because neither client
+    negotiated ``message-tags``. Before-state: client.py:320 — no
+    msgid/server-time tags are ever stamped today.
+    """
+    alice = await make_client(nick="testserv-alice", user="alice")
+    bob = await make_client(nick="testserv-bob", user="bob")
+    await alice.send("JOIN #wire")
+    await alice.recv_all(timeout=0.5)
+    await bob.send("JOIN #wire")
+    await bob.recv_all(timeout=0.5)
+    await alice.recv_all(timeout=0.5)  # drain alice's view of bob joining
+
+    await alice.send("PRIVMSG #wire :locked shape")
+    line = await bob.recv()
+
+    assert line == ":testserv-alice!alice@127.0.0.1 PRIVMSG #wire :locked shape"
+
+
+@pytest.mark.asyncio
+async def test_client_privmsg_dm_relay_wire_shape(server, make_client):
+    """Locks the literal wire line for a DM relay (no channel target).
+
+    Before-state: client.py:914-916 — DMs are relayed with the same framing
+    as a channel PRIVMSG; only routing differs.
+    """
+    carol = await make_client(nick="testserv-carol", user="carol")
+    dave = await make_client(nick="testserv-dave", user="dave")
+
+    await carol.send("PRIVMSG testserv-dave :direct hello")
+    line = await dave.recv()
+
+    assert line == ":testserv-carol!carol@127.0.0.1 PRIVMSG testserv-dave :direct hello"
+
+
+@pytest.mark.asyncio
+async def test_client_privmsg_dm_to_absent_nick_wire_shape(server, make_client):
+    """Locks the literal ERR_NOSUCHNICK wire line for a DM to an absent nick.
+
+    Before-state: client.py:914-916 — DM to an absent nick returns
+    ERR_NOSUCHNICK (401); the DM is never stored anywhere (no history
+    fallback, no queued delivery).
+    """
+    carol = await make_client(nick="testserv-carol", user="carol")
+
+    await carol.send("PRIVMSG testserv-nonexistent :hi")
+    line = await carol.recv()
+
+    assert line == ":testserv 401 testserv-carol testserv-nonexistent :No such nick"
+
+
+@pytest.mark.asyncio
+async def test_client_roomcreate_bad_channel_name_notice_wire_shape(server, make_client):
+    """Locks the bare-NOTICE-prose shape for a rooms-skill validation error.
+
+    Before-state: skills/rooms.py:48 — error replies mix bare NOTICE prose
+    (this one) with ad-hoc numerics (see the THREAD 400/404/405 tests
+    below) instead of a stable named reason token.
+    """
+    alice = await make_client(nick="testserv-alice", user="alice")
+
+    await alice.send("ROOMCREATE notachannel :purpose=x")
+    line = await alice.recv()
+
+    assert line == ":testserv NOTICE testserv-alice :Channel name must start with #"
+
+
+@pytest.mark.asyncio
+async def test_client_history_unknown_subcommand_notice_wire_shape(server, make_client):
+    """Locks the bare-NOTICE-prose shape for an unrecognised HISTORY subcommand.
+
+    Before-state: skills/history.py:150.
+    """
+    bob = await make_client(nick="testserv-bob", user="bob")
+
+    await bob.send("HISTORY BOGUS")
+    line = await bob.recv()
+
+    assert line == ":testserv NOTICE testserv-bob :Unknown HISTORY subcommand: BOGUS"
+
+
+@pytest.mark.asyncio
+async def test_client_history_recent_invalid_count_notice_wire_shape(server, make_client):
+    """Locks the bare-NOTICE-prose shape for a non-integer HISTORY RECENT count.
+
+    Before-state: skills/history.py:169.
+    """
+    bob = await make_client(nick="testserv-bob", user="bob")
+
+    await bob.send("HISTORY RECENT #wire notanumber")
+    line = await bob.recv()
+
+    assert line == ":testserv NOTICE testserv-bob :Invalid count"
+
+
+@pytest.mark.asyncio
+async def test_client_thread_unknown_subcommand_notice_wire_shape(server, make_client):
+    """Locks the bare-NOTICE-prose shape for an unrecognised THREAD subcommand."""
+    carol = await make_client(nick="testserv-carol", user="carol")
+
+    await carol.send("THREAD BOGUS")
+    line = await carol.recv()
+
+    assert line == ":testserv NOTICE testserv-carol :Unknown THREAD subcommand: BOGUS"
+
+
+@pytest.mark.asyncio
+async def test_client_thread_create_invalid_name_adhoc_numeric_wire_shape(server, make_client):
+    """Locks the ad-hoc ``400`` numeric shape for an invalid THREAD CREATE name.
+
+    Before-state: skills/threads.py:165 — the other half of the "mixed"
+    error-reply claim: threads.py uses hand-rolled numeric-looking command
+    strings ("400"/"404"/"405") that are not real IRC numerics and carry no
+    stable reason token, alongside rooms/history's bare NOTICE prose above.
+    """
+    carol = await make_client(nick="testserv-carol", user="carol")
+    await carol.send("JOIN #general")
+    await carol.recv_all(timeout=0.5)
+
+    await carol.send("THREAD CREATE #general --bad-name :hello")
+    line = await carol.recv()
+
+    assert line == (
+        ":testserv 400 testserv-carol --bad-name "
+        ":Invalid thread name (alphanumeric + hyphens, 1-32 chars)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_client_thread_reply_nonexistent_adhoc_numeric_wire_shape(server, make_client):
+    """Locks the ad-hoc ``404`` numeric shape for THREAD REPLY to an unknown thread.
+
+    Before-state: skills/threads.py:274.
+    """
+    carol = await make_client(nick="testserv-carol", user="carol")
+    await carol.send("JOIN #general")
+    await carol.recv_all(timeout=0.5)
+
+    await carol.send("THREAD REPLY #general no-thread :hello")
+    line = await carol.recv()
+
+    assert line == ":testserv 404 testserv-carol no-thread :No such thread"
+
+
+@pytest.mark.asyncio
+async def test_client_thread_reply_archived_adhoc_numeric_wire_shape(server, make_client):
+    """Locks the ad-hoc ``405`` numeric shape for THREAD REPLY to a closed thread.
+
+    Before-state: skills/threads.py:285.
+    """
+    carol = await make_client(nick="testserv-carol", user="carol")
+    await carol.send("JOIN #general")
+    await carol.recv_all(timeout=0.5)
+    await carol.send("THREAD CREATE #general done-thread :starting")
+    await carol.recv_all(timeout=0.5)
+    await carol.send("THREADCLOSE #general done-thread :all done")
+    await carol.recv_all(timeout=0.5)
+
+    await carol.send("THREAD REPLY #general done-thread :too late")
+    line = await carol.recv()
+
+    assert line == ":testserv 405 testserv-carol done-thread :Thread is closed"
+
+
+@pytest.mark.asyncio
+async def test_client_history_recent_replay_wire_shape(server, make_client):
+    """Locks the literal HISTORY RECENT replay-line shape and HISTORYEND terminator.
+
+    Before-state: skills/history.py:117-124 and history_store.py:42-60 —
+    HISTORY RECENT is last-N only (a count, not a since-timestamp/cursor);
+    each replay line is
+    ``:<server> HISTORY <channel> <nick> <timestamp> :<text>`` and the
+    reply is terminated by
+    ``:<server> HISTORYEND <channel> :End of history``. There is no
+    trailing cursor/id field on either line.
+    """
+    alice = await make_client(nick="testserv-alice", user="alice")
+    await alice.send("JOIN #wire-history")
+    await alice.recv_all(timeout=0.5)
+    await alice.send("PRIVMSG #wire-history :locked history line")
+
+    await alice.send("HISTORY RECENT #wire-history 10")
+    joined = await alice.recv_until("HISTORYEND")
+    lines = joined.split("\r\n")
+
+    # Terminator: exact literal wire line, no cursor/id field.
+    assert lines[-1] == ":testserv HISTORYEND #wire-history :End of history"
+
+    # The replay line for the message we just sent.
+    message_lines = [ln for ln in lines[:-1] if "locked history line" in ln]
+    assert len(message_lines) == 1
+    prefix, verb, channel, nick, timestamp, text = message_lines[0].split(" ", 5)
+    assert prefix == ":testserv"
+    assert verb == "HISTORY"
+    assert channel == "#wire-history"
+    assert nick == "testserv-alice"
+    float(timestamp)  # locks "str(entry.timestamp)" shape — a bare float, no cursor/id
+    assert text == ":locked history line"
+
+
+@pytest.mark.asyncio
+async def test_client_history_recent_empty_channel_wire_shape(server, make_client):
+    """Locks the HISTORYEND-only shape when a channel has no history.
+
+    Before-state: skills/history.py:117-124 — ``get_recent`` returns ``[]``
+    for an unknown/empty channel; the wire reply is HISTORYEND alone, no
+    HISTORY lines and no error.
+    """
+    alice = await make_client(nick="testserv-alice", user="alice")
+
+    await alice.send("HISTORY RECENT #never-touched 10")
+    line = await alice.recv()
+
+    assert line == ":testserv HISTORYEND #never-touched :End of history"

@@ -4,7 +4,12 @@
 [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15)).
 See the [CHANGELOG](../CHANGELOG.md#950---2026-05-02) for the release notes;
 the [full design spec](superpowers/specs/2026-05-01-bot-extension-api-design.md)
-records rationale, federation behavior, and acceptance criteria.
+records rationale, federation behavior, and acceptance criteria. The
+agent-accessibility release (9.10.0) added [`BACKFILL`](#recovering-with-backfill),
+[message tags on delivery](#message-tags-on-delivery), [stable error
+tokens](#stable-error-tokens), and [`VERBS` discovery](#discovering-server-capabilities-verbs) —
+see [`docs/agent-walkthrough.md`](agent-walkthrough.md) for the CLI-first
+counterpart to this wire-level reference.
 
 This page is a quick reference for bot authors. For rationale, semver
 implications, and federation behavior, read the design spec.
@@ -17,10 +22,20 @@ Once negotiated, the client:
 - Joins channels silently (no JOIN broadcast to other channel members).
 - Never gets auto-op on a newly created channel.
 - Appears in `NAMES` prefixed with `+` and in `WHO` with a `B` flag.
-- May issue `EVENTSUB` to stream events and `EVENTPUB` to emit custom events.
+- May issue `EVENTSUB` to stream events, `EVENTPUB` to emit custom events, and
+  `BACKFILL` to replay missed history after a dropped subscription.
 
 Everything else (`PRIVMSG`, `NOTICE`, mention notifications, channel ops,
 threads, rooms) works exactly the same as for a human client.
+
+Three more pieces of this API are **not** gated by the bot capability —
+any registered client that negotiates `message-tags` (or, for `VERBS`, any
+registered client at all) gets them: [message tags on
+delivery](#message-tags-on-delivery), [stable error
+tokens](#stable-error-tokens), and [`VERBS` runtime
+discovery](#discovering-server-capabilities-verbs). They're documented on
+this page because scripted/unattended clients are the primary audience for
+all of it, bot-CAP or not.
 
 ### Porting note: JOIN before PRIVMSG
 
@@ -52,6 +67,28 @@ S: :server 001 mybot :Welcome to agentirc, mybot
 Most bots will request both `agentirc.io/bot` (silent presence + EVENTSUB
 authorization) and `message-tags` (read IRCv3 tags on PRIVMSGs, including the
 `event-data` tag on `#system` PRIVMSGs).
+
+## Message tags on delivery
+
+Independent of the bot capability, **any** client that negotiates
+`message-tags` — human, bot, or plain agent — gets extra IRCv3 tags on
+every `PRIVMSG` it's delivered:
+
+| Tag | Example | Description |
+|---|---|---|
+| `msgid` | `msgid=c2198298-1002-47f4-a2db-ab2178f16fb5` | Unique per message. Identical across channel fan-out — every recipient sees the same id, so a client can dedupe a message it somehow observes twice (e.g. a reconnect race between the live stream and a `HISTORY SINCE` replay). |
+| `time` | `time=2026-07-02T05:46:43.221Z` | IRCv3 server-time: ISO-8601 UTC, millisecond precision. |
+| `agentirc.io/thread` | `agentirc.io/thread=my-thread` | Present only on thread messages. The legacy `[thread:name]` text prefix stays alongside it — the tag rides *in addition to*, not instead of, the prefix, so an existing text-scraping parser keeps working unmodified. |
+
+Clients that never request `message-tags` see byte-identical wire output —
+no tags at all, exactly as before this release. `HISTORY SINCE` replay
+lines carry the same `msgid`/`time` tags (for `message-tags` clients), so a
+client resuming from a cursor gets the same identifiers a live delivery
+would have given it — not a second, different id for the same message.
+
+```text
+S: @msgid=ef870fb8-31ec-47ce-b1d0-e49506ddbbae;time=2026-07-02T05:46:43.221Z :bob!b@host PRIVMSG #room :tagged hello
+```
 
 ## Subscribing to events
 
@@ -157,11 +194,74 @@ When the queue overflows:
 2. The subscription is removed.
 3. The client connection itself stays open.
 4. To recover: re-subscribe with the same or a fresh `<sub-id>`, then issue
-   `BACKFILL` to catch up on missed history.
+   `BACKFILL` (below) to catch up on missed history.
 
 Bots should aim to drain `EVENT` lines as fast as they arrive. If a bot
 genuinely cannot keep up, the right response is to widen the filter (subscribe
 to fewer types/channels), not to ignore overflow.
+
+### Recovering with BACKFILL
+
+```text
+BACKFILL <channel-or-*> <cursor-or-*> [limit]
+```
+
+Gated identically to `EVENTSUB`/`EVENTPUB`: the `agentirc.io/bot` capability
+and a registered connection. Without the capability:
+`EVENTERR <channel-or-*> :bot-capability-required`; unregistered:
+`EVENTERR <channel-or-*> :not-registered` — the error line's second token
+echoes back whatever `<channel-or-*>` you sent, mirroring how `EVENTPUB`
+echoes back `<type>`.
+
+- `<channel-or-*>` — an exact, currently-existing channel name, or the
+  literal `*` for every channel you're currently joined to. A target that
+  isn't `#`-prefixed, or doesn't currently exist, is rejected with
+  `EVENTERR <channel-or-*> :no-such-channel` — this includes any attempt to
+  address a DM history entry, which has no reachable wire spelling at all:
+  **DM history is never replayed by `BACKFILL`, under any target spelling.**
+- `<cursor-or-*>` — the same opaque cursor `HISTORY SINCE` uses, or
+  `*`/empty for "from the beginning of retained history". A cursor that
+  fails to decode is rejected with `EVENTERR <channel-or-*> :invalid-cursor`.
+- `[limit]` — optional page size, default 100 (same default as
+  `HISTORY SINCE`). A negative or non-numeric value is rejected with
+  `EVENTERR <channel-or-*> :invalid-count`.
+- `BACKFILL` replays only stored `message` events — the same events a live
+  `EVENTSUB type=message` subscription would have delivered. Lifecycle
+  events (`user.join`, `topic`, …) that also land in the history store are
+  not replayed by `BACKFILL`.
+- Each replayed message arrives as an `EVENT` line reusing the exact shape a
+  live subscription's lines have, so it round-trips through a bot's
+  existing `EVENT` parser unmodified — but with the reserved sub-id token
+  `backfill` (never a live subscription id) in the `<sub-id>` position:
+
+  ```text
+  :server EVENT backfill message #room alice :eyJ0eXBlIjogIm1lc3NhZ2UiLCAuLi59
+  ```
+
+  Check `sub-id == "backfill"` to tell a replayed line from a live one.
+- The stream ends with a terminator line carrying the next cursor:
+  `BACKFILLEND <channel-or-*> <next-cursor>`, echoing back whatever
+  `<channel-or-*>` you requested. Feed `<next-cursor>` into the next
+  `BACKFILL` call to keep paging; an empty page whose terminator cursor is
+  unchanged from what you sent means you're caught up.
+
+#### Worked recovery example
+
+```text
+C: EVENTSUB msgs type=message channel=#room
+S: :server EVENT msgs message #room alice :eyJ0eXBlIjogIm1lc3NhZ2UiLCAuLi59
+... (queue overflows) ...
+S: :server EVENTERR msgs :backpressure-overflow
+C: EVENTSUB msgs2 type=message channel=#room
+C: BACKFILL #room *
+S: :server EVENT backfill message #room alice :eyJ0eXBlIjogIm1lc3NhZ2UiLCAuLi59
+S: :server EVENT backfill message #room bob   :eyJ0eXBlIjogIm1lc3NhZ2UiLCAuLi59
+S: :server BACKFILLEND #room <next-cursor>
+```
+
+This example resumes from the beginning of retained history (`*`); a bot
+that separately tracks a `HISTORY SINCE` cursor may pass that instead to
+skip messages it has already durably recorded.
 
 ## Emitting custom events (`EVENTPUB`)
 
@@ -224,6 +324,71 @@ Both flags are derived from the negotiated CAP at output time. They cannot
 be set or unset by `MODE`. Human IRC clients that filter on these flags will
 hide bots from presence lists.
 
+## Stable error tokens
+
+Every error reply from the `rooms`/`threads`/`history` skills — and the
+inbound line-too-long guard — carries a stable, machine-parseable token in
+the `agentirc.io/error` message tag, for clients that negotiated
+`message-tags`. Clients that haven't negotiated the cap see the exact same
+numeric/`NOTICE` reply text as before this release — the tag rides
+additively, never replacing the human-readable prose.
+
+```text
+C: HISTORY SINCE #room not-a-cursor
+S: @agentirc.io/error=invalid-cursor :server NOTICE mynick :Invalid cursor
+```
+
+The vocabulary (lowercase, hyphenated) as of `error_tokens_version` **1**:
+
+`missing-params`, `invalid-channel-name`, `channel-already-exists`,
+`no-such-channel`, `not-managed-room`, `permission-denied`,
+`readonly-meta-key`, `invalid-meta-value`, `no-such-nick`,
+`user-not-in-channel`, `unknown-subcommand`, `not-on-channel`,
+`invalid-thread-name`, `thread-already-exists`, `no-such-thread`,
+`thread-archived`, `invalid-count`, `invalid-cursor`, `line-too-long`.
+
+Full per-token descriptions live in the `agentirc.protocol` module
+docstring, next to the `ERROR_TOKEN_*` constants that carry these same
+strings for Python callers. Treat any token you don't recognise as
+forward-compatible noise — additive tokens don't bump the version; a
+token being *renamed or removed* does. Rather than hardcoding an assumed
+`error_tokens_version`, ask the running server (below).
+
+## Discovering server capabilities: `VERBS`
+
+Any *registered* client — no `agentirc.io/bot` capability required, unlike
+`EVENTSUB`/`EVENTPUB`/`BACKFILL` — can ask the running server what it
+actually accepts instead of guessing from this document:
+
+```text
+C: VERBS
+S: :server VERBS 1 :<base64-json>
+```
+
+Decoded payload:
+
+```json
+{
+  "verbs": ["BACKFILL", "CAP", "EVENTPUB", "EVENTSUB", "...", "VERBS", "WHO", "WHOIS"],
+  "caps": ["agentirc.io/bot", "message-tags"],
+  "error_tokens_version": 1,
+  "server_version": "9.9.0"
+}
+```
+
+- `verbs` — every verb the server's live dispatch surface currently
+  accepts, derived from the loaded skills and client handlers — never a
+  hardcoded list. A skill registered at runtime shows up in the very next
+  `VERBS` reply.
+- `caps` — the IRCv3 capabilities `CAP REQ` currently accepts.
+- `error_tokens_version` — the vocabulary version documented above.
+- `server_version` — the running `agentirc-cli` release string.
+
+The `1` immediately after `VERBS` in the reply is the *reply format's*
+version, independent of `error_tokens_version` and `server_version` inside
+the payload — it only bumps if the four-key payload shape itself changes,
+not when the server adds a verb or a token.
+
 ## What the server does *not* expose
 
 - **No bot manager.** `agentirc` does not host or supervise bot processes.
@@ -240,4 +405,6 @@ hide bots from presence lists.
 
 - Full design: [`docs/superpowers/specs/2026-05-01-bot-extension-api-design.md`](superpowers/specs/2026-05-01-bot-extension-api-design.md)
 - Public-API contract: [`docs/api-stability.md`](api-stability.md)
+- CLI-first, copy-pasteable walkthrough (join/send/read/watch, catch-up,
+  DMs): [`docs/agent-walkthrough.md`](agent-walkthrough.md)
 - Tracking issue: [agentculture/agentirc#15](https://github.com/agentculture/agentirc/issues/15)
