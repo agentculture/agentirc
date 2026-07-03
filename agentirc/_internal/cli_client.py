@@ -54,7 +54,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from agentirc._internal.protocol.message import Message
-from agentirc.agent_client import AgentClient
+from agentirc.agent_client import AgentClient, IncomingMessage
 from agentirc.protocol import (
     ERR_NOSUCHNICK,
     ERROR_TAG,
@@ -69,6 +69,11 @@ DEFAULT_READ_LAST = 20
 # How long the one-shot verbs (read/join) wait for a server reply before
 # giving up and reporting a timeout.
 _REPLY_TIMEOUT_SECONDS = 10.0
+
+# How long `send`'s DM path listens for a 401 (ERR_NOSUCHNICK) after sending
+# a DM before treating the silence as delivered — a brief window to catch a
+# same-connection rejection, not a full request/response timeout.
+_DM_ERROR_TIMEOUT_SECONDS = 0.6
 
 
 def _default_nick() -> str:
@@ -191,7 +196,6 @@ async def _graceful_quit(client: AgentClient) -> None:
 async def _wait_for_join(
     raw_iter: AsyncIterator[Message],
     channel: str,
-    timeout: float = _REPLY_TIMEOUT_SECONDS,
 ) -> tuple[bool, str | None]:
     """Consume ``raw_iter`` until the server confirms (or rejects) a JOIN.
 
@@ -211,7 +215,7 @@ async def _wait_for_join(
     confirmed = False
     error_token: str | None = None
     try:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(_REPLY_TIMEOUT_SECONDS):
             async for msg in raw_iter:
                 cmd = msg.command.upper()
                 if cmd == RPL_ENDOFNAMES and len(msg.params) > 1 and msg.params[1] == channel:
@@ -274,7 +278,7 @@ async def _send_main(args: argparse.Namespace) -> int:
         # DMs are deliberately unstored). A short bounded listen turns that
         # silent loss into a non-zero exit; silence within the window is
         # taken as delivered.
-        error = await _wait_for_dm_error(raw_iter, target, timeout=0.6)
+        error = await _wait_for_dm_error(raw_iter, target)
         if error is not None:
             print(
                 f"agentirc send: no such nick {target}"
@@ -289,11 +293,11 @@ async def _send_main(args: argparse.Namespace) -> int:
 
 
 async def _wait_for_dm_error(
-    raw_iter: AsyncIterator[Message], target: str, timeout: float
+    raw_iter: AsyncIterator[Message], target: str
 ) -> Message | None:
-    """Watch the raw stream up to ``timeout`` for a 401 naming ``target``."""
+    """Watch the raw stream up to ``_DM_ERROR_TIMEOUT_SECONDS`` for a 401 naming ``target``."""
     with contextlib.suppress(TimeoutError, StopAsyncIteration):
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(_DM_ERROR_TIMEOUT_SECONDS):
             while True:
                 msg = await raw_iter.__anext__()
                 if msg.command == ERR_NOSUCHNICK and target in msg.params:
@@ -359,7 +363,6 @@ def cmd_join(args: argparse.Namespace) -> int:
 async def _collect_history(
     raw_iter: AsyncIterator[Message],
     channel: str,
-    timeout: float = _REPLY_TIMEOUT_SECONDS,
 ) -> tuple[list[Message], str | None, str | None]:
     """Consume ``raw_iter`` until ``HISTORYEND`` for *channel*.
 
@@ -370,7 +373,7 @@ async def _collect_history(
     lines: list[Message] = []
     next_cursor: str | None = None
     try:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(_REPLY_TIMEOUT_SECONDS):
             async for msg in raw_iter:
                 cmd = msg.command.upper()
                 if cmd == "HISTORY" and msg.params and msg.params[0] == channel:
@@ -449,6 +452,62 @@ def cmd_read(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _install_sigint_handler(loop: asyncio.AbstractEventLoop, stop: asyncio.Event) -> bool:
+    """Install a SIGINT handler that sets *stop*; return whether it took.
+
+    Windows (and any other platform without running-loop signal support)
+    raises ``RuntimeError`` here — SIGINT then falls back to the
+    interpreter's default ``KeyboardInterrupt``, which unwinds
+    ``asyncio.run()`` and skips straight to the caller's cleanup.
+    """
+    try:
+        loop.add_signal_handler(signal.SIGINT, stop.set)
+    except RuntimeError:
+        return False
+    return True
+
+
+def _watch_message_matches(msg: IncomingMessage, channel: str, is_channel: bool) -> bool:
+    """Return whether *msg* belongs to the channel/DM peer being watched.
+
+    Channel watches match on ``msg.channel``. DM watches match on the
+    sending peer instead, since ``IncomingMessage.channel`` is ``None`` for
+    DMs.
+    """
+    if is_channel:
+        return msg.channel == channel
+    return msg.channel is None and msg.sender == channel
+
+
+async def _consume_watch_messages(
+    client: AgentClient, channel: str, is_channel: bool, json_mode: bool
+) -> None:
+    """Emit every incoming message matching *channel* until the stream ends."""
+    async for msg in client.messages():
+        if not _watch_message_matches(msg, channel, is_channel):
+            continue
+        ts = msg.tags.get(SERVER_TIME_TAG) or f"{time.time():.6f}"
+        msgid = msg.tags.get(MSGID_TAG)
+        _emit_line(ts, msg.sender, msg.text, msgid, json_mode)
+
+
+async def _teardown_watch(
+    consumer: asyncio.Task[None],
+    stopper: asyncio.Task[None],
+    loop: asyncio.AbstractEventLoop,
+    handler_installed: bool,
+    client: AgentClient,
+) -> None:
+    """Cancel the outstanding watch tasks, restore signal state, and disconnect."""
+    for task in (consumer, stopper):
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(consumer, stopper, return_exceptions=True)
+    if handler_installed:
+        loop.remove_signal_handler(signal.SIGINT)
+    await _graceful_quit(client)
+
+
 async def _watch_main(args: argparse.Namespace) -> int:
     channel = args.channel
     nick = args.nick or _default_nick()
@@ -471,41 +530,16 @@ async def _watch_main(args: argparse.Namespace) -> int:
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
-    handler_installed = False
-    try:
-        loop.add_signal_handler(signal.SIGINT, stop.set)
-        handler_installed = True
-    except RuntimeError:
-        # Windows / no running loop signal support — SIGINT falls back to
-        # the interpreter's default KeyboardInterrupt, which unwinds
-        # asyncio.run() and skips straight to our caller's cleanup.
-        pass
+    handler_installed = _install_sigint_handler(loop, stop)
 
-    async def _consume() -> None:
-        async for msg in client.messages():
-            if is_channel:
-                if msg.channel != channel:
-                    continue
-            elif msg.channel is not None or msg.sender != channel:
-                # DM watch: IncomingMessage.channel is None for DMs, so
-                # match on the sending peer instead.
-                continue
-            ts = msg.tags.get(SERVER_TIME_TAG) or f"{time.time():.6f}"
-            msgid = msg.tags.get(MSGID_TAG)
-            _emit_line(ts, msg.sender, msg.text, msgid, args.json)
-
-    consumer = asyncio.ensure_future(_consume())
+    consumer = asyncio.ensure_future(
+        _consume_watch_messages(client, channel, is_channel, args.json)
+    )
     stopper = asyncio.ensure_future(stop.wait())
     try:
         await asyncio.wait({consumer, stopper}, return_when=asyncio.FIRST_COMPLETED)
     finally:
-        for task in (consumer, stopper):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(consumer, stopper, return_exceptions=True)
-        if handler_installed:
-            loop.remove_signal_handler(signal.SIGINT)
-        await _graceful_quit(client)
+        await _teardown_watch(consumer, stopper, loop, handler_installed, client)
 
     return 0
 
