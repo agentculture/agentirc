@@ -23,18 +23,8 @@ from agentirc.agent_client import AgentClient
 from agentirc.config import ServerConfig, TelemetryConfig
 from agentirc.ircd import IRCd
 from agentirc._internal.protocol.message import Message
+from tests._helpers import wait_for as _wait_for
 from tests.conftest import IRCTestClient
-
-
-async def _wait_for(predicate, timeout: float = 3.0, interval: float = 0.02) -> bool:
-    """Poll ``predicate`` until it is truthy or ``timeout`` elapses."""
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(interval)
-    return predicate()
 
 
 def _free_port() -> int:

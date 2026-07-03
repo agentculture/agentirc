@@ -73,22 +73,13 @@ from agentirc._internal.protocol.message import Message
 from agentirc.agent_client import AgentClient
 from agentirc.protocol import MSGID_TAG
 
+from tests._helpers import wait_for as _wait_for
+
 _CHANNEL = "#catchup"
 
 # Per-read/per-message wait ceiling shared by _read_since_reply and
 # _consume_live — all call sites in this file use this default.
 _REPLY_TIMEOUT_SECONDS = 2.0
-
-
-async def _wait_for(predicate, timeout: float = 3.0, interval: float = 0.02) -> bool:
-    """Poll ``predicate`` until it is truthy or ``timeout`` elapses."""
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(interval)
-    return predicate()
 
 
 def _member_nicks(server, channel: str) -> set[str]:

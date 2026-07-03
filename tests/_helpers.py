@@ -94,3 +94,28 @@ async def link_pair(
         if "beta" in server_a.links and "alpha" in server_b.links:
             break
         await asyncio.sleep(0.05)
+
+
+async def wait_for(predicate, timeout: float = 3.0, interval: float = 0.02) -> bool:  # NOSONAR S7483 — poll deadline (loop.time()+timeout), not an asyncio timeout
+    """Spin-wait until ``predicate()`` is truthy or ``timeout`` elapses.
+
+    The single canonical poll-wait for the suite. It was copy-pasted as a
+    per-module ``_wait_for`` in five test files (CPD flagged the ~10-line
+    body as duplicated); those now ``from tests._helpers import wait_for as
+    _wait_for``. ``predicate`` is a *sync* callable polled every ``interval``
+    seconds; returns ``True`` as soon as it holds, else a final
+    ``predicate()`` at the deadline. ``timeout`` is a poll deadline, not an
+    awaitable timeout — hence the ``# NOSONAR S7483`` (the rule's
+    context-manager remedy does not apply to a sync-predicate poll loop).
+    The default of ``3.0`` is the modal value across the former copies; the
+    lone ``2.0`` copy (test_agent_client) only ever used it on bare calls,
+    so lengthening those to 3.0 is safe (a passing predicate returns at once;
+    only the failure path waits marginally longer).
+    """
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return True
+        await asyncio.sleep(interval)
+    return predicate()

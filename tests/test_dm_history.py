@@ -50,6 +50,7 @@ from agentirc.protocol import (
     SERVER_TIME_TAG,
 )
 from agentirc.skills.history import _dm_pair_key
+from tests._helpers import wait_for as _wait_for
 from tests.conftest import IRCTestClient
 
 _SERVER_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -68,17 +69,6 @@ async def _register(make_client, nick: str, *, tags: bool = False):
         await client.send("CAP REQ :message-tags")
         await client.recv_until("CAP")
     return client
-
-
-async def _wait_for(predicate, timeout: float = 3.0, interval: float = 0.02) -> bool:
-    """Poll ``predicate`` until it is truthy or ``timeout`` elapses."""
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(interval)
-    return predicate()
 
 
 async def _history_subcmd(client, subcmd: str, target: str, arg: str) -> tuple[list[Message], Message]:

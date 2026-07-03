@@ -42,6 +42,7 @@ import sys
 import pytest
 
 from agentirc.protocol import Event, EventType
+from tests._helpers import wait_for as _wait_for
 from tests.conftest import IRCTestClient
 
 CLI = [sys.executable, "-m", "agentirc"]
@@ -75,17 +76,6 @@ async def _run_cli(*args: str) -> tuple[int, str, str]:
         await proc.wait()
         raise
     return proc.returncode, stdout.decode(), stderr.decode()
-
-
-async def _wait_for(predicate, timeout: float = 5.0, interval: float = 0.02) -> bool:
-    """Poll a sync ``predicate`` until it is truthy or ``timeout`` elapses."""
-    loop = asyncio.get_event_loop()
-    deadline = loop.time() + timeout
-    while loop.time() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(interval)
-    return predicate()
 
 
 async def _wait_for_member(server, channel: str, nick: str, timeout: float = 5.0) -> bool:
