@@ -133,9 +133,13 @@ jobs:
   # the explicit check below turns that ambient fact into a loud failure
   # if it's ever violated (e.g. a self-hosted runner, or a future workflow
   # change that checks out a sibling repo).
+  # Pre-bootstrap gating is handled per-step via `steps.bootstrap.outputs.ready`
+  # below (same pattern as `test`/`version-check`), NOT a job-level
+  # `if: hashFiles(...)`. A job-level `hashFiles()` fails to evaluate for push
+  # events that don't match the branch filter, which GitHub reports as a
+  # spurious "workflow file issue" run failure on feature-branch pushes.
   agent-guards:
     needs: lint
-    if: hashFiles('pyproject.toml') != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
