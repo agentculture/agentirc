@@ -49,8 +49,11 @@ CLI = [sys.executable, "-m", "agentirc"]
 _NEXT_CURSOR_RE = re.compile(r"^next-cursor: (.+)$")
 _DEFAULT_NICK_RE = re.compile(r"^agent-[0-9a-f]{4}$")
 
+# Ceiling for _run_cli's subprocess wait — all call sites in this file use it.
+_CLI_TIMEOUT_SECONDS = 20.0
 
-async def _run_cli(*args: str, timeout: float = 20.0) -> tuple[int, str, str]:
+
+async def _run_cli(*args: str) -> tuple[int, str, str]:
     """Run an agentirc CLI verb as a real (non-blocking) subprocess.
 
     Returns ``(returncode, stdout, stderr)``. Uses
@@ -65,7 +68,7 @@ async def _run_cli(*args: str, timeout: float = 20.0) -> tuple[int, str, str]:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(_CLI_TIMEOUT_SECONDS):
             stdout, stderr = await proc.communicate()
     except TimeoutError:
         proc.kill()

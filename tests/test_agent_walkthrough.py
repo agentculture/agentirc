@@ -43,6 +43,9 @@ CLI = [sys.executable, "-m", "agentirc"]
 _WATCH_PROBE_DEADLINE_SECONDS = 10.0
 _WATCH_PROBE_ATTEMPT_TIMEOUT_SECONDS = 1.5
 
+# Ceiling for _run_cli's subprocess wait — all call sites in this file use it.
+_CLI_TIMEOUT_SECONDS = 35.0
+
 
 def _free_port() -> int:
     """Ask the OS for a currently-unused loopback port.
@@ -56,7 +59,7 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _run_cli(*args: str, env: dict, timeout: float = 35.0) -> tuple[int, str, str]:
+async def _run_cli(*args: str, env: dict) -> tuple[int, str, str]:
     """Run an agentirc CLI verb as a real (non-blocking) subprocess.
 
     Returns ``(returncode, stdout, stderr)``.
@@ -69,7 +72,7 @@ async def _run_cli(*args: str, env: dict, timeout: float = 35.0) -> tuple[int, s
         env=env,
     )
     try:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(_CLI_TIMEOUT_SECONDS):
             stdout, stderr = await proc.communicate()
     except TimeoutError:
         proc.kill()

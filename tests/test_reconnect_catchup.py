@@ -75,6 +75,10 @@ from agentirc.protocol import MSGID_TAG
 
 _CHANNEL = "#catchup"
 
+# Per-read/per-message wait ceiling shared by _read_since_reply and
+# _consume_live — all call sites in this file use this default.
+_REPLY_TIMEOUT_SECONDS = 2.0
+
 
 async def _wait_for(predicate, timeout: float = 3.0, interval: float = 0.02) -> bool:
     """Poll ``predicate`` until it is truthy or ``timeout`` elapses."""
@@ -110,9 +114,7 @@ def _only_messages(entries: list[ReplayEntry]) -> list[ReplayEntry]:
     return [e for e in entries if e.msgid is not None]
 
 
-async def _read_since_reply(
-    raw_iter, channel: str, *, timeout: float = 2.0
-) -> tuple[list[ReplayEntry], str]:
+async def _read_since_reply(raw_iter, channel: str) -> tuple[list[ReplayEntry], str]:
     """Read one ``HISTORY SINCE`` reply (0+ ``HISTORY`` lines + ``HISTORYEND``).
 
     Consumes from ``raw_iter`` (an :meth:`AgentClient.raw_lines` iterator),
@@ -123,7 +125,7 @@ async def _read_since_reply(
     """
     entries: list[ReplayEntry] = []
     while True:
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(_REPLY_TIMEOUT_SECONDS):
             line = await raw_iter.__anext__()
         msg = Message.parse(line)
         if msg.command == "HISTORY" and msg.params and msg.params[0] == channel:
@@ -158,12 +160,10 @@ async def _since_sweep(
     raise AssertionError("HISTORY SINCE sweep did not terminate within max_pages")
 
 
-async def _consume_live(
-    msgs_iter, count: int, sink: dict[str, str], *, timeout: float = 2.0
-) -> None:
+async def _consume_live(msgs_iter, count: int, sink: dict[str, str]) -> None:
     """Pull exactly ``count`` live messages off ``msgs_iter``, recording msgid -> text."""
     for _ in range(count):
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(_REPLY_TIMEOUT_SECONDS):
             incoming = await msgs_iter.__anext__()
         msgid = incoming.tags.get(MSGID_TAG)
         assert msgid, f"expected an IRCv3 msgid tag on a live message-tags delivery: {incoming!r}"
