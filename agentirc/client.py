@@ -1104,23 +1104,35 @@ class Client:
                     )
                 await self._notify_mentions(target, text)
             else:
-                delivered = False
-                for chunk in self._split_outbound_text(target, text):
-                    msgid = new_msgid()
-                    relay = Message(
-                        prefix=self.prefix,
-                        command="PRIVMSG",
-                        params=[target, chunk],
-                        tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
-                    )
-                    sent = await self._send_to_client(target, relay, chunk, False, msgid=msgid)
-                    if not sent:
-                        break
-                    delivered = True
-                if not delivered:
-                    await self.send_numeric(replies.ERR_NOSUCHNICK, target, replies.MSG_NOSUCHNICK)
-                    return
-                await self._notify_mentions(None, text)
+                await self._relay_direct_privmsg(target, text)
+
+    async def _relay_direct_privmsg(self, target: str, text: str) -> None:
+        """Split, relay, and mention-notify a direct (non-channel) PRIVMSG.
+
+        Extracted from ``_handle_privmsg`` (S3776 cognitive-complexity fix):
+        the direct-message half of PRIVMSG dispatch, unchanged apart from
+        living in its own method. Sends ``ERR_NOSUCHNICK`` if not even the
+        first chunk could be delivered (target offline / unknown) — the
+        same ``delivered`` bookkeeping ``_handle_privmsg`` used inline
+        before this extraction.
+        """
+        delivered = False
+        for chunk in self._split_outbound_text(target, text):
+            msgid = new_msgid()
+            relay = Message(
+                prefix=self.prefix,
+                command="PRIVMSG",
+                params=[target, chunk],
+                tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
+            )
+            sent = await self._send_to_client(target, relay, chunk, False, msgid=msgid)
+            if not sent:
+                break
+            delivered = True
+        if not delivered:
+            await self.send_numeric(replies.ERR_NOSUCHNICK, target, replies.MSG_NOSUCHNICK)
+            return
+        await self._notify_mentions(None, text)
 
     async def _notify_mentions(self, channel_name: str | None, text: str) -> None:
         from agentirc.remote_client import RemoteClient
@@ -1501,7 +1513,6 @@ class Client:
 
         from agentirc.skills.history import (
             DEFAULT_SINCE_LIMIT,
-            HistorySkill,
             decode_since_cursor,
             encode_since_cursor,
         )
@@ -1523,34 +1534,84 @@ class Client:
             await self.send_raw(f"{EVENTERR} {channel_param} :invalid-cursor")
             return
 
-        if channel_param == "*":
-            channels = sorted(ch.name for ch in self.channels)
+        channels = await self._resolve_backfill_channels(channel_param)
+        if channels is None:
+            return
+
+        merged = self._collect_backfill_entries(channels, after, limit)
+        await self._emit_backfill_entries(merged)
+
+        if merged:
+            last_entry = merged[-1][1]
+            next_cursor = encode_since_cursor(last_entry.timestamp, last_entry.id)
+        elif after is None:
+            next_cursor = "*"
         else:
-            if not channel_param.startswith("#") or channel_param not in self.server.channels:
-                await self.send_raw(f"{EVENTERR} {channel_param} :no-such-channel")
-                return
-            channels = [channel_param]
+            next_cursor = cursor_token
+
+        server_name = self.server.config.name
+        await self.send_raw(f":{server_name} {BACKFILLEND} {channel_param} {next_cursor}")
+
+    async def _resolve_backfill_channels(self, channel_param: str) -> list[str] | None:
+        """Resolve ``BACKFILL``'s ``<channel-or-*>`` into a channel-name list.
+
+        Extracted from ``_handle_backfill`` (S3776 cognitive-complexity fix).
+        ``"*"`` means "every channel I'm currently joined to"
+        (``self.channels``); anything else must be an exact,
+        currently-existing ``#``-prefixed channel name
+        (``self.server.channels``) — see ``_handle_backfill``'s docstring
+        for why DM history is never reachable here. On an invalid name,
+        sends the ``EVENTERR ... :no-such-channel`` reply itself and
+        returns ``None`` so the caller knows to stop.
+        """
+        if channel_param == "*":
+            return sorted(ch.name for ch in self.channels)
+        if not channel_param.startswith("#") or channel_param not in self.server.channels:
+            await self.send_raw(f"{EVENTERR} {channel_param} :no-such-channel")
+            return None
+        return [channel_param]
+
+    def _collect_backfill_entries(
+        self, channels: list[str], after: tuple[float, int] | None, limit: int
+    ) -> list[tuple[str, "HistoryEntry"]]:
+        """Fetch and merge per-channel history entries for ``BACKFILL``.
+
+        Extracted from ``_handle_backfill`` (S3776 cognitive-complexity fix).
+        Per-channel fetch capped at `limit` each, then merged and
+        re-truncated to a global `limit` — a standard bounded k-way merge:
+        since the final result is at most `limit` entries wide, no single
+        channel can contribute more than `limit` of them, so fetching up
+        to `limit` from every channel independently can never short-change
+        the merge. The next-cursor is derived from this *raw* (pre-filter)
+        truncated batch, exactly mirroring HISTORY SINCE's own
+        last-entry-in-the-page cursor derivation, so pagination stays
+        non-overlapping and exactly-once even though some raw entries are
+        skipped (not emitted) by ``_emit_backfill_entries`` for being
+        lifecycle, not message.
+        """
+        from agentirc.skills.history import HistorySkill
 
         history_skill = self.server.get_skill_for_command("HISTORY")
-
-        # Per-channel fetch capped at `limit` each, then merged and
-        # re-truncated to a global `limit` — a standard bounded k-way merge:
-        # since the final result is at most `limit` entries wide, no single
-        # channel can contribute more than `limit` of them, so fetching up
-        # to `limit` from every channel independently can never short-change
-        # the merge. The next-cursor is derived from this *raw* (pre-filter)
-        # truncated batch, exactly mirroring HISTORY SINCE's own
-        # last-entry-in-the-page cursor derivation, so pagination stays
-        # non-overlapping and exactly-once even though some raw entries are
-        # skipped (not emitted) below for being lifecycle, not message.
         merged: list[tuple[str, "HistoryEntry"]] = []
         if isinstance(history_skill, HistorySkill):
             for ch in channels:
                 for entry in history_skill.get_since(ch, after, limit):
                     merged.append((ch, entry))
         merged.sort(key=lambda pair: (pair[1].timestamp, pair[1].id))
-        merged = merged[:limit]
+        return merged[:limit]
 
+    async def _emit_backfill_entries(
+        self, merged: list[tuple[str, "HistoryEntry"]]
+    ) -> None:
+        """Replay ``merged`` history entries as ``EVENT`` lines for ``BACKFILL``.
+
+        Extracted from ``_handle_backfill`` (S3776 cognitive-complexity fix).
+        Only stored ``message`` events are replayed — lifecycle entries
+        (identified by their synthetic ``system-``-prefixed nick, see
+        ``HistorySkill.on_event``) are skipped. See ``_handle_backfill``'s
+        docstring for the full rationale and the reserved
+        ``_BACKFILL_EVENT_SUB_ID`` wire shape.
+        """
         from agentirc.ircd import IRCd
 
         server_name = self.server.config.name
@@ -1573,16 +1634,6 @@ class Client:
                 f":{server_name} {EVENT} {self._BACKFILL_EVENT_SUB_ID} "
                 f"{EventType.MESSAGE.value} {ch} {entry.nick} :{encoded}"
             )
-
-        if merged:
-            last_entry = merged[-1][1]
-            next_cursor = encode_since_cursor(last_entry.timestamp, last_entry.id)
-        elif after is None:
-            next_cursor = "*"
-        else:
-            next_cursor = cursor_token
-
-        await self.send_raw(f":{server_name} {BACKFILLEND} {channel_param} {next_cursor}")
 
     # --- Runtime verb discovery (task t9) ---
     # Unlike the bot-extension verbs above, ``VERBS`` needs no ``BOT_CAP`` --
