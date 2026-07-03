@@ -47,6 +47,7 @@ class _ScriptedReader:
         self._chunks = list(chunks)
 
     async def read(self, _n: int = 4096) -> bytes:
+        await asyncio.sleep(0)  # yield to the loop like a real StreamReader.read
         if self._chunks:
             return self._chunks.pop(0)
         return b""
@@ -63,7 +64,7 @@ class _CapturingWriter:
         self.written.append(data)
 
     async def drain(self) -> None:
-        return None
+        await asyncio.sleep(0)  # yield to the loop like a real StreamWriter.drain
 
 
 async def _boot_ircd(tmp_path, port: int, name: str = "testserv") -> IRCd:
