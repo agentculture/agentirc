@@ -196,7 +196,7 @@ def test_from_yaml_presence_section_populates_dataclass(tmp_path):
     """Culture-shaped presence: section (30/90) round-trips through from_yaml."""
     p = tmp_path / "p.yaml"
     p.write_text(
-        "presence:\n" "  heartbeat_interval_seconds: 30\n" "  stale_after_seconds: 90\n"
+        "presence:\n  heartbeat_interval_seconds: 30\n  stale_after_seconds: 90\n"
     )
     cfg = ServerConfig.from_yaml(p)
     assert isinstance(cfg.presence, PresenceConfig)
@@ -207,7 +207,7 @@ def test_from_yaml_presence_section_populates_dataclass(tmp_path):
 def test_from_yaml_presence_section_non_default_values_round_trip(tmp_path):
     p = tmp_path / "p.yaml"
     p.write_text(
-        "presence:\n" "  heartbeat_interval_seconds: 10\n" "  stale_after_seconds: 25\n"
+        "presence:\n  heartbeat_interval_seconds: 10\n  stale_after_seconds: 25\n"
     )
     cfg = ServerConfig.from_yaml(p)
     assert cfg.presence.heartbeat_interval_seconds == 10
@@ -275,7 +275,7 @@ def test_from_yaml_invalid_presence_section_raises_at_load(tmp_path):
     just direct construction — from_yaml propagates the ValueError."""
     p = tmp_path / "p.yaml"
     p.write_text(
-        "presence:\n" "  heartbeat_interval_seconds: 90\n" "  stale_after_seconds: 30\n"
+        "presence:\n  heartbeat_interval_seconds: 90\n  stale_after_seconds: 30\n"
     )
     with pytest.raises(ValueError, match="stale_after_seconds"):
         ServerConfig.from_yaml(p)
@@ -349,7 +349,7 @@ def test_resolve_config_falls_back_to_builtin_defaults(tmp_path):
 def test_resolve_config_links_cli_replaces_yaml(tmp_path):
     p = tmp_path / "l.yaml"
     p.write_text(
-        "links:\n" "  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
+        "links:\n  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
     )
     cli_link = LinkConfig(
         name="cli-peer",
@@ -367,7 +367,7 @@ def test_resolve_config_links_cli_replaces_yaml(tmp_path):
 def test_resolve_config_links_yaml_used_when_cli_empty(tmp_path):
     p = tmp_path / "l.yaml"
     p.write_text(
-        "links:\n" "  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
+        "links:\n  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
     )
     args = _ns(config=str(p))  # link defaults to None
     cfg = _resolve_config(args)
