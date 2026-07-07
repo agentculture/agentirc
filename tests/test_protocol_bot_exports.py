@@ -45,10 +45,10 @@ def test_event_type_is_strenum():
     assert isinstance(EventType.JOIN, str)
 
 
-def test_event_type_has_twenty_members():
+def test_event_type_has_twenty_one_members():
     from agentirc.protocol import EventType
 
-    assert len(list(EventType)) == 20
+    assert len(list(EventType)) == 21
 
 
 @pytest.mark.parametrize(

@@ -8,7 +8,7 @@ import only from these seven modules.
 
 | Module | Members | Stability |
 |---|---|---|
-| [`agentirc.config`](#agentircconfig) | `ServerConfig`, `LinkConfig`, `TelemetryConfig` | Public, semver-tracked |
+| [`agentirc.config`](#agentircconfig) | `ServerConfig`, `LinkConfig`, `TelemetryConfig`, `PresenceConfig` (since 9.12.0) | Public, semver-tracked |
 | [`agentirc.cli`](#agentirccli) | `main()`, `dispatch(argv) -> int` | Public, semver-tracked |
 | [`agentirc.protocol`](#agentircprotocol) | Verb constants, numeric reply codes, IRCv3/extension tag names | Public, semver-tracked |
 | [`agentirc.ircd`](#agentircircd) | `IRCd` (constructor + `start`/`stop`/`emit_event`/`subscription_registry`/`clients`/`channels`/`config`/`system_client`) | Public, semver-tracked (since 9.6.0) |
@@ -407,7 +407,7 @@ still resolves but emits `DeprecationWarning`; it will be removed in
 
 ## `agentirc.config`
 
-Three dataclasses plus one classmethod loader.
+Four dataclasses plus one classmethod loader.
 
 ### `ServerConfig`
 
@@ -425,6 +425,7 @@ class ServerConfig:
     event_subscription_queue_max: int = 1024   # since 9.5.0a1 (EVENTSUB queue bound)
     ping_interval: float = 60.0                # since 9.10.0 (agent-accessibility)
     pong_timeout: float = 120.0                # since 9.10.0 (agent-accessibility)
+    presence: PresenceConfig = field(default_factory=PresenceConfig)  # since 9.12.0 (PRESENCE)
 ```
 
 Plus, since 9.4.0:
@@ -436,14 +437,14 @@ def from_yaml(cls, path: str | Path) -> ServerConfig
 
 Loads a `ServerConfig` from `~/.culture/server.yaml` (or any YAML file).
 Recognised top-level keys: `server` (with `name`/`host`/`port`),
-`telemetry`, `links`, `webhook_port`, `data_dir`, `system_bots`,
-`event_subscription_queue_max`, and — since 9.10.0 — `ping_interval` /
-`pong_timeout`. Unknown top-level keys (`supervisor`, `agents`,
-`buffer_size`, `poll_interval`, `sleep_start`, `sleep_end`, `webhooks`)
-are silently ignored — those belong to culture's broader process
-supervisor, and agentirc must coexist with culture using the same config
-file. Missing files return defaults; malformed YAML raises
-`yaml.YAMLError`.
+`telemetry`, `presence` (since 9.12.0), `links`, `webhook_port`,
+`data_dir`, `system_bots`, `event_subscription_queue_max`, and — since
+9.10.0 — `ping_interval` / `pong_timeout`. Unknown top-level keys
+(`supervisor`, `agents`, `buffer_size`, `poll_interval`, `sleep_start`,
+`sleep_end`, `webhooks`) are silently ignored — those belong to culture's
+broader process supervisor, and agentirc must coexist with culture using
+the same config file. Missing files return defaults; malformed YAML
+raises `yaml.YAMLError`.
 
 `ping_interval`/`pong_timeout` (seconds) configure the server's liveness
 sweep for local TCP clients: after `ping_interval` seconds of inbound
@@ -494,6 +495,41 @@ are **public observability identifiers** that downstream operators
 grep for in their dashboards. They preserve the `culture.` prefix
 verbatim for continuity; renaming them is a breaking change for
 observability tooling and requires a coordinated cross-repo bump.
+
+### `PresenceConfig`
+
+Public since **9.12.0** (the PRESENCE release; see
+[#53](https://github.com/agentculture/agentirc/issues/53)).
+
+```python
+@dataclass
+class PresenceConfig:
+    heartbeat_interval_seconds: int = 30
+    stale_after_seconds: int = 90
+```
+
+Two fields, both plain positive-integer seconds. Validated fail-fast in
+`__post_init__`: both must be positive integers, and
+`stale_after_seconds` must be **strictly greater than**
+`heartbeat_interval_seconds` — otherwise a resident heartbeating exactly
+on schedule could still be flagged `presumed_hung` between beats.
+Constructing (or loading via YAML) a `PresenceConfig` that violates the
+rule raises `ValueError` immediately, at config-load time, rather than
+surfacing as a confusing runtime symptom later.
+
+Parsed from the nested `presence:` section of `server.yaml` the same way
+`TelemetryConfig` is parsed from `telemetry:` — unknown keys inside the
+section are silently ignored (culture-coexistence tolerance), and a
+`server.yaml` that omits the `presence:` section entirely still loads,
+falling back to the 30/90 defaults. See
+[`docs/extension-api.md#publishing-resident-presence-presence--presence-list`](extension-api.md#publishing-resident-presence-presence--presence-list)
+for the wire-level heartbeat/staleness contract this config drives.
+
+Note: the `PresenceSkill` class that consumes this config
+(`agentirc.skills.presence`) is **not** itself part of the public surface
+— only the wire protocol (`PRESENCE`/`PRESENCE LIST`/`PRESENCEEND`, see
+[`agentirc.protocol`](#agentircprotocol) below) and `PresenceConfig` are
+semver-tracked. The skill implementation may be refactored freely.
 
 ## `agentirc.cli`
 
@@ -553,6 +589,9 @@ About 40 module-level uppercase string constants:
 - **Runtime discovery verb (since 9.10.0):** `VERBS` — see [Runtime verb
   discovery](#runtime-verb-discovery-and-message-delivery-tags-agent-accessibility-release-9100)
   below.
+- **Presence verbs (since 9.12.0):** `PRESENCE`, `PRESENCELIST`,
+  `PRESENCEEND` — see [Presence extension
+  surface](#presence-extension-surface-shipped-in-9120) below.
 
 ### Numeric reply codes
 
@@ -649,6 +688,34 @@ internal wire/CLI surface — not part of the semver-tracked Python API —
 and are documented from the agent point of view in
 [`docs/agent-walkthrough.md`](agent-walkthrough.md) and
 [`docs/cli.md`](cli.md).
+
+### Presence extension surface (shipped in 9.12.0)
+
+An additive minor bump on the 9.x line. Closes
+[#53](https://github.com/agentculture/agentirc/issues/53). The wire-level
+quick reference (payload fields, wire examples, heartbeat/staleness
+contract) lives in
+[`docs/extension-api.md#publishing-resident-presence-presence--presence-list`](extension-api.md#publishing-resident-presence-presence--presence-list);
+this section is the Python symbol reference.
+
+- **Presence verbs:** `PRESENCE = "PRESENCE"`, `PRESENCELIST =
+  "PRESENCELIST"`, `PRESENCEEND = "PRESENCEEND"`. `PRESENCE` doubles as
+  both the fire-and-forget publish verb (`PRESENCE :<json>`) and, via the
+  `LIST` subcommand (`PRESENCE LIST`), the query trigger; the server
+  replies to a query with one `PRESENCELIST` line per resident followed
+  by one `PRESENCEEND` terminator. Neither verb requires the
+  `agentirc.io/bot` capability.
+- **`EventType.PRESENCE`** — new `StrEnum` member, wire value
+  `"presence.update"`. **`EVENT_TYPE_PRESENCE_UPDATE = "presence.update"`**
+  — the parallel bare-string constant, following the same
+  per-type-constant convention as the bot extension surface above.
+- Presence state itself (the per-nick registry, the read-time
+  `presumed_hung` computation, the `PresenceSkill` class that owns all of
+  this) is **not** part of the public Python surface — only the wire
+  protocol (the three verb constants) and `EventType.PRESENCE` /
+  `EVENT_TYPE_PRESENCE_UPDATE` are semver-tracked. See
+  [`PresenceConfig`](#presenceconfig) under `agentirc.config` for the
+  companion configuration surface, which *is* public.
 
 ### Wire-format quirks (preserved verbatim)
 

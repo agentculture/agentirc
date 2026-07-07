@@ -13,7 +13,8 @@ import pytest
 import yaml
 
 from agentirc.cli import _resolve_config
-from agentirc.config import LinkConfig, ServerConfig, TelemetryConfig
+from agentirc.config import (LinkConfig, PresenceConfig, ServerConfig,
+                             TelemetryConfig)
 
 
 def _ns(**overrides) -> argparse.Namespace:
@@ -78,7 +79,9 @@ def test_from_yaml_telemetry_section_populates_dataclass(tmp_path):
     assert cfg.telemetry.service_name == "test-service"
     assert cfg.telemetry.audit_dir == audit_dir
     # other telemetry fields stay default
-    assert cfg.telemetry.otlp_endpoint == "http://localhost:4317"  # NOSONAR S5332 — test-only OTLP endpoint
+    assert (
+        cfg.telemetry.otlp_endpoint == "http://localhost:4317"
+    )  # NOSONAR S5332 — test-only OTLP endpoint
 
 
 def test_from_yaml_links_list_builds_linkconfigs(tmp_path):
@@ -101,23 +104,27 @@ def test_from_yaml_ignores_culture_only_keys(tmp_path):
     none belong to agentirc, all should be silently ignored.
     """
     p = tmp_path / "full.yaml"
-    p.write_text(yaml.safe_dump({
-        "server": {
-            "name": "spark",
-            "host": "localhost",
-            "port": 6667,
-            "archived": False,
-            "archived_at": "",
-            "archived_reason": "",
-        },
-        "supervisor": {"model": "claude-sonnet-4-6", "thinking": "medium"},
-        "webhooks": {"url": None, "irc_channel": "#alerts"},
-        "buffer_size": 500,
-        "poll_interval": 60,
-        "sleep_start": "23:00",
-        "sleep_end": "08:00",
-        "agents": {"daria": "/path/to/daria"},
-    }))
+    p.write_text(
+        yaml.safe_dump(
+            {
+                "server": {
+                    "name": "spark",
+                    "host": "localhost",
+                    "port": 6667,
+                    "archived": False,
+                    "archived_at": "",
+                    "archived_reason": "",
+                },
+                "supervisor": {"model": "claude-sonnet-4-6", "thinking": "medium"},
+                "webhooks": {"url": None, "irc_channel": "#alerts"},
+                "buffer_size": 500,
+                "poll_interval": 60,
+                "sleep_start": "23:00",
+                "sleep_end": "08:00",
+                "agents": {"daria": "/path/to/daria"},
+            }
+        )
+    )
     # Should not raise
     cfg = ServerConfig.from_yaml(p)
     assert cfg.name == "spark"
@@ -164,9 +171,140 @@ def test_from_yaml_unknown_telemetry_key_silently_dropped(tmp_path):
     crash on unknown keys — silent-drop matches culture-coexistence rule.
     """
     p = tmp_path / "t.yaml"
-    p.write_text("telemetry:\n  enabled: true\n  future_field_not_yet_in_agentirc: 42\n")
+    p.write_text(
+        "telemetry:\n  enabled: true\n  future_field_not_yet_in_agentirc: 42\n"
+    )
     cfg = ServerConfig.from_yaml(p)
     assert cfg.telemetry.enabled is True
+
+
+# ---------------------------------------------------------------------------
+# PresenceConfig (t2) — heartbeat_interval_seconds / stale_after_seconds
+# ---------------------------------------------------------------------------
+
+
+def test_server_config_default_presence_is_30_90():
+    """ServerConfig() default construction works and .presence carries the
+    30/90 defaults with no YAML involved."""
+    cfg = ServerConfig()
+    assert isinstance(cfg.presence, PresenceConfig)
+    assert cfg.presence.heartbeat_interval_seconds == 30
+    assert cfg.presence.stale_after_seconds == 90
+
+
+def test_from_yaml_presence_section_populates_dataclass(tmp_path):
+    """Culture-shaped presence: section (30/90) round-trips through from_yaml."""
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n  heartbeat_interval_seconds: 30\n  stale_after_seconds: 90\n"
+    )
+    cfg = ServerConfig.from_yaml(p)
+    assert isinstance(cfg.presence, PresenceConfig)
+    assert cfg.presence.heartbeat_interval_seconds == 30
+    assert cfg.presence.stale_after_seconds == 90
+
+
+def test_from_yaml_presence_section_non_default_values_round_trip(tmp_path):
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n  heartbeat_interval_seconds: 10\n  stale_after_seconds: 25\n"
+    )
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.presence.heartbeat_interval_seconds == 10
+    assert cfg.presence.stale_after_seconds == 25
+
+
+def test_from_yaml_no_presence_section_uses_defaults(tmp_path):
+    """Backward compat: an existing culture server.yaml without a presence:
+    section still loads, defaulting to 30/90."""
+    p = tmp_path / "s.yaml"
+    p.write_text("server:\n  name: spark\n")
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.presence.heartbeat_interval_seconds == 30
+    assert cfg.presence.stale_after_seconds == 90
+
+
+def test_from_yaml_presence_unknown_keys_silently_dropped(tmp_path):
+    """Unknown keys inside presence: are ignored, same tolerance as the
+    telemetry: block and top-level culture-only keys."""
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n"
+        "  heartbeat_interval_seconds: 30\n"
+        "  stale_after_seconds: 90\n"
+        "  future_field_not_yet_in_agentirc: 42\n"
+    )
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.presence.heartbeat_interval_seconds == 30
+    assert cfg.presence.stale_after_seconds == 90
+
+
+def test_presence_config_stale_not_greater_than_heartbeat_raises():
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=90, stale_after_seconds=30)
+
+
+def test_presence_config_stale_equal_to_heartbeat_raises():
+    """Strictly greater — equal values are also invalid."""
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=30, stale_after_seconds=30)
+
+
+def test_presence_config_zero_heartbeat_raises():
+    with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=0, stale_after_seconds=90)
+
+
+def test_presence_config_negative_heartbeat_raises():
+    with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=-5, stale_after_seconds=90)
+
+
+def test_presence_config_zero_stale_after_raises():
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=30, stale_after_seconds=0)
+
+
+def test_presence_config_negative_stale_after_raises():
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=30, stale_after_seconds=-10)
+
+
+def test_from_yaml_invalid_presence_section_raises_at_load(tmp_path):
+    """The same validation fires when the bad values arrive via YAML, not
+    just direct construction — from_yaml propagates the ValueError."""
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n  heartbeat_interval_seconds: 90\n  stale_after_seconds: 30\n"
+    )
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        ServerConfig.from_yaml(p)
+
+
+def test_presence_config_non_int_value_raises_clear_valueerror():
+    """A wrong-typed value (e.g. a quoted YAML string) fails with a clear
+    ValueError, not a raw TypeError from the `<=` comparison."""
+    with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
+        PresenceConfig(heartbeat_interval_seconds="thirty", stale_after_seconds=90)
+
+
+def test_presence_config_bool_value_raises_valueerror():
+    """bool is an int subclass but not a valid interval — rejected explicitly."""
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=30, stale_after_seconds=True)
+
+
+def test_from_yaml_wrong_typed_presence_value_raises_valueerror(tmp_path):
+    """A quoted (string) YAML value propagates a ValueError through from_yaml,
+    not a TypeError."""
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n"
+        '  heartbeat_interval_seconds: "thirty"\n'
+        "  stale_after_seconds: 90\n"
+    )
+    with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
+        ServerConfig.from_yaml(p)
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +349,7 @@ def test_resolve_config_falls_back_to_builtin_defaults(tmp_path):
 def test_resolve_config_links_cli_replaces_yaml(tmp_path):
     p = tmp_path / "l.yaml"
     p.write_text(
-        "links:\n"
-        "  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
+        "links:\n  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
     )
     cli_link = LinkConfig(
         name="cli-peer",
@@ -230,8 +367,7 @@ def test_resolve_config_links_cli_replaces_yaml(tmp_path):
 def test_resolve_config_links_yaml_used_when_cli_empty(tmp_path):
     p = tmp_path / "l.yaml"
     p.write_text(
-        "links:\n"
-        "  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
+        "links:\n  - {name: alpha, host: 127.0.0.1, port: 6601, password: x}\n"
     )
     args = _ns(config=str(p))  # link defaults to None
     cfg = _resolve_config(args)
