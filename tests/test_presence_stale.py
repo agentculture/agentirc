@@ -118,7 +118,7 @@ async def _poll_until(
     nick: str,
     predicate,
     *,
-    timeout: float = 5.0,
+    timeout: float = 5.0,  # NOSONAR S7483: poll-deadline knob, not wait_for; mirrors wait_for/recv
     interval: float = 0.15,
 ) -> dict[str, dict]:
     """Poll ``PRESENCE LIST`` until ``predicate(rows[nick])`` holds, or timeout.

@@ -239,7 +239,8 @@ class PresenceSkill(Skill):
 
         try:
             data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError, ValueError):
+        # json.JSONDecodeError subclasses ValueError
+        except (TypeError, ValueError):
             logger.debug("presence: malformed JSON from %s: %r", nick, raw)
             return
 
@@ -501,9 +502,12 @@ class PresenceSkill(Skill):
             return
 
         local_name = self.server.config.name
-        for nick, record in list(self.registry.items()):
-            if record.server != local_name:
-                continue
+        local_rows = [
+            (nick, record)
+            for nick, record in self.registry.items()
+            if record.server == local_name
+        ]
+        for nick, record in local_rows:
             await self._emit_presence_update(nick, record)
 
     def _on_server_unlink(self, event: Event) -> None:
