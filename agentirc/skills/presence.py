@@ -39,8 +39,8 @@ from typing import TYPE_CHECKING
 from agentirc.skill import Event, EventType, Skill
 
 if TYPE_CHECKING:
-    from agentirc.client import Client
     from agentirc._internal.protocol.message import Message
+    from agentirc.client import Client
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,9 @@ class PresenceSkill(Skill):
             return
 
         if not isinstance(data, dict):
-            logger.debug("presence: payload from %s is not a JSON object: %r", nick, raw)
+            logger.debug(
+                "presence: payload from %s is not a JSON object: %r", nick, raw
+            )
             return
 
         state = data.get("state")

@@ -232,9 +232,7 @@ async def test_publish_wrong_field_types_is_dropped_silently(server, make_client
         alice, skill, "testserv-alice", bad_line, None
     )
 
-    bad_line_2 = _presence_line(
-        {"state": "idle", "since": "T0", "tokens_in": True}
-    )
+    bad_line_2 = _presence_line({"state": "idle", "since": "T0", "tokens_in": True})
     await _assert_dropped_silently_and_connection_usable(
         alice, skill, "testserv-alice", bad_line_2, None
     )
