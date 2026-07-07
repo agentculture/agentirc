@@ -169,11 +169,13 @@ class IRCd:
     async def _register_default_skills(self) -> None:
         from agentirc.skills.history import HistorySkill
         from agentirc.skills.icon import IconSkill
+        from agentirc.skills.presence import PresenceSkill
         from agentirc.skills.rooms import RoomsSkill
         from agentirc.skills.threads import ThreadsSkill
 
         await self.register_skill(HistorySkill())
         await self.register_skill(IconSkill())
+        await self.register_skill(PresenceSkill())
         await self.register_skill(RoomsSkill())
         await self.register_skill(ThreadsSkill())
 
