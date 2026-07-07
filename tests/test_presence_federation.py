@@ -92,7 +92,7 @@ async def test_publish_on_a_appears_on_b_with_server_attribution(
     linked_servers, make_client_a, make_client_b
 ):
     """A resident publishing on A shows up in B's registry, attributed to A."""
-    alpha, beta = linked_servers
+    _alpha, beta = linked_servers
     beta_skill = _find_presence_skill(beta)
 
     alice = await make_client_a("alpha-alice", "alice")
@@ -121,7 +121,7 @@ async def test_list_on_b_shows_both_local_and_remote_residents(
     linked_servers, make_client_a, make_client_b
 ):
     """PRESENCE LIST on B aggregates a local resident and a remote (A) one."""
-    alpha, beta = linked_servers
+    _alpha, beta = linked_servers
     beta_skill = _find_presence_skill(beta)
 
     alice = await make_client_a("alpha-alice", "alice")
@@ -252,7 +252,7 @@ async def test_presence_publish_produces_no_system_privmsg(server, make_client):
 @pytest.mark.asyncio
 async def test_quit_on_a_flips_remote_row_offline_on_b(linked_servers, make_client_a):
     """A resident's QUIT on A federates as an offline flip visible on B."""
-    alpha, beta = linked_servers
+    _alpha, beta = linked_servers
     beta_skill = _find_presence_skill(beta)
 
     alice = await make_client_a("alpha-alice", "alice")
