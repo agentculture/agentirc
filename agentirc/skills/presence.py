@@ -149,7 +149,7 @@ class PresenceSkill(Skill):
             return
 
         since = data.get("since")
-        if not isinstance(since, str) or not since:
+        if not isinstance(since, str) or not since.strip():
             logger.warning("presence: missing/invalid since from %s: %r", nick, since)
             return
 

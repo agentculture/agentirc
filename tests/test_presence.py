@@ -161,6 +161,17 @@ async def test_publish_missing_since_is_dropped_silently(server, make_client):
 
 
 @pytest.mark.asyncio
+async def test_publish_whitespace_only_since_is_dropped_silently(server, make_client):
+    skill = _find_presence_skill(server)
+    alice = await make_client("testserv-alice", "alice")
+
+    bad_line = _presence_line({"state": "idle", "since": "   "})
+    await _assert_dropped_silently_and_connection_usable(
+        alice, skill, "testserv-alice", bad_line, None
+    )
+
+
+@pytest.mark.asyncio
 async def test_publish_missing_state_is_dropped_silently(server, make_client):
     skill = _find_presence_skill(server)
     alice = await make_client("testserv-alice", "alice")
