@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from agentirc.cli import _resolve_config
-from agentirc.config import LinkConfig, ServerConfig, TelemetryConfig
+from agentirc.config import LinkConfig, PresenceConfig, ServerConfig, TelemetryConfig
 
 
 def _ns(**overrides) -> argparse.Namespace:
@@ -167,6 +167,115 @@ def test_from_yaml_unknown_telemetry_key_silently_dropped(tmp_path):
     p.write_text("telemetry:\n  enabled: true\n  future_field_not_yet_in_agentirc: 42\n")
     cfg = ServerConfig.from_yaml(p)
     assert cfg.telemetry.enabled is True
+
+
+# ---------------------------------------------------------------------------
+# PresenceConfig (t2) — heartbeat_interval_seconds / stale_after_seconds
+# ---------------------------------------------------------------------------
+
+
+def test_server_config_default_presence_is_30_90():
+    """ServerConfig() default construction works and .presence carries the
+    30/90 defaults with no YAML involved."""
+    cfg = ServerConfig()
+    assert isinstance(cfg.presence, PresenceConfig)
+    assert cfg.presence.heartbeat_interval_seconds == 30
+    assert cfg.presence.stale_after_seconds == 90
+
+
+def test_from_yaml_presence_section_populates_dataclass(tmp_path):
+    """Culture-shaped presence: section (30/90) round-trips through from_yaml."""
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n"
+        "  heartbeat_interval_seconds: 30\n"
+        "  stale_after_seconds: 90\n"
+    )
+    cfg = ServerConfig.from_yaml(p)
+    assert isinstance(cfg.presence, PresenceConfig)
+    assert cfg.presence.heartbeat_interval_seconds == 30
+    assert cfg.presence.stale_after_seconds == 90
+
+
+def test_from_yaml_presence_section_non_default_values_round_trip(tmp_path):
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n"
+        "  heartbeat_interval_seconds: 10\n"
+        "  stale_after_seconds: 25\n"
+    )
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.presence.heartbeat_interval_seconds == 10
+    assert cfg.presence.stale_after_seconds == 25
+
+
+def test_from_yaml_no_presence_section_uses_defaults(tmp_path):
+    """Backward compat: an existing culture server.yaml without a presence:
+    section still loads, defaulting to 30/90."""
+    p = tmp_path / "s.yaml"
+    p.write_text("server:\n  name: spark\n")
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.presence.heartbeat_interval_seconds == 30
+    assert cfg.presence.stale_after_seconds == 90
+
+
+def test_from_yaml_presence_unknown_keys_silently_dropped(tmp_path):
+    """Unknown keys inside presence: are ignored, same tolerance as the
+    telemetry: block and top-level culture-only keys."""
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n"
+        "  heartbeat_interval_seconds: 30\n"
+        "  stale_after_seconds: 90\n"
+        "  future_field_not_yet_in_agentirc: 42\n"
+    )
+    cfg = ServerConfig.from_yaml(p)
+    assert cfg.presence.heartbeat_interval_seconds == 30
+    assert cfg.presence.stale_after_seconds == 90
+
+
+def test_presence_config_stale_not_greater_than_heartbeat_raises():
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=90, stale_after_seconds=30)
+
+
+def test_presence_config_stale_equal_to_heartbeat_raises():
+    """Strictly greater — equal values are also invalid."""
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=30, stale_after_seconds=30)
+
+
+def test_presence_config_zero_heartbeat_raises():
+    with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=0, stale_after_seconds=90)
+
+
+def test_presence_config_negative_heartbeat_raises():
+    with pytest.raises(ValueError, match="heartbeat_interval_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=-5, stale_after_seconds=90)
+
+
+def test_presence_config_zero_stale_after_raises():
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=30, stale_after_seconds=0)
+
+
+def test_presence_config_negative_stale_after_raises():
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        PresenceConfig(heartbeat_interval_seconds=30, stale_after_seconds=-10)
+
+
+def test_from_yaml_invalid_presence_section_raises_at_load(tmp_path):
+    """The same validation fires when the bad values arrive via YAML, not
+    just direct construction — from_yaml propagates the ValueError."""
+    p = tmp_path / "p.yaml"
+    p.write_text(
+        "presence:\n"
+        "  heartbeat_interval_seconds: 90\n"
+        "  stale_after_seconds: 30\n"
+    )
+    with pytest.raises(ValueError, match="stale_after_seconds"):
+        ServerConfig.from_yaml(p)
 
 
 # ---------------------------------------------------------------------------

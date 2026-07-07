@@ -42,6 +42,42 @@ class TelemetryConfig:
 
 
 @dataclass
+class PresenceConfig:
+    """Resident-presence heartbeat/staleness settings. Mirrors server.yaml
+    `presence:` block (culture-shaped: heartbeat_interval_seconds/
+    stale_after_seconds).
+
+    Validated fail-fast in ``__post_init__``: both fields must be positive
+    integers, and ``stale_after_seconds`` must be strictly greater than
+    ``heartbeat_interval_seconds`` — otherwise a resident heartbeating
+    exactly on schedule could still be flagged presumed-hung between
+    beats.
+    """
+
+    heartbeat_interval_seconds: int = 30
+    stale_after_seconds: int = 90
+
+    def __post_init__(self) -> None:
+        if self.heartbeat_interval_seconds <= 0:
+            raise ValueError(
+                "presence.heartbeat_interval_seconds must be a positive "
+                f"integer, got {self.heartbeat_interval_seconds!r}"
+            )
+        if self.stale_after_seconds <= 0:
+            raise ValueError(
+                "presence.stale_after_seconds must be a positive integer, "
+                f"got {self.stale_after_seconds!r}"
+            )
+        if self.stale_after_seconds <= self.heartbeat_interval_seconds:
+            raise ValueError(
+                "presence.stale_after_seconds "
+                f"({self.stale_after_seconds!r}) must be strictly greater "
+                "than presence.heartbeat_interval_seconds "
+                f"({self.heartbeat_interval_seconds!r})"
+            )
+
+
+@dataclass
 class ServerConfig:
     """Configuration for a culture server instance."""
 
@@ -66,17 +102,19 @@ class ServerConfig:
     # disables the liveness sweep loop entirely.
     ping_interval: float = 60.0
     pong_timeout: float = 120.0
+    presence: PresenceConfig = field(default_factory=PresenceConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ServerConfig":
         """Load a ServerConfig from a YAML file.
 
         Recognises top-level ``server`` (host/port/name), ``telemetry``,
-        ``links``, ``webhook_port``, ``data_dir``, ``system_bots``,
-        ``event_subscription_queue_max`` (added in 9.5.0a1; consumed by
-        the subscription registry that lands in 9.5.0a3), and
-        ``ping_interval``/``pong_timeout`` (t5: server liveness sweep —
-        see ``ServerConfig.ping_interval``/``pong_timeout``).
+        ``presence`` (t2: resident-presence heartbeat/staleness knobs —
+        see ``PresenceConfig``), ``links``, ``webhook_port``, ``data_dir``,
+        ``system_bots``, ``event_subscription_queue_max`` (added in
+        9.5.0a1; consumed by the subscription registry that lands in
+        9.5.0a3), and ``ping_interval``/``pong_timeout`` (t5: server
+        liveness sweep — see ``ServerConfig.ping_interval``/``pong_timeout``).
         Unknown top-level keys (``supervisor``, ``agents``, ``buffer_size``,
         ``poll_interval``, ``sleep_start``, ``sleep_end``) are silently
         ignored — those belong to culture's broader process supervisor,
@@ -85,13 +123,17 @@ class ServerConfig:
         ``server:`` block are also tolerated for the same reason
         (culture's ``ServerConnConfig`` carries ``archived``,
         ``archived_at``, ``archived_reason`` that agentirc has no use
-        for).
+        for); the same tolerance applies inside the ``presence:`` block.
 
         A missing path returns the dataclass defaults rather than
         raising — callers (CLI handlers) treat the file as optional.
         Malformed YAML raises ``yaml.YAMLError`` from the underlying
         loader; we deliberately do not catch it so users see the parse
-        error.
+        error. An invalid ``presence:`` section (non-positive values, or
+        ``stale_after_seconds`` not strictly greater than
+        ``heartbeat_interval_seconds``) raises ``ValueError`` from
+        ``PresenceConfig.__post_init__``; we likewise let it propagate so
+        the operator sees the offending keys/values.
         """
         p = Path(path).expanduser()
         if not p.exists():
@@ -136,6 +178,9 @@ def _yaml_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
     telemetry_section = raw.get("telemetry") or {}
     if telemetry_section:
         kwargs["telemetry"] = _build_telemetry(telemetry_section)
+    presence_section = raw.get("presence") or {}
+    if presence_section:
+        kwargs["presence"] = _build_presence(presence_section)
     system_bots = raw.get("system_bots") or {}
     if system_bots:
         kwargs["system_bots"] = system_bots
@@ -147,3 +192,15 @@ def _build_telemetry(yaml_telemetry: dict) -> TelemetryConfig:
     known = {f.name for f in TelemetryConfig.__dataclass_fields__.values()}
     tcfg = {k: v for k, v in yaml_telemetry.items() if k in known}
     return TelemetryConfig(**tcfg)
+
+
+def _build_presence(yaml_presence: dict) -> PresenceConfig:
+    """Build a PresenceConfig, dropping keys not on the dataclass.
+
+    Unknown keys inside ``presence:`` are silently ignored — same
+    culture-coexistence tolerance as ``_build_telemetry``. Known keys
+    with invalid values still raise via ``PresenceConfig.__post_init__``.
+    """
+    known = {f.name for f in PresenceConfig.__dataclass_fields__.values()}
+    pcfg = {k: v for k, v in yaml_presence.items() if k in known}
+    return PresenceConfig(**pcfg)
