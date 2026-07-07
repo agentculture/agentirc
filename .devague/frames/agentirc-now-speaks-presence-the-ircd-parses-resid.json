@@ -1,0 +1,432 @@
+{
+  "slug": "agentirc-now-speaks-presence-the-ircd-parses-resid",
+  "title": "agentirc now speaks PRESENCE: the IRCd parses resident presence heartbeats, tracks per-client presence state, propagates it across server links, flags presumed-hung residents via a stale-busy watchdog, and serves the aggregate to culture via PRESENCE LIST \u2014 unblocking culture resident presence v1 (issue #53)",
+  "schema_version": 1,
+  "status": "exported",
+  "created": "2026-07-07T03:23:58Z",
+  "updated": "2026-07-07T03:44:11Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "agentirc now speaks PRESENCE: the IRCd parses resident presence heartbeats, tracks per-client presence state, propagates it across server links, flags presumed-hung residents via a stale-busy watchdog, and serves the aggregate to culture via PRESENCE LIST \u2014 unblocking culture resident presence v1 (issue #53)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "End-to-end proof on a linked pair: resident publishes PRESENCE on server A; culture-shaped 'PRESENCE LIST' on server B returns that resident's row with correct server attribution; the full pytest suite stays green; culture's adapter shape is consumed unmodified",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c2",
+      "kind": "audience",
+      "text": "Primary consumer is culture's front door (the 'culture residents' CLI verb t5 and the JSON endpoint t7 for the irc-lens console); secondary audience is mesh operators and future balancing policies, plus any embedder using agentirc.ircd.IRCd",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "Culture's t5/t7 transport adapter consumes the reply unmodified \u2014 proven by matching their anticipated shape (PRESENCE LIST / PRESENCELIST json / PRESENCEEND / 421 degrade) byte-for-byte in tests",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c3",
+      "kind": "before_state",
+      "text": "The mesh has no visibility into which residents are busy: no presence verb exists, culture's residents CLI degrades to 'server does not support PRESENCE' (421), and a hung agent is indistinguishable from a busy one",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "Verified against 9.11.0: PRESENCE currently answers 421 via the stock unknown-verb path (regression-asserted so the degrade contract holds for older servers)",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c4",
+      "kind": "after_state",
+      "text": "Any server in the mesh can render a live aggregate of every connected resident: {nick, server, state, since, task, tokens_in, tokens_out, presumed_hung, last_refresh} \u2014 including residents connected to OTHER servers via S2S propagation",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "A linked-pair end-to-end test shows one PRESENCE LIST containing BOTH a local and a remote resident, every row carrying all nine keys with correct server attribution",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c5",
+      "kind": "why_it_matters",
+      "text": "Operators and balancing policies can act on active-resident counts and token spend; a kill -9'd resident that last reported busy is surfaced as presumed-hung with zero cooperation from the dead process",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "The aggregate alone is sufficient for culture to compute active-resident counts and per-resident token spend \u2014 no additional server round-trips or side channels needed",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c6",
+      "kind": "boundary",
+      "text": "Observe-only v1: the server never declines, defers, or blocks work based on presence or spend; budget warnings are computed culture-side. The emitter (client harness) is cultureagent's parallel task t4 \u2014 agentirc implements only the IRCd side. Wire/identity strings stay culture.* (config filename, telemetry names), never culture_core.*",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "The diff contains no code path where presence state or token counters gate/defer/reject any command, message, or connection; git grep culture_core over the diff is empty",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "PRESENCE verb: parse per the wire contract (state/since/optional task/optional tokens_in+tokens_out); it is a NEW verb \u2014 no RFC 2812 command is redefined, and unknown-verb behavior for vanilla clients (e.g. weechat in the same channel) is unchanged",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "Payload parsing matches protocol/extensions/presence.md field-for-field (names, types, optionality), and a test proves a vanilla client without the feature still gets stock 421 unknown-command semantics for any other unknown verb",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "Per-client presence state: the server keeps latest presence per connected client \u2014 state (idle|listening|thinking|working|draining|offline), since, task, token counters, last_refresh",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "A test drives two heartbeats and asserts the stored state reflects the LATEST one (state, since, task, counters) with last_refresh updated server-side",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "S2S propagation: presence propagates across server links (same pattern as existing S2S relay) so residents on other servers appear in any server's aggregate view",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "A linked_servers test asserts a resident connected to server A appears in server B's PRESENCE LIST with the correct server attribution, and presence state survives the case where the update predates the link (burst or re-sync on link)",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "Stale-busy watchdog: a client whose last state is busy (non-idle, non-offline) and whose last_refresh is older than configurable stale_after is flagged presumed_hung in the aggregate; a slow-but-alive resident heartbeating through a long LLM call is NOT flagged",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "Watchdog test: freeze/patch time or use short stale_after \u2014 busy client with old last_refresh is presumed_hung=true; same client after one more heartbeat is presumed_hung=false; idle and offline states are never flagged",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "Query surface: adopt culture's anticipated shape \u2014 client sends PRESENCE LIST; server replies one PRESENCELIST :<json> line per resident (JSON object per wire contract) terminated by PRESENCEEND; servers without the feature answer 421 so culture degrades gracefully",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "Wire shape is byte-compatible with culture's adapter expectation: 'PRESENCE LIST' in, one 'PRESENCELIST :<json>' per resident out, 'PRESENCEEND' terminator; the JSON object carries exactly {nick, server, state, since, task, tokens_in, tokens_out, presumed_hung, last_refresh}",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c12",
+      "kind": "success_signal",
+      "text": "Acceptance: (1) a kill -9'd resident that last reported busy is flagged presumed-hung within stale_after with zero cooperation from the dead process; (2) a slow-but-alive resident heartbeating through a long LLM call is NOT flagged; (3) culture's adapter consumes PRESENCE LIST -> PRESENCELIST/PRESENCEEND unmodified; (4) full pytest suite passes; (5) reply posted on #53 with surface shape + release version",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "Each acceptance item maps to a named pytest (watchdog flag, heartbeat non-flag, byte-shape) or a PR-description checklist item (suite green, #53 reply posted)",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c13",
+      "kind": "decision",
+      "text": "Release: lands as agentirc-cli 9.12.0 (minor bump over merged 9.11.0) \u2014 this is the version floor culture pins (plan risk r4)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "pyproject.toml lands at 9.12.0 in the PR (version-bump CI check green) and the merged release publishes agentirc-cli 9.12.0 to PyPI",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c14",
+      "kind": "decision",
+      "text": "Config: stale_after and heartbeat interval land in ServerConfig / server.yaml (culture-only keys remain ignored-if-unknown for older agentirc); defaults are ours to pick and document (plan risk r1)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "ServerConfig gains the presence keys with defaults; from_yaml on an existing culture server.yaml WITHOUT the keys still loads (backward compat test)",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c15",
+      "kind": "non_goal",
+      "text": "No enforcement, no budget math, no client-side emitter, no irc-lens page \u2014 those are culture-side tasks t4/t5/t7/t8",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "Wire syntax (authoritative, presence.md@b69705e): publish is 'PRESENCE :<json>' \u2014 JSON object as single trailing param; fields state (required, enum), since (required, ISO-8601 UTC), task (optional, capped 128 chars), tokens_in/tokens_out (optional cumulative ints, OMITTED not null when unknown); whole line <=512 bytes; publish is fire-and-forget, no ack. Server transitions a resident to offline implicitly on disconnect/QUIT \u2014 no final PRESENCE line required",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "Parser tests cover: valid full payload, state-only payload (no task/tokens), task truncation/rejection at 128 chars, invalid state enum, malformed JSON, and missing required fields \u2014 with defined non-crashing behavior for each",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c17",
+      "kind": "decision",
+      "text": "Adopt culture's shipped config defaults verbatim (resolves plan risk r1 for agentirc): heartbeat_interval_seconds=30, stale_after_seconds=90, validated positive ints with stale_after strictly greater than heartbeat_interval, fail-fast at config load",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "ServerConfig defaults are 30/90; a config with stale_after <= heartbeat_interval fails at load with a clear error; culture's shipped docs/resident-presence.md values match ours exactly",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c18",
+      "kind": "decision",
+      "text": "No CAP gating in v1: PRESENCE / PRESENCE LIST are plain new verbs (contract says a 'culture/presence' capability notification stream is a possible v2, out of scope); v1 never relays PRESENCE to clients \u2014 the server consumes it solely for aggregation",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c19",
+      "kind": "decision",
+      "text": "Terminator lines match the anticipated contract byte-for-byte: 'PRESENCELIST :<json>' per resident, 'PRESENCEEND :End of presence list' terminator, and unsupported servers answer '421 <nick> PRESENCE :Unknown command'",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "A byte-level test asserts the exact reply lines including the ':End of presence list' trailing and that an agentirc WITHOUT the feature (i.e. current 9.11.0 behavior) already produces 421 for PRESENCE",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c20",
+      "kind": "decision",
+      "text": "Implementation shape: a PresenceSkill (agentirc/skills/presence.py) following the rooms/threads/history/icon precedent \u2014 owns the PRESENCE verb (publish + LIST subcommand via skill.commands), the per-resident registry, and offline transitions via event hooks; PRESENCELIST/PRESENCEEND replies mirror the THREADS/THREADSEND template byte-shape",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "The skill registers via IRCd.register_skill with commands={'PRESENCE'}; an unmodified 9.11.0 server (skill absent) answers PRESENCE with stock 421 \u2014 proven by the existing dispatch path, no gating code added",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c21",
+      "kind": "decision",
+      "text": "S2S via the existing event bus: presence updates emit Event(type='presence.update') through IRCd.emit_event, free-riding the generic SEVENT relay with its origin-tag loop prevention (no new typed S2S verb, no hop counts); burst-on-link = on SERVER_LINK the skill re-emits the local presence snapshot (idempotent overwrites); on SERVER_UNLINK rows attributed to the lost server flip to offline; 'presence.update' joins NO_SURFACE_EVENT_TYPES so 30s heartbeats never spam #system",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "linked_servers tests prove: (1) a presence update on A appears in B's LIST; (2) no relay loop (count_until_idle style, mirroring test_federated_event_does_not_loop); (3) a client connected BEFORE the link is established still appears on the peer after link-up (snapshot re-emit); (4) SERVER_UNLINK flips the lost server's rows to offline",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c22",
+      "kind": "decision",
+      "text": "presumed_hung is computed at read time (state is busy AND now - last_refresh > stale_after) rather than by a background sweep task \u2014 observably identical for the aggregate view ('flagged within stale-T' holds for any read after stale-T), zero new task lifecycle, and tests need only a small configured stale_after, no time-freezing",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "With stale_after configured small in a test: a client that publishes a busy state then goes silent (connection open) reads presumed_hung=true after stale_after; one more heartbeat flips it back to false; idle/offline rows never flag",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c23",
+      "kind": "decision",
+      "text": "Config: a PresenceConfig dataclass (heartbeat_interval_seconds=30, stale_after_seconds=90) on ServerConfig, parsed from the nested 'presence:' YAML section exactly as culture ships it (TelemetryConfig precedent), so one ~/.culture/server.yaml keeps driving both daemons; fail-fast at load when stale_after <= heartbeat_interval",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "from_yaml on culture's shipped presence: section yields 30/90; absent section yields the same defaults; stale<=heartbeat raises at load with a clear message; unknown keys inside presence: are ignored like other culture-only keys",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c24",
+      "kind": "decision",
+      "text": "PRESENCELIST rows always emit all nine keys ({nick, server, state, since, task, tokens_in, tokens_out, presumed_hung, last_refresh}) with JSON null for unknown task/token values \u2014 stable shape for culture's parser; since/last_refresh are ISO-8601 UTC",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "A byte-level test parses each PRESENCELIST trailing param as JSON and asserts exactly the nine keys, null task/tokens for a state-only publisher, and ISO-8601 UTC since/last_refresh",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c25",
+      "kind": "assumption",
+      "text": "A 9.11 peer receiving SEVENT presence.update tolerates the unknown event type (the 9.5.0 EVENTPUB feature already federates custom-typed events), so a mixed-version mesh degrades gracefully \u2014 to be code-verified during implementation",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h17",
+          "text": "Code-read of 9.11.0 _handle_sevent + emit_event confirms unknown type strings flow as custom events without exception (or a mixed-version test proves it); finding otherwise forces a typed-relay redesign before merge",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c26",
+      "kind": "assumption",
+      "text": "kill -9 that produces a clean TCP FIN yields an accurate 'offline' row (the contract mandates implicit offline on disconnect); presumed_hung covers silent deaths \u2014 partitions, lost FINs, stalled-but-connected processes \u2014 so the acceptance test simulates a client that stops heartbeating WITHOUT disconnecting",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "The watchdog acceptance test drives a real TCP client that publishes working, then stalls silently; it is flagged within stale_after with zero further writes from the client",
+          "status": "confirmed"
+        }
+      ],
+      "hard_questions": [],
+      "links": []
+    },
+    {
+      "id": "c27",
+      "kind": "decision",
+      "text": "Offline-row retention (q1, user-decided): on disconnect a resident's row flips to state=offline and STAYS in the aggregate \u2014 keyed by nick, overwritten on reconnect, cleared on server restart; no TTL/prune in v1",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "Whether presence transitions should also emit into the existing EVENTSUB event stream (EVENT_TYPE_PRESENCE_*) so bots can react \u2014 contract is silent; keep v1 scope tight, revisit as v2 alongside the culture/presence CAP notification stream",
+      "kind": "follow_up",
+      "claim_id": null
+    }
+  ]
+}
