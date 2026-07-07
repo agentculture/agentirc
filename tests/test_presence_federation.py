@@ -20,7 +20,7 @@ import json
 import pytest
 
 from agentirc.ircd import IRCd
-from agentirc.skill import EventType
+from agentirc.skill import Event, EventType
 from agentirc.skills.presence import PresenceSkill
 from tests._helpers import boot_linked_pair, link_pair, wait_for
 from tests.conftest import IRCTestClient
@@ -270,3 +270,105 @@ async def test_quit_on_a_flips_remote_row_offline_on_b(linked_servers, make_clie
         lambda: beta_skill.get_record("alpha-alice") is not None
         and beta_skill.get_record("alpha-alice").state == "offline"
     )
+
+
+def _federated_presence_event(nick: str, origin: str, **fields) -> Event:
+    """Build a `presence.update` Event as `_handle_sevent` delivers it on receipt.
+
+    The receiving server's S2S handler strips peer-supplied `_`-prefixed keys
+    and stamps its own `_origin` tag before dispatching to skill `on_event`, so
+    an `_origin`-tagged PRESENCE event is exactly what the federated-ingest path
+    (`PresenceSkill._on_presence_update`) sees.
+    """
+    data = {"nick": nick, "_origin": origin, **fields}
+    return Event(type=EventType.PRESENCE, channel=None, nick=nick, data=data)
+
+
+@pytest.mark.asyncio
+async def test_federated_update_with_invalid_state_is_dropped(server):
+    """A federated row whose `state` is outside the six-value enum is rejected.
+
+    The federated-ingest path validates with the same rules as a local publish
+    (a peer's payload is not trusted to be well-formed), so a garbage state
+    never lands in the registry and thus never reaches culture's parser.
+    """
+    skill = _find_presence_skill(server)
+    await skill.on_event(
+        _federated_presence_event(
+            "alpha-mallory",
+            origin="alpha",
+            state="NOT-A-REAL-STATE",
+            since="2026-07-07T00:00:00Z",
+        )
+    )
+    assert skill.get_record("alpha-mallory") is None
+
+
+@pytest.mark.asyncio
+async def test_federated_update_with_bad_field_types_is_dropped(server):
+    """Non-string task / negative token counts in a federated row are rejected."""
+    skill = _find_presence_skill(server)
+    await skill.on_event(
+        _federated_presence_event(
+            "alpha-mallory",
+            origin="alpha",
+            state="working",
+            since="2026-07-07T00:00:00Z",
+            task={"nested": "object"},
+            tokens_in=-999,
+        )
+    )
+    assert skill.get_record("alpha-mallory") is None
+
+
+@pytest.mark.asyncio
+async def test_federated_update_cannot_clobber_locally_hosted_nick(server, make_client):
+    """A peer can never overwrite presence for a nick THIS server hosts locally.
+
+    A nick is hosted by exactly one server, so a federated update for a
+    locally-owned nick is always wrong (stale echo, version skew, or a forged
+    `nick` aimed at flipping a live local resident's real state). The local
+    row must survive untouched.
+    """
+    local_name = server.config.name
+    skill = _find_presence_skill(server)
+
+    resident = await make_client(f"{local_name}-alice", "alice")
+    await _publish_and_sync(
+        resident, {"state": "working", "since": "2026-07-07T00:00:00Z"}
+    )
+    assert skill.get_record(f"{local_name}-alice").state == "working"
+
+    # A different server tries to overwrite our local resident's row.
+    await skill.on_event(
+        _federated_presence_event(
+            f"{local_name}-alice",
+            origin="alpha",
+            state="idle",
+            since="2026-07-07T09:99:99Z",
+        )
+    )
+
+    record = skill.get_record(f"{local_name}-alice")
+    assert record.state == "working"
+    assert record.server == local_name
+
+
+@pytest.mark.asyncio
+async def test_well_formed_federated_update_still_lands_and_truncates_task(server):
+    """A valid federated row is stored; an over-length task is truncated, not dropped."""
+    skill = _find_presence_skill(server)
+    await skill.on_event(
+        _federated_presence_event(
+            "alpha-alice",
+            origin="alpha",
+            state="thinking",
+            since="2026-07-07T00:00:00Z",
+            task="x" * 200,
+        )
+    )
+    record = skill.get_record("alpha-alice")
+    assert record is not None
+    assert record.server == "alpha"
+    assert record.state == "thinking"
+    assert len(record.task) == 128

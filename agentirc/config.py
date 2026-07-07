@@ -58,6 +58,16 @@ class PresenceConfig:
     stale_after_seconds: int = 90
 
     def __post_init__(self) -> None:
+        for _key in ("heartbeat_interval_seconds", "stale_after_seconds"):
+            _val = getattr(self, _key)
+            # bool is an int subclass; a YAML `true`/`false` is not a valid
+            # interval. Reject it (and any non-int, e.g. a quoted "thirty")
+            # with a clear message rather than letting the `<=` comparison
+            # below raise a bare TypeError on str-vs-int.
+            if not isinstance(_val, int) or isinstance(_val, bool):
+                raise ValueError(
+                    f"presence.{_key} must be a positive integer, got {_val!r}"
+                )
         if self.heartbeat_interval_seconds <= 0:
             raise ValueError(
                 "presence.heartbeat_interval_seconds must be a positive "

@@ -200,6 +200,26 @@ async def test_publish_whitespace_only_since_is_dropped_silently(server, make_cl
 
 
 @pytest.mark.asyncio
+async def test_publish_oversized_since_is_truncated_not_dropped(server, make_client):
+    """An over-length `since` is truncated (like `task`), not dropped.
+
+    Guards the wire contract's <=512-byte PRESENCELIST line assumption: a
+    client can't publish a multi-kilobyte `since` that would bloat every
+    subsequent LIST reply and propagate verbatim to every linked peer.
+    """
+    skill = _find_presence_skill(server)
+    alice = await make_client("testserv-alice", "alice")
+
+    await _publish_and_sync(
+        alice, {"state": "working", "since": "2026-07-07T00:00:00Z" + "x" * 500}
+    )
+
+    record = skill.get_record("testserv-alice")
+    assert record is not None
+    assert len(record.since) == 64
+
+
+@pytest.mark.asyncio
 async def test_publish_missing_state_is_dropped_silently(server, make_client):
     skill = _find_presence_skill(server)
     alice = await make_client("testserv-alice", "alice")

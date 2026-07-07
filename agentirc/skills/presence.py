@@ -77,6 +77,13 @@ _VALID_STATES = frozenset(
 # exactly this many characters rather than dropping the whole update.
 _TASK_MAX_LEN = 128
 
+# `since` is an ISO-8601 UTC timestamp (~20 chars); cap it generously so a
+# hostile or buggy client can't publish a multi-kilobyte value that would
+# (a) blow the wire contract's <=512-byte PRESENCELIST line assumption and
+# (b) propagate verbatim to every linked peer via the federated event. Like
+# `task`, over-length is truncated, not rejected.
+_SINCE_MAX_LEN = 64
+
 # Disconnect-shaped events this skill reacts to. `EventType.QUIT` fires on an
 # explicit client QUIT. `EventType.AGENT_DISCONNECT` / `EventType.CONSOLE_CLOSE`
 # fire on a plain TCP close (no QUIT) for clients that negotiated the `+A`
@@ -242,46 +249,71 @@ class PresenceSkill(Skill):
             )
             return
 
-        state = data.get("state")
-        if not isinstance(state, str) or state not in _VALID_STATES:
-            logger.warning("presence: invalid/missing state from %s: %r", nick, state)
-            return
-
-        since = data.get("since")
-        if not isinstance(since, str) or not since.strip():
-            logger.warning("presence: missing/invalid since from %s: %r", nick, since)
-            return
-
-        task = data.get("task")
-        if task is not None:
-            if not isinstance(task, str):
-                logger.debug("presence: invalid task type from %s: %r", nick, task)
-                return
-            if len(task) > _TASK_MAX_LEN:
-                task = task[:_TASK_MAX_LEN]
-
-        tokens_in = data.get("tokens_in")
-        if not self._valid_optional_count(tokens_in):
-            logger.debug("presence: invalid tokens_in from %s: %r", nick, tokens_in)
-            return
-
-        tokens_out = data.get("tokens_out")
-        if not self._valid_optional_count(tokens_out):
-            logger.debug("presence: invalid tokens_out from %s: %r", nick, tokens_out)
+        fields = self._validate_fields(data)
+        if fields is None:
+            logger.warning("presence: invalid publish payload from %s: %r", nick, data)
             return
 
         # Latest-wins: fully replaces any previous record for this nick.
         record = PresenceRecord(
-            state=state,
-            since=since,
-            task=task,
-            tokens_in=tokens_in,
-            tokens_out=tokens_out,
+            **fields,
             last_refresh=time.time(),
             server=self.server.config.name,
         )
         self.registry[nick] = record
         await self._emit_presence_update(nick, record)
+
+    @classmethod
+    def _validate_fields(cls, data: dict) -> dict | None:
+        """Validate + normalize the presence fields shared by the local publish
+        and federated-ingest paths.
+
+        Returns a dict of ``{state, since, task, tokens_in, tokens_out}`` ready
+        to splat into ``PresenceRecord``, or ``None`` if any field is invalid
+        (caller drops the update). Both the local `PRESENCE :<json>` publish
+        (`_handle_publish`) and the federated `presence.update` ingest
+        (`_on_presence_update`) run this, so a malformed row a peer relays is
+        rejected exactly as a malformed local publish is -- a federated update
+        must never inject a state outside the six-value enum, a non-string /
+        oversized `task`, an oversized `since`, or a negative/non-int token
+        count into the registry (and thence into culture's parser).
+
+        `state` (enum) and `since` (non-empty string) are required; `task` is
+        truncated to `_TASK_MAX_LEN`, `since` to `_SINCE_MAX_LEN`; token counts
+        are optional non-negative ints (bool rejected).
+        """
+        state = data.get("state")
+        if not isinstance(state, str) or state not in _VALID_STATES:
+            return None
+
+        since = data.get("since")
+        if not isinstance(since, str) or not since.strip():
+            return None
+        if len(since) > _SINCE_MAX_LEN:
+            since = since[:_SINCE_MAX_LEN]
+
+        task = data.get("task")
+        if task is not None:
+            if not isinstance(task, str):
+                return None
+            if len(task) > _TASK_MAX_LEN:
+                task = task[:_TASK_MAX_LEN]
+
+        tokens_in = data.get("tokens_in")
+        if not cls._valid_optional_count(tokens_in):
+            return None
+
+        tokens_out = data.get("tokens_out")
+        if not cls._valid_optional_count(tokens_out):
+            return None
+
+        return {
+            "state": state,
+            "since": since,
+            "task": task,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+        }
 
     @staticmethod
     def _valid_optional_count(value: object) -> bool:
@@ -416,16 +448,42 @@ class PresenceSkill(Skill):
             )
             return
 
+        # A peer may never overwrite presence for a resident THIS server hosts
+        # locally: a nick is hosted by exactly one server, so a federated row
+        # for a locally-owned nick is always wrong (stale echo, version skew,
+        # or a forged `nick` aimed at clobbering a live local resident's real
+        # state). The authoritative row for a local nick only ever changes via
+        # `_handle_publish` / the local disconnect flip.
+        existing = self.registry.get(nick)
+        if existing is not None and existing.server == self.server.config.name:
+            logger.debug(
+                "presence: ignoring federated update from %s for locally-hosted "
+                "nick %s",
+                origin,
+                nick,
+            )
+            return
+
+        # Validate/normalize with the SAME rules as a local publish -- a
+        # federated peer's payload is not trusted to be well-formed. A row that
+        # fails validation is dropped rather than stored (and thus never served
+        # to culture's parser with an out-of-enum state or mistyped field).
+        fields = self._validate_fields(data)
+        if fields is None:
+            logger.warning(
+                "presence: invalid federated update from %s for %s: %r",
+                origin,
+                nick,
+                data,
+            )
+            return
+
         last_refresh = data.get("last_refresh")
         if not isinstance(last_refresh, (int, float)) or isinstance(last_refresh, bool):
             last_refresh = time.time()
 
         self.registry[nick] = PresenceRecord(
-            state=data.get("state", "offline"),
-            since=data.get("since", ""),
-            task=data.get("task"),
-            tokens_in=data.get("tokens_in"),
-            tokens_out=data.get("tokens_out"),
+            **fields,
             last_refresh=last_refresh,
             server=origin,
         )
