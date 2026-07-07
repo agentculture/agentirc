@@ -225,6 +225,7 @@ class EventType(StrEnum):
     SERVER_LINK = "server.link"
     SERVER_UNLINK = "server.unlink"
     ROOM_CREATE = "room.create"
+    PRESENCE = "presence.update"
 
 
 @dataclass
@@ -261,6 +262,7 @@ EVENT_TYPE_SERVER_SLEEP = "server.sleep"
 EVENT_TYPE_SERVER_LINK = "server.link"
 EVENT_TYPE_SERVER_UNLINK = "server.unlink"
 EVENT_TYPE_ROOM_CREATE = "room.create"
+EVENT_TYPE_PRESENCE_UPDATE = "presence.update"
 
 # Bot extension verbs.
 EVENTSUB = "EVENTSUB"
@@ -272,6 +274,22 @@ EVENTPUB = "EVENTPUB"
 # Bot-CAP token. Vendored namespace per IRCv3 conventions, prevents collision
 # with hypothetical bare-`bot` caps from non-agentirc IRC servers.
 BOT_CAP = "agentirc.io/bot"
+
+
+# ---------------------------------------------------------------------------
+# Presence extension verbs (task t1, PRESENCE feature)
+# ---------------------------------------------------------------------------
+# ``PRESENCE`` announces a nick's presence-state change (e.g. away/back,
+# status text) to subscribers. ``PRESENCELIST`` / ``PRESENCEEND`` pair up
+# the same way ``RPL_NAMREPLY``/``RPL_ENDOFNAMES`` do elsewhere in this
+# module: ``PRESENCELIST`` carries one presence entry in a bulk reply,
+# ``PRESENCEEND`` marks the end of that reply. See
+# docs/specs/2026-07-07-agentirc-now-speaks-presence-the-ircd-parses-resid.md
+# for the wire format; ``EVENT_TYPE_PRESENCE_UPDATE`` /
+# ``EventType.PRESENCE`` (above) is the corresponding internal event type.
+PRESENCE = "PRESENCE"
+PRESENCELIST = "PRESENCELIST"
+PRESENCEEND = "PRESENCEEND"
 
 
 # ---------------------------------------------------------------------------
@@ -517,6 +535,7 @@ __all__ = [
     "EVENT_TYPE_CONSOLE_CLOSE",
     "EVENT_TYPE_CONSOLE_OPEN",
     "EVENT_TYPE_MESSAGE",
+    "EVENT_TYPE_PRESENCE_UPDATE",
     "EVENT_TYPE_ROOM_ARCHIVE",
     "EVENT_TYPE_ROOM_CREATE",
     "EVENT_TYPE_ROOM_META",
@@ -532,6 +551,10 @@ __all__ = [
     "EVENT_TYPE_USER_JOIN",
     "EVENT_TYPE_USER_PART",
     "EVENT_TYPE_USER_QUIT",
+    # Presence extension verbs (task t1)
+    "PRESENCE",
+    "PRESENCEEND",
+    "PRESENCELIST",
     # Runtime verb discovery (task t9)
     "VERBS",
     "VERBS_DISCOVERY_VERSION",
