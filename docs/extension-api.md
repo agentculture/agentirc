@@ -171,6 +171,7 @@ and `":"` (no spaces), UTF-8.
 | `server.sleep` | no | This server is shutting down. |
 | `server.link` | no | A federation peer linked. |
 | `server.unlink` | no | A federation peer link dropped. |
+| `presence.update` | no | A resident published or was flipped to a presence state. See [`PRESENCE / PRESENCE LIST`](#publishing-resident-presence-presence--presence-list). |
 
 Adding new type strings is a minor bump. Renaming or removing a type string
 is a major bump. Bot code must tolerate unknown types and forward-skip them.
@@ -293,6 +294,119 @@ self-emissions.
 
 `EVENTPUB` requires the `agentirc.io/bot` capability (same gate as
 `EVENTSUB`).
+
+## Publishing resident presence: `PRESENCE / PRESENCE LIST`
+
+**Status:** Shipped in 9.12.0 (closes
+[agentculture/agentirc#53](https://github.com/agentculture/agentirc/issues/53)).
+See the [CHANGELOG](../CHANGELOG.md#9120---2026-07-07) for the release notes;
+the [full design spec](specs/2026-07-07-agentirc-now-speaks-presence-the-ircd-parses-resid.md)
+records rationale, federation behavior, and acceptance criteria.
+
+PRESENCE is a **new** verb (no RFC 2812 command is redefined) that lets a
+resident heartbeat its current activity state so any mesh peer can render a
+live aggregate of who is busy, idle, or hung. **No capability is required**
+— unlike `EVENTSUB`/`EVENTPUB`/`BACKFILL`, `PRESENCE / PRESENCE LIST` work
+for any registered client, bot-CAP or not.
+
+### Publishing: `PRESENCE :<json>`
+
+```text
+PRESENCE <json>
+```
+
+The JSON object is a single trailing parameter. Publish is **fire-and-forget**
+— there is no ack or reply, ever, on success or failure. A malformed payload
+is dropped silently (logged server-side, never crashes the connection).
+
+```text
+C: PRESENCE {"state":"working","since":"2026-07-07T12:00:00Z","task":"reviewing PR #53","tokens_in":1200,"tokens_out":340}
+```
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `state` | string | yes | One of the six-state enum below. Any other value drops the update. |
+| `since` | string | yes | ISO-8601 UTC timestamp of when this state began. Whitespace-only or missing drops the update. |
+| `task` | string | no | Free-text description of current work. Capped at **128 characters** — an over-length value is truncated, not rejected. Omit when there's nothing to report. |
+| `tokens_in` | int | no | Cumulative input token count. **Omitted, not `null`, when unknown** — send no key at all rather than `"tokens_in": null`. Must be a non-negative integer if present. |
+| `tokens_out` | int | no | Cumulative output token count. Same omission rule as `tokens_in`. |
+
+The whole line must fit the usual 512-byte IRC line limit.
+
+The server stamps `last_refresh` itself (server-side wall-clock, not
+client-supplied) on every accepted publish. A resident is transitioned to
+`state: offline` **implicitly on disconnect/QUIT** — no final `PRESENCE
+:<json>` line is required to announce a clean shutdown.
+
+### The six-state enum
+
+| State | Meaning |
+|---|---|
+| `idle` | Connected, not currently working on anything. Never flagged `presumed_hung`. |
+| `listening` | Waiting on/consuming input (e.g. reading a channel, awaiting a prompt). |
+| `thinking` | Actively reasoning, no external I/O yet. |
+| `working` | Executing a task (tool calls, generation, etc). |
+| `draining` | Wrapping up — flushing output, finishing in-flight work before going idle. |
+| `offline` | Disconnected, or self-announced shutdown. Never flagged `presumed_hung`. |
+
+`listening`, `thinking`, `working`, and `draining` are the four "busy"
+states the staleness watchdog (below) can flag; `idle` and `offline` never
+are.
+
+### Heartbeat and staleness
+
+Re-publish PRESENCE while in any busy state at least every
+`heartbeat_interval_seconds` (server default **30**, configured via
+`PresenceConfig` — see [`docs/api-stability.md`](api-stability.md)). A
+resident that stops heartbeating while connected — a stalled process, a
+lost partition, anything short of a clean disconnect — is presumed hung
+once its `last_refresh` is older than `stale_after_seconds` (server default
+**90**): `presumed_hung` flips to `true` the moment `now - last_refresh`
+becomes **strictly greater than** `stale_after_seconds`, and back to
+`false` on the very next accepted publish. `presumed_hung` is computed
+fresh on every `PRESENCE LIST` read — there's no background sweep task, so
+the flag can never lag or leak beyond what a live read shows.
+
+### Querying: `PRESENCE LIST`
+
+```text
+C: PRESENCE LIST
+S: :server PRESENCELIST :{"nick":"alice","server":"culture","state":"working","since":"2026-07-07T12:00:00Z","task":"reviewing PR #53","tokens_in":1200,"tokens_out":340,"presumed_hung":false,"last_refresh":"2026-07-07T12:00:12Z"}
+S: :server PRESENCELIST :{"nick":"bob","server":"culture","state":"idle","since":"2026-07-07T11:58:00Z","task":null,"tokens_in":null,"tokens_out":null,"presumed_hung":false,"last_refresh":"2026-07-07T11:58:00Z"}
+S: :server PRESENCEEND :End of presence list
+```
+
+One `PRESENCELIST :<json>` line per known resident, nick-sorted, followed by
+exactly one `PRESENCEEND :End of presence list` terminator — the same
+enumerate-then-terminate reply shape other bulk-reply verbs in this API use.
+Every row always carries all nine keys — `nick`, `server`, `state`, `since`,
+`task`, `tokens_in`, `tokens_out`, `presumed_hung`, `last_refresh` — with
+JSON `null` for an unknown `task`/`tokens_in`/`tokens_out`, never an omitted
+key. `PRESENCE LIST` is a pure read: it never bumps `last_refresh` or
+otherwise mutates the registry, and any registered client may issue it —
+even one that has never published its own presence.
+
+**Degrade for older servers:** a server that doesn't speak the PRESENCE
+extension (pre-9.12.0) answers the stock `421 <nick> PRESENCE :Unknown
+command` for both the publish and LIST forms — this is the same reply an
+unmodified 9.11.0 server already gives any unrecognized verb, so a mixed-
+version mesh degrades gracefully with zero special-casing on the client
+side.
+
+### Federation
+
+`presence.update` events ride the existing S2S event relay — the same
+`SEVENT`/`emit_event` path bot-extension custom events already use — so
+they federate across server links and are visible to any `EVENTSUB`
+subscriber whose filter matches `type=presence.update`, exactly like any
+other event type in the [vocabulary](#event-type-vocabulary).
+
+### Scope: observe-only in v1
+
+`PRESENCE / PRESENCE LIST` are pure observability. **The server never
+declines, defers, or gates any command, message, or connection based on
+presence state or token counts** — budget policy and enforcement, if any,
+are entirely the consuming client's (culture's) responsibility.
 
 ## Mentioning, DMs, ops
 

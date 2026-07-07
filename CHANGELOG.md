@@ -4,6 +4,58 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.12.0] - 2026-07-07
+
+The PRESENCE release: the IRCd now parses resident presence heartbeats,
+tracks per-client presence state, propagates it across server links, flags
+presumed-hung residents via a read-time stale-busy watchdog, and serves the
+aggregate to culture via `PRESENCE LIST`. Closes
+[#53](https://github.com/agentculture/agentirc/issues/53) and is the version
+floor culture's resident presence v1 pins against. Spec:
+`docs/specs/2026-07-07-agentirc-now-speaks-presence-the-ircd-parses-resid.md`.
+
+### Added
+
+- **`PRESENCE` verb** — fire-and-forget presence publish, `PRESENCE
+  :<json>` with a single trailing JSON payload (`state`/`since`/optional
+  `task`/optional `tokens_in`+`tokens_out`). Six-state enum
+  `idle|listening|thinking|working|draining|offline`. A resident is flipped
+  to `offline` implicitly on disconnect — no final `PRESENCE` line required.
+  No CAP gating (a plain new verb, no `agentirc.io/bot` requirement) and
+  strictly observe-only: nothing in the diff gates, defers, or rejects any
+  command, message, or connection on presence state or token counters.
+- **`PRESENCE LIST` query surface** — one `PRESENCELIST :<json>` line per
+  resident (nick-sorted), each carrying exactly nine keys (`nick`, `server`,
+  `state`, `since`, `task`, `tokens_in`, `tokens_out`, `presumed_hung`,
+  `last_refresh`), terminated by `PRESENCEEND :End of presence list`.
+  Byte-compatible with culture's anticipated adapter shape. Servers without
+  the feature (pre-9.12.0) keep answering the stock `421` unknown-command
+  reply, so culture's `residents` CLI degrades gracefully against an older
+  mesh peer.
+- **Read-time `presumed_hung` flag** — computed at read time, not by a
+  background sweep: a resident whose latest state is one of the four "busy"
+  states (`listening`/`thinking`/`working`/`draining`) and whose
+  `last_refresh` is more than `stale_after_seconds` in the past is flagged
+  `presumed_hung: true`; `idle` and `offline` rows are never flagged, no
+  matter how old.
+- **Federation** — `presence.update` events ride the existing S2S event
+  relay (the same `SEVENT`/`emit_event` path bot-extension custom events
+  already use), so residents on other servers appear in any server's
+  `PRESENCE LIST`. On `SERVER_LINK`, a server re-emits its local presence
+  snapshot; on `SERVER_UNLINK`, rows attributed to the lost server flip to
+  `offline`. This lands in the same 9.12.0 release via task t5.
+- **`PresenceConfig`** — a new `presence:` section in `server.yaml`
+  (`heartbeat_interval_seconds=30`, `stale_after_seconds=90` by default),
+  parsed by `ServerConfig.from_yaml` the same way `telemetry:` is. Fails
+  fast at config load if either value isn't a positive integer or if
+  `stale_after_seconds` isn't strictly greater than
+  `heartbeat_interval_seconds`; unknown keys inside `presence:` are ignored
+  for culture coexistence, and a `server.yaml` without the section keeps
+  loading with the 30/90 defaults.
+- **Protocol surface** — `agentirc.protocol` exports `PRESENCE`,
+  `PRESENCELIST`, `PRESENCEEND` verb constants, `EventType.PRESENCE`, and
+  `EVENT_TYPE_PRESENCE_UPDATE` (both `"presence.update"`).
+
 ## [9.11.0] - 2026-07-02
 
 The agent-accessibility release. Spec:
