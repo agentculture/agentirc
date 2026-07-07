@@ -220,6 +220,21 @@ async def test_publish_oversized_since_is_truncated_not_dropped(server, make_cli
 
 
 @pytest.mark.asyncio
+async def test_publish_oversized_token_count_is_dropped_silently(server, make_client):
+    """An absurdly large token count is rejected so a PRESENCELIST row can't
+    exceed the 512-byte wire line limit."""
+    skill = _find_presence_skill(server)
+    alice = await make_client("testserv-alice", "alice")
+
+    bad_line = _presence_line(
+        {"state": "working", "since": "2026-07-07T00:00:00Z", "tokens_in": 10**400}
+    )
+    await _assert_dropped_silently_and_connection_usable(
+        alice, skill, "testserv-alice", bad_line, None
+    )
+
+
+@pytest.mark.asyncio
 async def test_publish_missing_state_is_dropped_silently(server, make_client):
     skill = _find_presence_skill(server)
     alice = await make_client("testserv-alice", "alice")

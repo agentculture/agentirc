@@ -47,11 +47,13 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from agentirc.protocol import PRESENCE, PRESENCEEND, PRESENCELIST
 from agentirc.skill import Event, EventType, Skill
 
 if TYPE_CHECKING:
@@ -83,6 +85,25 @@ _TASK_MAX_LEN = 128
 # (b) propagate verbatim to every linked peer via the federated event. Like
 # `task`, over-length is truncated, not rejected.
 _SINCE_MAX_LEN = 64
+
+# Upper bound on a token counter. Cumulative token counts for a single
+# connection never approach this in practice (a quadrillion tokens), so it is
+# effectively unreachable for a legitimate resident -- its purpose is to bound
+# the digit-length of `tokens_in`/`tokens_out` so a hostile or buggy publisher
+# can't push a PRESENCELIST row past the wire contract's <=512-byte line limit
+# with an arbitrarily large integer. An over-cap count is rejected (the whole
+# update is dropped), not clamped.
+_TOKEN_MAX = 10**15
+
+# Largest epoch value `datetime.fromtimestamp` renders portably (9999-12-31
+# UTC). A federated `last_refresh` outside [0, _MAX_EPOCH] -- or NaN/Infinity --
+# would raise in `_format_last_refresh` and break `PRESENCE LIST` for every
+# client, so a peer-supplied value outside this range falls back to now.
+_MAX_EPOCH = 253402300799.0
+
+# Safe fallback timestamp string when an epoch value can't be rendered (epoch 0,
+# the Unix epoch). Used only defensively -- ingest already clamps bad values.
+_EPOCH_FALLBACK_ISO = "1970-01-01T00:00:00Z"
 
 # Disconnect-shaped events this skill reacts to. `EventType.QUIT` fires on an
 # explicit client QUIT. `EventType.AGENT_DISCONNECT` / `EventType.CONSOLE_CLOSE`
@@ -122,7 +143,7 @@ class PresenceRecord:
 
 class PresenceSkill(Skill):
     name = "presence"
-    commands = {"PRESENCE"}
+    commands = {PRESENCE}
 
     def __init__(self) -> None:
         # nick -> PresenceRecord. Public (not `_registry`) so tests -- and any
@@ -137,7 +158,7 @@ class PresenceSkill(Skill):
         return self.registry.get(nick)
 
     async def on_command(self, client: Client, msg: Message) -> None:
-        if msg.command != "PRESENCE":
+        if msg.command != PRESENCE:
             return
         if not msg.params:
             logger.debug("presence: PRESENCE with no params from %s", client.nick)
@@ -168,8 +189,8 @@ class PresenceSkill(Skill):
         now = time.time()
         for nick in sorted(self.registry):
             row = self._serialize_row(nick, self.registry[nick], now)
-            await client.send_raw(f":{server_name} PRESENCELIST :{row}")
-        await client.send_raw(f":{server_name} PRESENCEEND :End of presence list")
+            await client.send_raw(f":{server_name} {PRESENCELIST} :{row}")
+        await client.send_raw(f":{server_name} {PRESENCEEND} :End of presence list")
 
     def _serialize_row(self, nick: str, record: PresenceRecord, now: float) -> str:
         """Render one registry row as the compact single-line JSON payload.
@@ -212,10 +233,19 @@ class PresenceSkill(Skill):
 
     @staticmethod
     def _format_last_refresh(epoch_seconds: float) -> str:
-        """Render a raw `time.time()` epoch float as ISO-8601 UTC, second precision."""
-        return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        """Render a raw `time.time()` epoch float as ISO-8601 UTC, second precision.
+
+        Defensive guard: a non-finite or out-of-range value must never take
+        down `PRESENCE LIST` for every client (ingest already clamps federated
+        values; local rows are always server-stamped, so this only fires on a
+        value that slipped past both).
+        """
+        try:
+            return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        except (ValueError, OSError, OverflowError):
+            return _EPOCH_FALLBACK_ISO
 
     async def _handle_publish(self, client: Client, raw: str) -> None:
         """Parse and apply one `PRESENCE :<json>` publish. Never replies.
@@ -318,16 +348,18 @@ class PresenceSkill(Skill):
 
     @staticmethod
     def _valid_optional_count(value: object) -> bool:
-        """True if *value* is either absent (None) or a non-negative int.
+        """True if *value* is absent (None) or an int in [0, _TOKEN_MAX].
 
         Rejects bool explicitly -- `isinstance(True, int)` is True in Python,
-        but a JSON `true`/`false` is not a valid token count.
+        but a JSON `true`/`false` is not a valid token count. Rejects counts
+        above `_TOKEN_MAX` so an arbitrarily large integer can't push a
+        PRESENCELIST row past the 512-byte wire line limit.
         """
         if value is None:
             return True
         if isinstance(value, bool):
             return False
-        return isinstance(value, int) and value >= 0
+        return isinstance(value, int) and 0 <= value <= _TOKEN_MAX
 
     async def on_event(self, event: Event) -> None:
         """React to disconnects, federated presence updates, and link topology.
@@ -480,7 +512,15 @@ class PresenceSkill(Skill):
             return
 
         last_refresh = data.get("last_refresh")
-        if not isinstance(last_refresh, (int, float)) or isinstance(last_refresh, bool):
+        if (
+            not isinstance(last_refresh, (int, float))
+            or isinstance(last_refresh, bool)
+            or not math.isfinite(last_refresh)
+            or not (0 <= last_refresh <= _MAX_EPOCH)
+        ):
+            # A peer-supplied NaN/Infinity or out-of-range epoch would raise in
+            # `_format_last_refresh` and break `PRESENCE LIST` for every client;
+            # fall back to now rather than storing an unrenderable value.
             last_refresh = time.time()
 
         self.registry[nick] = PresenceRecord(

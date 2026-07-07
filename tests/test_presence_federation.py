@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -372,3 +373,47 @@ async def test_well_formed_federated_update_still_lands_and_truncates_task(serve
     assert record.server == "alpha"
     assert record.state == "thinking"
     assert len(record.task) == 128
+
+
+@pytest.mark.parametrize("bad_ts", [float("nan"), float("inf"), 1e309, -1.0, 1e30])
+@pytest.mark.asyncio
+async def test_federated_nonfinite_last_refresh_does_not_break_list(server, bad_ts):
+    """A peer-supplied NaN/Infinity/out-of-range last_refresh must not crash LIST.
+
+    Without a finiteness/range guard, `datetime.fromtimestamp(bad)` raises in
+    `_format_last_refresh` and takes down `PRESENCE LIST` for every client until
+    restart. Ingest clamps the bad value to now, so the row still renders.
+    """
+    skill = _find_presence_skill(server)
+    await skill.on_event(
+        _federated_presence_event(
+            "alpha-alice",
+            origin="alpha",
+            state="working",
+            since="2026-07-07T00:00:00Z",
+            last_refresh=bad_ts,
+        )
+    )
+    record = skill.get_record("alpha-alice")
+    assert record is not None
+    # The row must serialize without raising, and last_refresh renders as a
+    # valid ISO-8601 Z string (the clamped-to-now fallback), never a crash.
+    row = skill._serialize_row("alpha-alice", record, time.time())
+    parsed = json.loads(row)
+    assert parsed["last_refresh"].endswith("Z")
+
+
+@pytest.mark.asyncio
+async def test_federated_oversized_token_count_is_dropped(server):
+    """A federated row with an absurdly large token count is rejected (line-limit guard)."""
+    skill = _find_presence_skill(server)
+    await skill.on_event(
+        _federated_presence_event(
+            "alpha-mallory",
+            origin="alpha",
+            state="working",
+            since="2026-07-07T00:00:00Z",
+            tokens_in=10**400,
+        )
+    )
+    assert skill.get_record("alpha-mallory") is None
