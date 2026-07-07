@@ -13,8 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable
 
-from agentirc.skill import EventType
 from agentirc._internal.constants import EVENT_TYPE_RE
+from agentirc.skill import EventType
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,12 @@ NO_SURFACE_EVENT_TYPES: frozenset[str] = frozenset(
         EventType.THREAD_MESSAGE.value,
         EventType.THREAD_CLOSE.value,
         EventType.TOPIC.value,
+        # presence.update heartbeats (every accepted PRESENCE publish, plus
+        # any offline flip / server-link burst re-emit -- see
+        # agentirc/skills/presence.py task t5) must never surface as
+        # #system PRIVMSGs; they can fire as often as every heartbeat
+        # interval and have their own PRESENCE LIST query surface.
+        EventType.PRESENCE.value,
     }
 )
 
@@ -74,7 +80,9 @@ register("user.join", _nick_action("joined"))
 register("user.part", _nick_action("left"))
 register(
     "user.quit",
-    lambda d, c: f"{d.get('nick', '<unknown>')} quit: {d.get('reason', '')}".rstrip(": "),
+    lambda d, c: f"{d.get('nick', '<unknown>')} quit: {d.get('reason', '')}".rstrip(
+        ": "
+    ),
 )
 
 register("agent.connect", lambda d, c: f"{d.get('nick', '<unknown>')} connected")
@@ -84,7 +92,9 @@ register(
 )
 
 register("console.open", lambda d, c: f"{d.get('nick', '<unknown>')} opened a console")
-register("console.close", lambda d, c: f"{d.get('nick', '<unknown>')} closed their console")
+register(
+    "console.close", lambda d, c: f"{d.get('nick', '<unknown>')} closed their console"
+)
 
 register("server.wake", lambda d, c: f"server {d.get('server', '<unknown>')} is up")
 register(

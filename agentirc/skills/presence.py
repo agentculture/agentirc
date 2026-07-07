@@ -14,9 +14,25 @@ nick-sorted, followed by exactly one ``PRESENCEEND`` terminator) and the
 read-time ``presumed_hung`` computation -- see ``_handle_list`` and
 ``_presumed_hung`` below. This is a coordination contract with the culture
 repo (``culture_core/resource_view.py``'s ``_query_presence_wire``): the
-wire shape must stay byte-compatible. Federation (emitting
-``Event(type=EventType.PRESENCE)`` through ``IRCd.emit_event`` and reacting
-to ``SERVER_LINK``/``SERVER_UNLINK``) is task t5.
+wire shape must stay byte-compatible.
+
+Task t5 scope (this module, added on top of t4): federation. Presence rides
+the existing generic event bus -- no new S2S verb, no hop counts. Every
+accepted local publish and every local offline flip (QUIT/disconnect) emits
+``Event(type=EventType.PRESENCE)`` via ``self.server.emit_event`` (see
+``_emit_presence_update``); ``IRCd.emit_event`` relays any event without an
+``_origin`` tag to every linked peer through the generic ``SEVENT`` fallback,
+which is the whole propagation mechanism. On receipt, ``on_event`` upserts
+the registry keyed by nick, attributing ``server`` to the tamper-resistant
+``_origin`` tag ``_handle_sevent`` stamps (see ``agentirc/server_link.py``)
+rather than the peer-supplied ``data["server"]``. Loop prevention comes free:
+``emit_event`` never re-relays an ``_origin``-tagged event, and this module
+never re-emits from the federated-receive path. ``EventType.SERVER_LINK``
+triggers a re-emit of every local row (burst-on-link, so a newly-linked peer
+learns pre-link state); ``EventType.SERVER_UNLINK`` flips every row
+attributed to the departed server to offline. ``presence.update`` is also
+added to ``NO_SURFACE_EVENT_TYPES`` (``agentirc/events.py``) so 30s
+heartbeats never spam ``#system``.
 
 Publish is fire-and-forget: the contract defines **no** reply/ack line, ever
 -- neither on success nor on failure. Invalid payloads are dropped silently
@@ -129,7 +145,7 @@ class PresenceSkill(Skill):
             await self._handle_list(client)
             return
 
-        self._handle_publish(client, first)
+        await self._handle_publish(client, first)
 
     async def _handle_list(self, client: Client) -> None:
         """Reply to `PRESENCE LIST`: one `PRESENCELIST` line per resident,
@@ -194,12 +210,16 @@ class PresenceSkill(Skill):
             "%Y-%m-%dT%H:%M:%SZ"
         )
 
-    def _handle_publish(self, client: Client, raw: str) -> None:
+    async def _handle_publish(self, client: Client, raw: str) -> None:
         """Parse and apply one `PRESENCE :<json>` publish. Never replies.
 
         Any validation failure drops the update silently (debug/warning log
         only) -- the wire contract defines no error reply for publish, and a
         malformed heartbeat must never take the connection down.
+
+        On an accepted publish, federates the row to any linked peers by
+        emitting a `presence.update` event (see `_emit_presence_update`) --
+        task t5.
         """
         nick = client.nick
         if not nick:
@@ -251,7 +271,7 @@ class PresenceSkill(Skill):
             return
 
         # Latest-wins: fully replaces any previous record for this nick.
-        self.registry[nick] = PresenceRecord(
+        record = PresenceRecord(
             state=state,
             since=since,
             task=task,
@@ -260,6 +280,8 @@ class PresenceSkill(Skill):
             last_refresh=time.time(),
             server=self.server.config.name,
         )
+        self.registry[nick] = record
+        await self._emit_presence_update(nick, record)
 
     @staticmethod
     def _valid_optional_count(value: object) -> bool:
@@ -275,21 +297,46 @@ class PresenceSkill(Skill):
         return isinstance(value, int) and value >= 0
 
     async def on_event(self, event: Event) -> None:
-        """Flip a nick's row to offline on disconnect. Retains the row.
+        """React to disconnects, federated presence updates, and link topology.
 
-        Reacts to `EventType.QUIT` (explicit client QUIT) and to
-        `EventType.AGENT_DISCONNECT` / `EventType.CONSOLE_CLOSE` (which fire
-        for `+A`/`+C`-moded clients on a plain TCP close, per
-        `IRCd._emit_disconnect_events`) -- see the module-level
-        `_DISCONNECT_EVENT_TYPES` docstring for why a mode-less client that
-        drops the socket without an explicit QUIT currently emits nothing
-        this skill can observe.
+        Four independent event families, dispatched by `event.type`:
 
-        Guarded to local-relevance only (task t5 handles federation): a
-        federated event forwarded from a peer carries an `_origin` tag in
-        `event.data`, and offline attribution across links is t5's job, not
-        this task's.
+        - `EventType.QUIT` / `AGENT_DISCONNECT` / `CONSOLE_CLOSE`: flip a
+          local nick's row to offline and re-emit the update (task t5) so
+          linked peers learn of it too -- see the disconnect-flip branch
+          below. Guarded to local-relevance only: a federated event
+          forwarded from a peer carries an `_origin` tag in `event.data`
+          and is ignored here -- cross-server offline attribution instead
+          rides the re-emitted `presence.update` from the origin server
+          (see `_on_presence_update`), not the raw disconnect event.
+        - `EventType.PRESENCE` (task t5): either our own just-emitted local
+          publish/flip echoing back through `IRCd.emit_event`'s local
+          skill-hook dispatch (no `_origin` -- ignored, the registry was
+          already updated on the local path) or a genuine federated update
+          from a peer (`_origin` present -- upsert the row). See
+          `_on_presence_update`.
+        - `EventType.SERVER_LINK` (task t5): on our own newly-established
+          link, re-emit every local row so the new peer learns pre-link
+          state. See `_on_server_link`.
+        - `EventType.SERVER_UNLINK` (task t5): flip every row attributed to
+          the departed server to offline. See `_on_server_unlink`.
+
+        See the module-level `_DISCONNECT_EVENT_TYPES` docstring for why a
+        mode-less client that drops the socket without an explicit QUIT
+        currently emits nothing this skill can observe.
         """
+        if event.type == EventType.PRESENCE:
+            await self._on_presence_update(event)
+            return
+
+        if event.type == EventType.SERVER_LINK:
+            await self._on_server_link(event)
+            return
+
+        if event.type == EventType.SERVER_UNLINK:
+            self._on_server_unlink(event)
+            return
+
         if event.type not in _DISCONNECT_EVENT_TYPES:
             return
         if event.data.get("_origin"):
@@ -307,3 +354,119 @@ class PresenceSkill(Skill):
         # `since` and `server` intentionally untouched here (retention keeps
         # the row as-is aside from state/task/last_refresh); tokens_in/
         # tokens_out are likewise kept per the retention contract.
+        await self._emit_presence_update(nick, record)
+
+    async def _emit_presence_update(self, nick: str, record: PresenceRecord) -> None:
+        """Emit a `presence.update` Event carrying *record*'s full row for *nick*.
+
+        Rides the existing event bus (no new S2S verb, no hop counts):
+        `IRCd.emit_event` relays any locally-originated event (no `_origin`
+        tag) to every linked peer via the generic `SEVENT` fallback -- that
+        is the whole propagation mechanism (see `ServerLink.relay_event` in
+        `agentirc/server_link.py`). Used both for a freshly-accepted local
+        publish/offline-flip (fresh `last_refresh`, stamped by the caller)
+        and for a `SERVER_LINK` burst re-emit of an already-stored local row
+        -- this method never recomputes `last_refresh` itself, it only
+        emits whatever `record.last_refresh` already holds.
+        """
+        await self.server.emit_event(
+            Event(
+                type=EventType.PRESENCE,
+                channel=None,
+                nick=nick,
+                data={
+                    "nick": nick,
+                    "state": record.state,
+                    "since": record.since,
+                    "task": record.task,
+                    "tokens_in": record.tokens_in,
+                    "tokens_out": record.tokens_out,
+                    "last_refresh": record.last_refresh,
+                    "server": record.server,
+                },
+            )
+        )
+
+    async def _on_presence_update(self, event: Event) -> None:
+        """Ingest a federated `presence.update` event from a peer.
+
+        `_handle_sevent` (`agentirc/server_link.py`) strips any peer-supplied
+        `_`-prefixed keys before stamping its own `_origin` tag onto
+        `event.data`, so `_origin` is the tamper-resistant attribution --
+        prefer it over the peer-supplied `data["server"]` when deciding which
+        server this row belongs to.
+
+        Absent `_origin`, this is our own just-emitted local event echoing
+        back through `IRCd.emit_event`'s local skill-hook dispatch (which
+        runs for every event -- local or federated -- before the
+        relay-to-peers step): the registry was already updated on the local
+        path (`_handle_publish`'s publish handler, or the local disconnect
+        flip above), so ignore it here. This is also the loop-prevention
+        invariant for this path: nothing is re-emitted from here, ever.
+        """
+        origin = event.data.get("_origin")
+        if not origin:
+            return
+
+        data = event.data
+        nick = data.get("nick")
+        if not isinstance(nick, str) or not nick:
+            logger.debug(
+                "presence: federated update with no nick from %s: %r", origin, data
+            )
+            return
+
+        last_refresh = data.get("last_refresh")
+        if not isinstance(last_refresh, (int, float)) or isinstance(last_refresh, bool):
+            last_refresh = time.time()
+
+        self.registry[nick] = PresenceRecord(
+            state=data.get("state", "offline"),
+            since=data.get("since", ""),
+            task=data.get("task"),
+            tokens_in=data.get("tokens_in"),
+            tokens_out=data.get("tokens_out"),
+            last_refresh=last_refresh,
+            server=origin,
+        )
+
+    async def _on_server_link(self, event: Event) -> None:
+        """Re-emit local rows so a newly-linked peer learns pre-link state.
+
+        Guarded to OUR OWN newly-established link: a federated `server.link`
+        notice forwarded from a peer (`_origin` present) reports on that
+        peer's topology, not ours, so it does not trigger a re-burst here.
+        Re-emission is idempotent on the receiving peer (latest-wins upsert
+        in `_on_presence_update`), so harmless if sent more than once.
+        """
+        if event.data.get("_origin"):
+            return
+
+        local_name = self.server.config.name
+        for nick, record in list(self.registry.items()):
+            if record.server != local_name:
+                continue
+            await self._emit_presence_update(nick, record)
+
+    def _on_server_unlink(self, event: Event) -> None:
+        """Flip every row attributed to the departed server to offline.
+
+        No hop-count tracking (per the design decision to ride the plain
+        event bus rather than add a new typed S2S verb) -- this reacts to
+        whichever side's unlink notice reaches us, local or federated, and
+        flips any row currently attributed to that server name. Rows are
+        retained (still keyed by nick), counters and `since`/`server`
+        untouched -- only `state`, `task`, and `last_refresh` change,
+        mirroring the local disconnect flip in `on_event` above.
+        """
+        peer = event.data.get("peer")
+        if not isinstance(peer, str) or not peer:
+            return
+
+        now = time.time()
+        for record in self.registry.values():
+            if record.server != peer:
+                continue
+            record.state = "offline"
+            record.task = None
+            record.last_refresh = now
