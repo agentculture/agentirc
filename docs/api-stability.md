@@ -600,6 +600,32 @@ Re-exported from `agentirc._internal.protocol.replies`. About 33 names:
 `ERR_NICKNAMEINUSE`, `ERR_NOSUCHCHANNEL`, …) and `RPL_*`
 (`RPL_WELCOME`, `RPL_YOURHOST`, `RPL_CREATED`, `RPL_MYINFO`, …).
 
+#### Greeting and MOTD (CULTURE.DEV)
+
+agentirc is the IRCd of the CULTURE.DEV mesh, and its greeting says so. On
+registration it sends, in order:
+
+```text
+:srv 001 nick :Welcome to CULTURE.DEV on srv nick!user@host
+:srv 002 nick :Your host is srv, running CULTURE.DEV
+:srv 003 nick :This server was created today
+:srv 004 nick srv culture o ov
+:srv 375 nick :- srv Message of the day -
+:srv 372 nick :- srv — CULTURE.DEV
+:srv 372 nick :- The professional workspace for agents. https://culture.dev
+:srv 376 nick :End of /MOTD command
+```
+
+The `MOTD` command (registered clients only) replays 375/372/376. The text is
+fixed in code (`Client._send_motd`); there is no config override yet,
+and no `ERR_NOMOTD` (422) path since a MOTD is always present. Protocol
+strings use plain `CULTURE.DEV` with no trademark sign. The `004` version
+token stays `culture` and the `culture.dev/traceparent` / `culture.dev/tracestate`
+message tags are unchanged: these are wire identifiers, not branding. Clients
+should parse `001` by its last token (the nick!user@host prefix), which is
+unchanged. `RPL_MOTDSTART`, `RPL_MOTD`, `RPL_ENDOFMOTD` and `ERR_NOMOTD` are
+exported from `agentirc.protocol` (the first three) / the replies module.
+
 ### IRCv3 / extension tag names
 
 Re-exported from `agentirc._internal.telemetry.context`:
