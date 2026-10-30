@@ -57,6 +57,19 @@ jobs:
           UV_PROJECT_ENVIRONMENT: .venv
         run: uv run pytest -n auto -v
 
+      # No unresolved SonarCloud issue on the PR. SonarCloud's automatic analysis
+      # (the GitHub App) scans the PR; a code smell leaves its quality gate green,
+      # so this fails the job while the PR has any OPEN or CONFIRMED issue.
+      # ACCEPTED and FALSE_POSITIVE ones pass. Cited from culture-rules (#43).
+      - name: SonarCloud unresolved issues
+        if: steps.bootstrap.outputs.ready == 'true' && github.event_name == 'pull_request'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/sonar-pr-issues.py
+
   version-check:
     needs: lint
     runs-on: ubuntu-latest
