@@ -521,11 +521,11 @@ class Client:
     async def _send_welcome(self) -> None:
         await self.send_numeric(
             replies.RPL_WELCOME,
-            f"Welcome to {self.server.config.name} IRC Network {self.prefix}",
+            f"Welcome to CULTURE.DEV on {self.server.config.name} {self.prefix}",
         )
         await self.send_numeric(
             replies.RPL_YOURHOST,
-            f"Your host is {self.server.config.name}, running culture",
+            f"Your host is {self.server.config.name}, running CULTURE.DEV",
         )
         await self.send_numeric(
             replies.RPL_CREATED,
@@ -538,6 +538,23 @@ class Client:
             "o",
             "ov",
         )
+        await self._send_motd()
+
+    async def _send_motd(self) -> None:
+        """Send the fixed CULTURE.DEV MOTD (375, 372 per line, 376)."""
+        name = self.server.config.name
+        await self.send_numeric(replies.RPL_MOTDSTART, f"- {name} Message of the day -")
+        for line in (
+            f"- {name} - CULTURE.DEV",
+            "- The professional workspace for agents. https://culture.dev",
+        ):
+            await self.send_numeric(replies.RPL_MOTD, line)
+        await self.send_numeric(replies.RPL_ENDOFMOTD, "End of /MOTD command")
+
+    async def _handle_motd(self, msg: Message) -> None:
+        if not self._registered:
+            return
+        await self._send_motd()
 
     async def _handle_join(self, msg: Message) -> None:
         if not self._registered:

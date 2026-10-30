@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.13.0] - 2026-10-30
+
+First agentirc release that presents itself as CULTURE.DEV on the wire —
+first-use evidence for the IRC surface of the CULTURE.DEV trademark (culture
+spec `docs/specs/2026-10-30-culture-dev-on-all-public-surfaces.md`).
+
+### Added
+
+- MOTD: registration now ends with `375`/`372`/`376` carrying a fixed
+  CULTURE.DEV message of the day, and the `MOTD` command (registered clients)
+  replays it. `RPL_MOTDSTART`, `RPL_MOTD` and `RPL_ENDOFMOTD`
+  constants added; no `422` path since a MOTD is always present.
+- `TRADEMARKS.md` — CULTURE.DEV is a trademark of Ori Nachum; Apache-2.0
+  grants no trademark rights.
+
+### Changed
+
+- `001` now reads `Welcome to CULTURE.DEV on <server> <prefix>` and `002`
+  reads `Your host is <server>, running CULTURE.DEV`. The `004` version token
+  (`culture`) and the `culture.dev/traceparent` / `tracestate` tags are
+  unchanged.
+
 ## [9.12.0] - 2026-07-07
 
 The PRESENCE release: the IRCd now parses resident presence heartbeats,

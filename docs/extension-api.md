@@ -61,7 +61,7 @@ S: :server CAP * ACK :agentirc.io/bot message-tags
 C: CAP END
 C: NICK mybot
 C: USER mybot 0 * :My Bot
-S: :server 001 mybot :Welcome to agentirc, mybot
+S: :server 001 mybot :Welcome to CULTURE.DEV on server mybot!mybot@127.0.0.1
 ```
 
 Most bots will request both `agentirc.io/bot` (silent presence + EVENTSUB

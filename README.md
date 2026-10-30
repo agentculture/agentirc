@@ -317,3 +317,9 @@ Dev setup: `uv venv && uv pip install -e ".[dev]"`, then `pytest -n auto`
 ## License
 
 Apache 2.0 — see [`LICENSE`](LICENSE).
+
+## Trademarks
+
+CULTURE.DEV is a trademark of Ori Nachum. agentirc greets clients as the
+CULTURE.DEV server; the Apache 2.0 license does not grant trademark rights —
+see [`TRADEMARKS.md`](TRADEMARKS.md).
