@@ -66,10 +66,10 @@ async def _boot_ircd(
 
 
 async def _register(client: IRCTestClient, nick: str) -> None:
-    """Drive NICK/USER and drain exactly the welcome burst (bounded, fast)."""
+    """Drive NICK/USER and drain the welcome burst through end-of-MOTD (bounded, fast)."""
     await client.send(f"NICK {nick}")
     await client.send(f"USER {nick} 0 * :{nick}")
-    await client.recv_until("004")
+    await client.recv_until(" 376 ")
 
 
 async def _join(client: IRCTestClient, channel: str) -> None:

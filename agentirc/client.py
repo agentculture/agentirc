@@ -545,7 +545,7 @@ class Client:
         name = self.server.config.name
         await self.send_numeric(replies.RPL_MOTDSTART, f"- {name} Message of the day -")
         for line in (
-            f"- {name} \u2014 CULTURE.DEV",
+            f"- {name} - CULTURE.DEV",
             "- The professional workspace for agents. https://culture.dev",
         ):
             await self.send_numeric(replies.RPL_MOTD, line)
