@@ -24,6 +24,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # A presence flag, not the secret: `secrets.*` isn't allowed in `if:`.
+    # Fork and Dependabot PRs get no SONAR_TOKEN, so the SonarCloud gate skips
+    # there instead of waiting out its 300 s timeout.
+    env:
+      SONAR_TOKEN_PRESENT: ${{ secrets.SONAR_TOKEN != '' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -56,6 +61,19 @@ jobs:
           # ever regresses.
           UV_PROJECT_ENVIRONMENT: .venv
         run: uv run pytest -n auto -v
+
+      # No unresolved SonarCloud issue on the PR. SonarCloud's automatic analysis
+      # (the GitHub App) scans the PR; a code smell leaves its quality gate green,
+      # so this fails the job while the PR has any OPEN or CONFIRMED issue.
+      # ACCEPTED and FALSE_POSITIVE ones pass. Cited from culture-rules (#43).
+      - name: SonarCloud unresolved issues
+        if: steps.bootstrap.outputs.ready == 'true' && env.SONAR_TOKEN_PRESENT == 'true' && github.event_name == 'pull_request'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/sonar-pr-issues.py
 
   version-check:
     needs: lint

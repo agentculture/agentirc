@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.13.1] - 2026-10-30
+
+### Added
+
+- CI fails a pull request that has an unresolved SonarCloud issue: after
+  SonarCloud's automatic analysis of the PR's head commit,
+  `scripts/sonar-pr-issues.py` (cited from culture-rules) fails on any OPEN or
+  CONFIRMED issue. ACCEPTED and FALSE_POSITIVE issues pass. Same gate as
+  culture, irc-lens and culture-library. `sonar-project.properties` names the
+  project key for it.
+
 ## [9.13.0] - 2026-10-30
 
 First agentirc release that presents itself as CULTURE.DEV on the wire —
