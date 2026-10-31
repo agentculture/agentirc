@@ -64,6 +64,11 @@ C: USER mybot 0 * :My Bot
 S: :server 001 mybot :Welcome to CULTURE.DEV on server mybot!mybot@127.0.0.1
 ```
 
+Registration is held while capability negotiation is open: once a client
+sends `CAP LS`, the server withholds `001` (and the announcement to linked
+peers) until `CAP END`, even if the nick and user were already sent. Clients
+that never send `CAP LS` register immediately, as before.
+
 Most bots will request both `agentirc.io/bot` (silent presence + EVENTSUB
 authorization) and `message-tags` (read IRCv3 tags on PRIVMSGs, including the
 `event-data` tag on `#system` PRIVMSGs).

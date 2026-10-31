@@ -97,6 +97,8 @@ class Client:
         self.host: str = writer.get_extra_info("peername", ("unknown", 0))[0]
         self.channels: set[Channel] = set()
         self._registered = False
+        # IRCv3: CAP LS opens negotiation; registration is held until CAP END.
+        self._cap_negotiating = False
         self.tags: list[str] = []
         self.caps: set[str] = set()
         self.modes: set[str] = set()
@@ -429,6 +431,11 @@ class Client:
 
     async def _handle_cap(self, msg: Message) -> None:
         sub = msg.params[0].upper() if msg.params else ""
+        # Per IRCv3, CAP LS opens negotiation and suspends registration until
+        # CAP END. A bare CAP REQ (no preceding LS) does not suspend it, which
+        # keeps legacy clients that REQ before NICK/USER registering as before.
+        if sub == "LS" and not self._registered:
+            self._cap_negotiating = True
         if sub == "LS":
             cap_list = " ".join(sorted(self._SUPPORTED_CAPS))
             await self.send_raw(
@@ -448,7 +455,9 @@ class Client:
                     f" NAK :{' '.join(requested)}"
                 )
         elif sub == "END":
-            pass  # no registration-gating in v1
+            # Negotiation over: complete any registration held since CAP LS/REQ.
+            self._cap_negotiating = False
+            await self._try_register()
 
     async def _handle_nick(self, msg: Message) -> None:
         if not msg.params:
@@ -511,7 +520,7 @@ class Client:
         await self._try_register()
 
     async def _try_register(self) -> None:
-        if self.nick and self.user and not self._registered:
+        if self.nick and self.user and not self._registered and not self._cap_negotiating:
             self._registered = True
             await self._send_welcome()
             # Announce to linked peers
