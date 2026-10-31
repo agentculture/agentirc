@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.14.0] - 2026-11-01
+
+### Changed
+
+- Registration now waits for IRCv3 capability negotiation to finish: a client
+  that opens negotiation with `CAP LS` gets no `001` welcome and no `SNICK`
+  relay to linked peers until it sends `CAP END` (even if `NICK` and `USER`
+  already arrived). `CAP END` completes the held registration. A client that
+  never sends `CAP` registers exactly as before, and a bare `CAP REQ` without a
+  preceding `CAP LS` does not hold registration (legacy-client compatibility).
+  A client that sends `CAP LS` and never `CAP END` stays unregistered. This is
+  the groundwork for SASL authentication of reserved nicks (culture#506).
+
 ## [9.13.1] - 2026-10-30
 
 ### Added
