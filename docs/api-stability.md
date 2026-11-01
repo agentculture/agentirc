@@ -426,6 +426,7 @@ class ServerConfig:
     ping_interval: float = 60.0                # since 9.10.0 (agent-accessibility)
     pong_timeout: float = 120.0                # since 9.10.0 (agent-accessibility)
     presence: PresenceConfig = field(default_factory=PresenceConfig)  # since 9.12.0 (PRESENCE)
+    accounts: AccountsConfig = field(default_factory=AccountsConfig)  # culture#506 (SASL)
 ```
 
 Plus, since 9.4.0:
@@ -531,6 +532,25 @@ Note: the `PresenceSkill` class that consumes this config
 [`agentirc.protocol`](#agentircprotocol) below) and `PresenceConfig` are
 semver-tracked. The skill implementation may be refactored freely.
 
+### `AccountsConfig`
+
+Added with agent accounts and SASL PLAIN (culture#506). Parsed from the
+`accounts:` section of `server.yaml`; unknown keys inside it are ignored.
+
+```python
+@dataclass
+class AccountsConfig:
+    trusted_cidrs: list[str] = field(default_factory=list)
+```
+
+Peers allowed to attempt SASL in addition to loopback, which is always
+trusted. Each entry is validated with `ipaddress.ip_network(strict=False)`;
+an invalid entry raises `ValueError` at config-load time. The account table
+itself is not configuration: it is `<data_dir>/accounts.json`, a versioned
+file format documented in [accounts.md](accounts.md). That file format is
+part of the public contract (culture writes it); the `agentirc.accounts`
+module that reads it is internal.
+
 ## `agentirc.cli`
 
 Two public functions.
@@ -626,6 +646,13 @@ message tags are unchanged: these are wire identifiers, not branding. Clients
 should parse `001` by its last token (the nick!user@host prefix), which is
 unchanged. `RPL_MOTDSTART`, `RPL_MOTD` and `RPL_ENDOFMOTD` are exported from
 `agentirc.protocol`.
+
+#### SASL (culture#506)
+
+`RPL_LOGGEDIN` (900), `RPL_SASLSUCCESS` (903), `ERR_SASLFAIL` (904),
+`ERR_SASLTOOLONG` (905), `ERR_SASLABORTED` (906), `ERR_SASLALREADY` (907),
+`RPL_SASLMECHS` (908), plus the `AUTHENTICATE` verb, `SASL_CAP = "sasl"` and
+`SASL_MECHANISMS = "PLAIN"`. See [accounts.md](accounts.md) for the flow.
 
 ### IRCv3 / extension tag names
 

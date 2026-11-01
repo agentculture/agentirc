@@ -74,6 +74,10 @@ from agentirc._internal.protocol.replies import (
     ERR_NOTONCHANNEL,
     ERR_UNKNOWNCOMMAND,
     ERR_USERNOTINCHANNEL,
+    ERR_SASLABORTED,
+    ERR_SASLALREADY,
+    ERR_SASLFAIL,
+    ERR_SASLTOOLONG,
     ERR_USERSDONTMATCH,
     RPL_CHANNELMODEIS,
     RPL_CREATED,
@@ -83,12 +87,15 @@ from agentirc._internal.protocol.replies import (
     RPL_ENDOFWHOIS,
     RPL_LIST,
     RPL_LISTEND,
+    RPL_LOGGEDIN,
     RPL_LISTSTART,
     RPL_MOTD,
     RPL_MOTDSTART,
     RPL_MYINFO,
     RPL_NAMREPLY,
     RPL_NOTOPIC,
+    RPL_SASLMECHS,
+    RPL_SASLSUCCESS,
     RPL_TOPIC,
     RPL_UMODEIS,
     RPL_WELCOME,
@@ -280,6 +287,16 @@ BOT_CAP = "agentirc.io/bot"
 
 
 # ---------------------------------------------------------------------------
+# SASL / agent accounts (culture#506 t8)
+# ---------------------------------------------------------------------------
+# Standard IRCv3 SASL. ``CAP LS 302`` advertises ``sasl=PLAIN``; only PLAIN
+# is supported. Numerics 900/903/904/905/906/907/908 are re-exported above.
+AUTHENTICATE = "AUTHENTICATE"
+SASL_CAP = "sasl"
+SASL_MECHANISMS = "PLAIN"
+
+
+# ---------------------------------------------------------------------------
 # Presence extension verbs (task t1, PRESENCE feature)
 # ---------------------------------------------------------------------------
 # ``PRESENCE`` announces a nick's presence-state change (e.g. away/back,
@@ -421,6 +438,10 @@ __all__ = [
     "ERR_NOTONCHANNEL",
     "ERR_UNKNOWNCOMMAND",
     "ERR_USERNOTINCHANNEL",
+    "ERR_SASLABORTED",
+    "ERR_SASLALREADY",
+    "ERR_SASLFAIL",
+    "ERR_SASLTOOLONG",
     "ERR_USERSDONTMATCH",
     "RPL_CHANNELMODEIS",
     "RPL_CREATED",
@@ -430,12 +451,15 @@ __all__ = [
     "RPL_ENDOFWHOIS",
     "RPL_LIST",
     "RPL_LISTEND",
+    "RPL_LOGGEDIN",
     "RPL_LISTSTART",
     "RPL_MOTD",
     "RPL_MOTDSTART",
     "RPL_MYINFO",
     "RPL_NAMREPLY",
     "RPL_NOTOPIC",
+    "RPL_SASLMECHS",
+    "RPL_SASLSUCCESS",
     "RPL_TOPIC",
     "RPL_UMODEIS",
     "RPL_WELCOME",
@@ -527,6 +551,10 @@ __all__ = [
     "STAGS",
     "STHREAD",
     "STOPIC",
+    # SASL / agent accounts (culture#506 t8)
+    "AUTHENTICATE",
+    "SASL_CAP",
+    "SASL_MECHANISMS",
     # Bot extension API (9.5.0)
     "BOT_CAP",
     "EVENT",

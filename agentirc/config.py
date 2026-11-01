@@ -88,6 +88,40 @@ class PresenceConfig:
 
 
 @dataclass
+class AccountsConfig:
+    """Agent-account / SASL settings. Mirrors server.yaml ``accounts:`` block.
+
+    The accounts themselves live in ``<data_dir>/accounts.json`` (written by
+    culture; see ``agentirc.accounts`` and docs/accounts.md). This block only
+    carries server-side policy:
+
+    - ``trusted_cidrs``: peers allowed to attempt SASL in addition to loopback
+      (127.0.0.0/8 and ::1 are always trusted). SASL from any other peer
+      fails with 904. Each entry is validated with
+      ``ipaddress.ip_network(strict=False)`` — an invalid entry raises
+      ``ValueError``.
+    """
+
+    trusted_cidrs: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        import ipaddress
+
+        if not isinstance(self.trusted_cidrs, list):
+            raise ValueError(
+                f"accounts.trusted_cidrs must be a list, got {self.trusted_cidrs!r}"
+            )
+        for cidr in self.trusted_cidrs:
+            try:
+                ipaddress.ip_network(str(cidr), strict=False)
+            except ValueError as exc:
+                raise ValueError(
+                    f"accounts.trusted_cidrs: invalid CIDR {cidr!r}: {exc}"
+                ) from exc
+        self.trusted_cidrs = [str(c) for c in self.trusted_cidrs]
+
+
+@dataclass
 class ServerConfig:
     """Configuration for a culture server instance."""
 
@@ -113,6 +147,9 @@ class ServerConfig:
     ping_interval: float = 60.0
     pong_timeout: float = 120.0
     presence: PresenceConfig = field(default_factory=PresenceConfig)
+    # Agent accounts + SASL (culture#506 t8): trusted-peer policy. The
+    # account table itself is <data_dir>/accounts.json.
+    accounts: AccountsConfig = field(default_factory=AccountsConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ServerConfig":
@@ -124,7 +161,9 @@ class ServerConfig:
         ``system_bots``, ``event_subscription_queue_max`` (added in
         9.5.0a1; consumed by the subscription registry that lands in
         9.5.0a3), and ``ping_interval``/``pong_timeout`` (t5: server
-        liveness sweep — see ``ServerConfig.ping_interval``/``pong_timeout``).
+        liveness sweep — see ``ServerConfig.ping_interval``/``pong_timeout``),
+        and ``accounts`` (t8: ``trusted_cidrs`` for SASL — see
+        ``AccountsConfig``).
         Unknown top-level keys (``supervisor``, ``agents``, ``buffer_size``,
         ``poll_interval``, ``sleep_start``, ``sleep_end``) are silently
         ignored — those belong to culture's broader process supervisor,
@@ -191,6 +230,9 @@ def _yaml_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
     presence_section = raw.get("presence") or {}
     if presence_section:
         kwargs["presence"] = _build_presence(presence_section)
+    accounts_section = raw.get("accounts") or {}
+    if accounts_section:
+        kwargs["accounts"] = build_accounts_config(accounts_section)
     system_bots = raw.get("system_bots") or {}
     if system_bots:
         kwargs["system_bots"] = system_bots
@@ -214,3 +256,16 @@ def _build_presence(yaml_presence: dict) -> PresenceConfig:
     known = {f.name for f in PresenceConfig.__dataclass_fields__.values()}
     pcfg = {k: v for k, v in yaml_presence.items() if k in known}
     return PresenceConfig(**pcfg)
+
+
+def build_accounts_config(yaml_accounts: dict) -> AccountsConfig:
+    """Build an AccountsConfig, dropping keys not on the dataclass.
+
+    Same culture-coexistence tolerance as ``_build_telemetry``; an invalid
+    CIDR still raises ``ValueError`` via ``AccountsConfig.__post_init__``.
+    """
+    if not isinstance(yaml_accounts, dict):
+        raise ValueError(f"accounts: must be a mapping, got {yaml_accounts!r}")
+    known = {f.name for f in AccountsConfig.__dataclass_fields__.values()}
+    acfg = {k: v for k, v in yaml_accounts.items() if k in known}
+    return AccountsConfig(**acfg)

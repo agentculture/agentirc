@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
+import hmac
 import json
 import logging
 import re
@@ -26,6 +28,7 @@ from opentelemetry.context import Context as _OtelContext
 from opentelemetry.trace import Span as _OtelSpan
 
 from agentirc._internal.aio import maybe_await
+from agentirc.accounts import Account, is_trusted_peer
 from agentirc._internal.constants import (
     EVENT_TYPE_RE,
     MAX_INBOUND_LINE,
@@ -49,12 +52,21 @@ from agentirc.channel import Channel
 from agentirc.protocol import (
     BACKFILLEND,
     BOT_CAP,
+    ERR_SASLABORTED,
+    ERR_SASLALREADY,
+    ERR_SASLFAIL,
+    ERR_SASLTOOLONG,
     ERROR_TAG,
     ERROR_TOKEN_LINE_TOO_LONG,
     ERROR_TOKENS_VERSION,
     EVENT,
     EVENTERR,
     MSGID_TAG,
+    RPL_LOGGEDIN,
+    RPL_SASLMECHS,
+    RPL_SASLSUCCESS,
+    SASL_CAP,
+    SASL_MECHANISMS,
     SERVER_TIME_TAG,
     VERBS,
     VERBS_DISCOVERY_VERSION,
@@ -99,6 +111,11 @@ class Client:
         self._registered = False
         # IRCv3: CAP LS opens negotiation; registration is held until CAP END.
         self._cap_negotiating = False
+        # SASL PLAIN (culture#506 t8). ``account`` is set only after a
+        # successful AUTHENTICATE and carries role/grants for enforcement.
+        self.account: Account | None = None
+        self._sasl_mech: str | None = None
+        self._sasl_buf: str = ""
         self.tags: list[str] = []
         self.caps: set[str] = set()
         self.modes: set[str] = set()
@@ -427,7 +444,7 @@ class Client:
     # Capabilities advertised in CAP LS and accepted in CAP REQ. Adding
     # a new cap here is a minor bump per docs/api-stability.md; removing
     # one is a major bump.
-    _SUPPORTED_CAPS: frozenset[str] = frozenset({"message-tags", BOT_CAP})
+    _SUPPORTED_CAPS: frozenset[str] = frozenset({"message-tags", BOT_CAP, SASL_CAP})
 
     async def _handle_cap(self, msg: Message) -> None:
         sub = msg.params[0].upper() if msg.params else ""
@@ -437,7 +454,12 @@ class Client:
         if sub == "LS" and not self._registered:
             self._cap_negotiating = True
         if sub == "LS":
-            cap_list = " ".join(sorted(self._SUPPORTED_CAPS))
+            # CAP LS 302 clients get cap values (sasl=PLAIN); older ones the bare name.
+            v302 = len(msg.params) >= 2 and msg.params[1].isdigit() and int(msg.params[1]) >= 302
+            cap_list = " ".join(
+                f"{cap}={SASL_MECHANISMS}" if cap == SASL_CAP and v302 else cap
+                for cap in sorted(self._SUPPORTED_CAPS)
+            )
             await self.send_raw(
                 f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}"
             )
@@ -493,19 +515,53 @@ class Client:
             )
             return
 
+        # Agent accounts (culture#506 t8). Exact match on the full nick, so
+        # ``<agent>__peek…`` observer nicks are never covered by an account.
+        is_account_nick = self.server.accounts.get(nick) is not None
+        if self._registered and self.account is not None and nick != self.nick:
+            await self.send_numeric(
+                replies.ERR_ERRONEUSNICKNAME,
+                nick,
+                "An authenticated session keeps its account nick",
+            )
+            return
+        if is_account_nick and self._registered and nick != self.nick:
+            await self.send_numeric(
+                replies.ERR_ERRONEUSNICKNAME,
+                nick,
+                "Nickname is reserved for an agent account; authenticate with SASL",
+            )
+            return
+
+        if is_account_nick and not self._registered:
+            # Hold the nick on this connection without claiming it in
+            # ``server.clients``: an unauthenticated connection must never
+            # squat an account nick. Collision is resolved at registration,
+            # after SASL (see ``_try_register``).
+            self._release_nick()
+            self.nick = nick
+            if self._session_span is not None:
+                self._session_span.set_attribute(_ATTR_NICK, nick)
+            await self._try_register()
+            return
+
         if nick in self.server.clients:
             await self.send_numeric(replies.ERR_NICKNAMEINUSE, nick, "Nickname is already in use")
             return
 
-        old_nick = self.nick
-        if old_nick and old_nick in self.server.clients:
-            del self.server.clients[old_nick]
+        self._release_nick()
 
         self.nick = nick
         self.server.clients[nick] = self
         if self._session_span is not None:
             self._session_span.set_attribute(_ATTR_NICK, nick)
         await self._try_register()
+
+    def _release_nick(self) -> None:
+        """Drop this connection's current nick from ``server.clients`` (if it owns it)."""
+        old_nick = self.nick
+        if old_nick and self.server.clients.get(old_nick) is self:
+            del self.server.clients[old_nick]
 
     async def _handle_user(self, msg: Message) -> None:
         if self._registered:
@@ -521,11 +577,193 @@ class Client:
 
     async def _try_register(self) -> None:
         if self.nick and self.user and not self._registered and not self._cap_negotiating:
+            if not await self._authorize_registration():
+                return
             self._registered = True
             await self._send_welcome()
             # Announce to linked peers
             for link in self.server.links.values():
                 await link.send_raw(f"SNICK {self.nick} {self.user} {self.host} :{self.realname}")
+
+    async def _authorize_registration(self) -> bool:
+        """Account gate for registration (culture#506 t8).
+
+        Runs on every registration path (CAP LS…END, bare CAP REQ, no CAP), so
+        it does not rely on the CAP hold. A nick with no account passes
+        untouched. An account nick registers only if this connection completed
+        SASL PLAIN as exactly that account and the account is still active
+        with the same secret; otherwise 904 and the connection is closed.
+        When it passes, any other local connection holding the nick is
+        evicted and this one takes it — the credential always wins.
+        """
+        account = self.server.accounts.get(self.nick)
+        if self.account is not None and (account is None or self.account.nick != self.nick):
+            await self._refuse_and_close("SASL account does not match nick")
+            return False
+        if account is None:
+            return True
+        if self.account is None:
+            await self._refuse_and_close(f"SASL authentication required for {self.nick}")
+            return False
+        if not account.active or not hmac.compare_digest(
+            account.secret_sha256, self.account.secret_sha256
+        ):
+            await self._refuse_and_close("SASL authentication failed")
+            return False
+        self.account = account  # pick up the freshest role/grants
+        holder = self.server.clients.get(self.nick)
+        if holder is not None and holder is not self:
+            if not isinstance(holder, Client):
+                # Pseudo-users (bots, system) are not evicted by an account.
+                await self.send_numeric(
+                    replies.ERR_NICKNAMEINUSE, self.nick, "Nickname is already in use"
+                )
+                return False
+            await holder.evict("Nick reclaimed by an authenticated session")
+        self.server.clients[self.nick] = self
+        return True
+
+    async def _refuse_and_close(self, reason: str) -> None:
+        """Send 904 + ERROR and close this connection. Never logs secrets."""
+        await self.send_numeric(ERR_SASLFAIL, reason)
+        await self.send_raw(f"ERROR :Closing Link: {self.host} ({reason})")
+        logging.getLogger(__name__).info(
+            "Refused %s from %s: %s", self.nick or "*", self.host, reason
+        )
+        raise ConnectionError(reason)
+
+    async def evict(self, reason: str) -> None:
+        """Disconnect this session because its nick was reclaimed.
+
+        Broadcasts QUIT to channel peers, emits the QUIT event (relayed to
+        linked servers as SQUITUSER), releases the nick and closes the socket.
+        The read loop then unwinds through ``IRCd._remove_client``, whose
+        identity check leaves the new owner's ``clients`` entry alone.
+        """
+        nick = self.nick
+        quit_msg = Message(prefix=self.prefix, command="QUIT", params=[reason])
+        channel_names = [ch.name for ch in self.channels]
+        if BOT_CAP not in self.caps:
+            notified: set[Client] = set()
+            for channel in [*self.channels]:
+                for member in [*channel.members]:
+                    if member is not self and member not in notified:
+                        await member.send(quit_msg)
+                        notified.add(member)
+        for channel in [*self.channels]:
+            channel.remove(self)
+            if not channel.members and not channel.persistent:
+                if self.server.channels.get(channel.name) is channel:
+                    del self.server.channels[channel.name]
+        self.channels.clear()
+        self._release_nick()
+        self.server.subscription_registry.remove_client(self)
+        if self._registered and nick:
+            await self.server.emit_event(
+                Event(
+                    type=EventType.QUIT,
+                    channel=None,
+                    nick=nick,
+                    data={"reason": reason, "channels": channel_names},
+                )
+            )
+            await self.server._emit_disconnect_events(nick, set(self.modes))
+        self.modes = set()
+        await self.send_raw(f"ERROR :Closing Link: {self.host} ({reason})")
+        try:
+            self.writer.close()
+        except OSError:
+            pass
+
+    # --- SASL PLAIN (IRCv3 sasl-3.1; culture#506 t8) ---
+
+    # A single AUTHENTICATE chunk is at most 400 bytes; a chunk of exactly
+    # 400 means "more follows" and a lone "+" ends the payload. A PLAIN
+    # payload for a nick + 64-hex secret fits in one chunk; allow two.
+    _SASL_CHUNK = 400
+    _SASL_MAX_PAYLOAD = 800
+
+    def _sasl_reset(self) -> None:
+        self._sasl_mech = None
+        self._sasl_buf = ""
+
+    async def _sasl_fail(self, *extra: tuple[str, str]) -> None:
+        """Credential attempt failed: optional extra numerics, 904, close."""
+        self._sasl_reset()
+        for code, text in extra:
+            await self.send_numeric(code, text)
+        await self._refuse_and_close("SASL authentication failed")
+
+    async def _handle_authenticate(self, msg: Message) -> None:
+        if not msg.params:
+            await self.send_numeric(
+                replies.ERR_NEEDMOREPARAMS, "AUTHENTICATE", replies.MSG_NEEDMOREPARAMS
+            )
+            return
+        arg = msg.params[0]
+        if self.account is not None:
+            await self.send_numeric(ERR_SASLALREADY, "You have already authenticated")
+            return
+        if self._registered:
+            await self.send_numeric(ERR_SASLFAIL, "SASL is only available before registration")
+            return
+        if SASL_CAP not in self.caps:
+            await self.send_numeric(ERR_SASLFAIL, "SASL capability not negotiated")
+            return
+        if arg == "*":
+            self._sasl_reset()
+            await self.send_numeric(ERR_SASLABORTED, "SASL authentication aborted")
+            return
+        if self._sasl_mech is None:
+            if arg.upper() != SASL_MECHANISMS:
+                await self.send_numeric(
+                    RPL_SASLMECHS, SASL_MECHANISMS, "are available SASL mechanisms"
+                )
+                await self.send_numeric(ERR_SASLFAIL, "SASL authentication failed")
+                return
+            self._sasl_mech = SASL_MECHANISMS
+            self._sasl_buf = ""
+            await self.send_raw("AUTHENTICATE +")
+            return
+        if arg != "+":
+            if len(arg) > self._SASL_CHUNK:
+                await self._sasl_fail((ERR_SASLTOOLONG, "SASL message too long"))
+                return
+            self._sasl_buf += arg
+            if len(self._sasl_buf) > self._SASL_MAX_PAYLOAD:
+                await self._sasl_fail((ERR_SASLTOOLONG, "SASL message too long"))
+                return
+            if len(arg) == self._SASL_CHUNK:
+                return  # more follows
+        await self._sasl_plain_finish()
+
+    async def _sasl_plain_finish(self) -> None:
+        payload = self._sasl_buf
+        self._sasl_reset()
+        try:
+            decoded = base64.b64decode(payload, validate=True).decode("utf-8")
+            authzid, authcid, secret = decoded.split("\0")
+        except (binascii.Error, ValueError):
+            # Never log the payload: it carries the secret.
+            await self._sasl_fail()
+            return
+        if (authzid and authzid != authcid) or not authcid:
+            await self._sasl_fail()
+            return
+        if not is_trusted_peer(self.host, self.server.config.accounts.trusted_cidrs):
+            await self._sasl_fail()
+            return
+        account = self.server.accounts.verify(authcid, secret)
+        if account is None:
+            await self._sasl_fail()
+            return
+        self.account = account
+        mask = f"{self.nick or '*'}!{self.user or '*'}@{self.host}"
+        await self.send_numeric(
+            RPL_LOGGEDIN, mask, account.nick, f"You are now logged in as {account.nick}"
+        )
+        await self.send_numeric(RPL_SASLSUCCESS, "SASL authentication successful")
+        await self._try_register()
 
     async def _send_welcome(self) -> None:
         await self.send_numeric(
