@@ -35,25 +35,56 @@ Format, version 1:
 - `version` (integer, must be `1`): format version. Any other value rejects
   the file.
 - `accounts` (list): one object per account. Nicks must be unique.
-- `nick` (string): the full nick, including the `<server>-` prefix. Matched
-  exactly, so `spark-culture__peekab12` is not covered by `spark-culture`.
+- `nick` (string): the full nick, including the `<server>-` prefix. Printable
+  ASCII without spaces (`!` to `~`). Matched exactly, so
+  `spark-culture__peekab12` is not covered by `spark-culture`. Two account
+  nicks may not differ only by letter case. Case variants of an account nick
+  are refused to everyone else, see [Nick changes](#nick-changes).
 - `secret_sha256` (64 lowercase hex chars): `sha256(secret)` of the UTF-8
   secret, hex encoded. The secret itself is never stored.
 - `role` (`resident`, `operator` or `guest`): enforced, see
   [Grants and roles](#grants-and-roles).
 - `grants` (object, channel to `read` or `speak`): enforced, see
-  [Grants and roles](#grants-and-roles). May be `{}`. A `guest` account's
-  grants must all be inside the guest sandbox.
+  [Grants and roles](#grants-and-roles). May be `{}`. Channel names are
+  case-sensitive (`#ops` is not `#OPS`). A `guest` account's grants must all
+  be inside the guest sandbox.
 - `state` (`active`, `suspended` or `revoked`): only `active` accounts can
   log in.
 
 Validation is all-or-nothing. If the file is not valid JSON, has the wrong
 version, or any record is invalid (unknown role, state or grant level, a value
 of the wrong JSON type such as `"role": []`, a hash that is not 64 lowercase
-hex chars, a duplicate nick), the whole file is rejected: the server keeps the
-last good table and logs an error that names the problem but never the record
-contents. A malformed file never crashes the server. If the file is malformed
-at startup, the table starts empty.
+hex chars, a non-ASCII nick, a duplicate nick or two nicks that differ only by
+case), the whole file is rejected: the server keeps the last good table and
+logs an error that names the problem but never the record contents. A
+malformed file never crashes the server.
+
+### A rejected file fails closed
+
+A typo must not unreserve the nicks the file protects. When the file is
+rejected, the server recovers, best effort, every `"nick": "<value>"` it can
+find in the raw text (even if the JSON does not parse) and **reserves** those
+nicks (and their case variants) until a valid file loads:
+
+- a reserved nick with no usable account cannot register: the connection gets
+  `904` and `ERROR` and is closed (`reason=nick_reserved`); a registered
+  client cannot `NICK` to it (`432`);
+- SASL for it fails, because there is no valid credential to check;
+- nicks the bad file does not name register as usual.
+
+If the file is rejected while the last good table is non-empty (a bad write at
+runtime), that table stays in force and only nicks it does not already
+contain are added to the reservation.
+
+If the file is rejected **at startup** (no valid table was ever loaded in
+this process) and not a single nick can be recovered from it (for example an
+empty or binary file), the server cannot tell which nicks to protect, so it
+refuses **every** local client registration (`904`, `nick_reserved`) and
+logs an error saying so, until a valid file (or no file) appears. Server
+links keep working. We chose this over refusing to start: one bad file then
+locks out local clients of one server instead of taking the server, and its
+links, down. Fix the file and the next check (within about 1 s) lifts the
+reservation; no restart is needed.
 
 Concretely, any failure while reading or validating the file (including
 unforeseen ones, such as `RecursionError` on absurdly nested JSON) is caught
@@ -77,7 +108,11 @@ No restart is needed:
 - **On SIGHUP.** `agentirc serve` / `agentirc start` re-read the file on
   `SIGHUP` regardless of its metadata. Embedders call `IRCd.reload_accounts()`.
 
-Deleting the file empties the table: every nick is unreserved again.
+Deleting the file empties the table: every nick is unreserved again. When a
+non-empty table becomes empty (the file is deleted, or rewritten with no
+accounts), the server logs a `WARNING` saying that no accounts are enforced
+any more, so an unmounted volume or a lost file is visible in the logs. A
+`data_dir` that does not exist at startup is logged as a `WARNING` too.
 
 ### Live revoke
 
@@ -92,24 +127,70 @@ from writing the file to the socket closing is about 1 s plus the walk, well
 inside the 5 s budget. Grant or role changes do not close a session; they
 apply to its next action.
 
+The same walk also closes a registered session **without** an account whose
+nick is now an account nick, or a case variant of one: a nick squatted before
+its account was written. It gets `ERROR :Closing Link: <host> (Nick reserved
+for an agent account)`, and the real agent can then log in.
+
+How an eviction (revoke, squatter, or nick reclaim) runs:
+
+- The session stops acting at once: it is marked closing, unregistered and
+  logged out, and every line it already sent that is still buffered is
+  dropped, not dispatched. Nothing more goes out under its nick, not even a
+  DM.
+- Its socket is closed first (the `ERROR` line is written without waiting;
+  a peer that does not read it is aborted after 2 s).
+- Channel members get the `QUIT` as background writes, each abandoned after
+  5 s, so a member that stopped reading never delays the eviction.
+- Each eviction in the walk runs as its own task, so one slow session never
+  delays the others.
+- Eviction is idempotent: a session is evicted, and `SQUITUSER` sent for it,
+  at most once.
+
 ## Trusted peers
 
 SASL is accepted only from:
 
-- loopback (`127.0.0.0/8`, `::1`, and their IPv4-mapped forms), always;
+- loopback (`127.0.0.0/8`, `::1`, and their IPv4-mapped forms), unless
+  `accounts.trust_loopback` is `false`;
 - addresses inside `accounts.trusted_cidrs` in `server.yaml`.
 
 ```yaml
 accounts:
-  trusted_cidrs:
+  trust_loopback: true   # default; see the proxy note below
+  trusted_cidrs:         # default []
     - 100.64.0.0/10      # e.g. a tailnet
     - fd7a:115c:a1e0::/48
 ```
 
-`trusted_cidrs` is `ServerConfig.accounts` (`AccountsConfig`) in Python. An
-entry that is not a valid CIDR or address fails config loading with
-`ValueError`. A SASL attempt from any other peer fails with `904` and the
-connection is closed, even with the right secret.
+These are `ServerConfig.accounts` (`AccountsConfig`) in Python:
+
+- `trusted_cidrs` (list, default `[]`): an entry that is not a valid CIDR or
+  address fails config loading with `ValueError`. A bare address means a
+  single host (`/32` or `/128`). IPv4-mapped IPv6 entries are normalised to
+  IPv4 (`::ffff:10.0.0.0/104` becomes `10.0.0.0/8`), because peer addresses
+  are compared in their IPv4 form. A `/0` entry (`0.0.0.0/0`, `::/0`) is
+  accepted but logs a `WARNING` (it trusts every address of that family).
+- `trust_loopback` (bool, default `true`): when `false`, loopback peers are
+  trusted only if a `trusted_cidrs` entry covers them (`127.0.0.0/8`, `::1`).
+
+A peer that is not trusted is refused at `AUTHENTICATE PLAIN` (any mechanism):
+it gets `904` and the connection is closed **before** the `AUTHENTICATE +`
+prompt, so it never sends its secret over the untrusted network
+(`reason=untrusted_peer`, not counted toward the rate limit). The `sasl`
+capability is still advertised and `ACK`ed to everyone, so the cap list is
+identical for every peer; a client holding a secret treats the `904` as a
+permanent refusal.
+
+**Proxies and forwarders.** The trust decision uses the TCP peer address.
+Anything that forwards remote users into a loopback connection —
+`cloudflared`, an irc-lens / websocket bridge, `ssh -L`, `tailscale serve`,
+a local TLS terminator — makes those users look like `127.0.0.1`: they are
+then trusted, and they share loopback's rate-limit budget (per account, see
+below). If you run such a forwarder on the server host, set
+`trust_loopback: false` and list the addresses your local agents really use
+in `trusted_cidrs`, or make sure the forwarder only reaches clients that
+never use SASL.
 
 ```yaml
 accounts:
@@ -131,7 +212,9 @@ Two checks, used on every path (`Client.can_read` / `Client.can_speak`):
 - **read** = a `read` or `speak` grant on the channel, or the `operator` role;
 - **speak** = a `speak` grant on the channel, or the `operator` role.
 
-Channel names match case-insensitively. What is enforced where:
+Channel names match exactly (case-sensitively), like channel names
+everywhere else on the server: a grant on `#ops` does not cover `#OPS` or
+`#Ops`. What is enforced where:
 
 Read paths (need **read**):
 
@@ -184,7 +267,8 @@ Roles:
 ### Guest sandbox
 
 A `guest` may only hold grants on channels whose name starts with one of
-`accounts.guest_channel_prefixes` (case-insensitive). A guest grant outside
+`accounts.guest_channel_prefixes` (case-sensitive: `#SBX-1` is not inside
+`#sbx-`). A guest grant outside
 the sandbox rejects the **whole file** at load (last good table kept, error
 logged), like any other validation error. With the default empty list, guests
 may hold no grants. Other roles are not restricted.
@@ -201,15 +285,23 @@ auth failure nick='testserv-alice' peer=127.0.0.1 reason=bad_secret
 `reason` is one of `bad_secret`, `unknown_account`, `revoked`, `suspended`
 (the last two only when the secret was right), `untrusted_peer`, `malformed`,
 `too_long`, `wrong_mechanism`, `nick_without_auth`, `account_mismatch`,
-`rate_limited`. The secret, the base64 payload and stored hashes are never
-logged. The client only ever sees a generic `904`.
+`nick_reserved`, `rate_limited`. The secret, the base64 payload and stored
+hashes are never logged. The client only ever sees a generic `904`.
 
-Failures are rate-limited per peer address with a sliding window. Once an
-address has `auth_failure_limit` failures within `auth_failure_window`
-seconds, its next `AUTHENTICATE` gets `904` and the connection closes before
-any secret is read or checked (`reason=rate_limited`; those refusals do not
-extend the window). `nick_without_auth`, `account_mismatch` and `rate_limited`
-do not count toward the limit (no credential was guessed).
+Failures are rate-limited per **(peer address, account)** with a sliding
+window: the key is the peer address plus the `authcid` the payload names
+(ASCII-case-folded). Once a key has `auth_failure_limit` failures within
+`auth_failure_window` seconds, the next attempt for that account from that
+address gets `904` and the connection closes before the secret is checked
+(`reason=rate_limited`; those refusals do not extend the window).
+
+Only credential failures count: `bad_secret`, `unknown_account`, `revoked`
+and `suspended`. They can only come from trusted peers, because untrusted
+peers are refused before they send a payload. Everything else (`malformed`,
+`too_long`, `wrong_mechanism`, `untrusted_peer`, `nick_without_auth`,
+`account_mismatch`, `nick_reserved`, `rate_limited`) is logged but not
+counted. Every SASL failure closes the connection, so one socket cannot loop
+on failures to flood the log.
 
 ```yaml
 accounts:
@@ -217,10 +309,11 @@ accounts:
   auth_failure_window: 60  # seconds
 ```
 
-Loopback is not exempt, because every local agent shares `127.0.0.1`. The
-default (10 per 60 s) tolerates a restarting agent retrying with a stale
-secret for a few cycles, but a stuck retry loop will lock out all local
-SASL logins for up to a minute: fix the secret rather than raising the limit.
+Loopback is not exempt. Because the key includes the account, a stuck retry
+loop (or a hostile local process) guessing secrets for one account locks out
+only that account's logins from that address, for up to a window; other local
+agents keep logging in. A process that can reach the server can still delay
+one named account this way: fix a stale secret rather than raising the limit.
 State is in memory and is lost on restart.
 
 Metric: counter `culture.auth.failures` with the single attribute `reason`
@@ -259,12 +352,15 @@ Rules:
   of 400. A nick plus a 64-hex secret fits in one chunk. Payloads above 800
   base64 characters get `905` and `904`, then the connection is closed.
 - `AUTHENTICATE *` aborts (`906`). A mechanism other than `PLAIN` gets `908`
-  (`PLAIN :are available SASL mechanisms`) and `904`.
+  (`PLAIN :are available SASL mechanisms`) and `904`, and the connection is
+  closed.
+- A peer that is not trusted gets `904` at `AUTHENTICATE <mechanism>`, before
+  the `AUTHENTICATE +` prompt, and the connection is closed.
 - `AUTHENTICATE` before `CAP REQ :sasl` gets `904` (connection stays open).
   After registration it gets `907` if the session is logged in, otherwise `904`.
 - A failed credential attempt (wrong secret, unknown account, `suspended` or
-  `revoked` state, undecodable payload, untrusted peer) gets `904`, then
-  `ERROR`, then the connection is closed. The secret and the decoded payload
+  `revoked` state, undecodable payload) gets `904`, then `ERROR`, then the
+  connection is closed. The secret and the decoded payload
   are never logged.
 - The secret is checked by comparing `sha256(secret)` with `secret_sha256`
   using `hmac.compare_digest`.
@@ -320,13 +416,25 @@ real agent is already online. Any other local connection holding the nick
 (an older session of the same agent, or a client that took the nick before
 its account existed) is closed with
 `ERROR :Closing Link: <host> (Nick reclaimed by an authenticated session)`;
-its channels see a `QUIT` and linked servers see the usual `SQUITUSER`.
+its channels see a `QUIT` and linked servers see the usual `SQUITUSER`. The
+eviction follows the rules under [Live revoke](#live-revoke): it never waits
+on a channel member that stopped reading. If two connections with the right
+secret complete registration at the same time, the later one wins and the
+other is evicted, so exactly one session holds the nick.
 
 ### Nick changes
 
 - A registered client cannot `NICK` to an account nick: `432` (the nick is
   unchanged).
 - A logged-in session cannot change away from its account nick: `432`.
+- A nick that differs from an account nick only by ASCII letter case
+  (`spark-Gwen` for account `spark-gwen`) is refused to every connection,
+  registered or not: `432`.
+- Local nicks must be printable ASCII without spaces (`!` to `~`); anything
+  else gets `432` (`Nickname must be printable ASCII`). This applies to every
+  client, with or without an account: it is what makes non-ASCII lookalikes
+  (a Cyrillic `е` for `e`) impossible. Before culture#506 h2, non-ASCII nicks
+  were accepted. Nicks of users on linked servers are not re-validated.
 
 ## Federation
 

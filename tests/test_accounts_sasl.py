@@ -758,6 +758,20 @@ def _non_loopback_ipv4() -> str | None:
     return ip
 
 
+async def _untrusted_sasl_attempt(c: IRCTestClient) -> tuple[list[str], bool]:
+    """SASL from an untrusted peer is refused at ``AUTHENTICATE PLAIN``, before
+    the ``AUTHENTICATE +`` prompt, so the secret is never sent (culture#506 h2)."""
+    await c.send("CAP LS 302")
+    await c.send("NICK testserv-alice")
+    await c.send("USER u 0 * :u")
+    await c.send("CAP REQ :sasl")
+    await c.recv_until(" ACK ")
+    await c.send("AUTHENTICATE PLAIN")
+    lines, closed = await _read_to_close(c)
+    assert not any(line.startswith("AUTHENTICATE") for line in lines), lines
+    return lines, closed
+
+
 @pytest.mark.asyncio
 async def test_sasl_from_untrusted_peer_fails_904(tmp_path):
     ip = _non_loopback_ipv4()
@@ -766,8 +780,7 @@ async def test_sasl_from_untrusted_peer_fails_904(tmp_path):
     ircd = await _boot(tmp_path, host=ip)
     try:
         c = await _connect(ircd, host=ip)
-        await sasl_ls_flow(c, "testserv-alice", "testserv-alice", SECRET_ALICE)
-        lines, closed = await _read_to_close(c)
+        lines, closed = await _untrusted_sasl_attempt(c)
         assert _has_numeric(lines, "904")
         assert not _has_numeric(lines, "903")
         assert not _welcomed(lines)
@@ -810,8 +823,7 @@ async def test_sasl_untrusted_peer_address_fails_deterministic(
 
     monkeypatch.setattr(client_mod.Client, "__init__", fake_init)
     c = await _connect(acct_server)
-    await sasl_ls_flow(c, "testserv-alice", "testserv-alice", SECRET_ALICE)
-    lines, closed = await _read_to_close(c)
+    lines, closed = await _untrusted_sasl_attempt(c)
     assert _has_numeric(lines, "904")
     assert not _welcomed(lines)
     assert closed

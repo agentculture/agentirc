@@ -28,7 +28,7 @@ from opentelemetry.context import Context as _OtelContext
 from opentelemetry.trace import Span as _OtelSpan
 
 from agentirc._internal.aio import maybe_await
-from agentirc.accounts import Account, is_trusted_peer
+from agentirc.accounts import Account, fold_nick, is_trusted_peer
 from agentirc._internal.constants import (
     EVENT_TYPE_RE,
     MAX_INBOUND_LINE,
@@ -93,6 +93,10 @@ if TYPE_CHECKING:
     from agentirc.skills.history import HistoryEntry
 
 
+# Local nicks are printable ASCII without spaces (culture#506 h2, M7).
+_NICK_ASCII_RE = re.compile(r"^[\x21-\x7e]+$")
+
+
 class Client:
     """A connected IRC client."""
 
@@ -118,6 +122,9 @@ class Client:
         self.account: Account | None = None
         self._sasl_mech: str | None = None
         self._sasl_buf: str = ""
+        # Set the moment the session is evicted (revoke / nick reclaim):
+        # from then on nothing it sent is dispatched (culture#506 h2, M1).
+        self._closing = False
         self.tags: list[str] = []
         self.caps: set[str] = set()
         self.modes: set[str] = set()
@@ -253,6 +260,9 @@ class Client:
                 skipping_line = False
 
             while "\n" in buffer:
+                if self._closing:
+                    # Evicted mid-buffer: drop every line still queued.
+                    return "", False
                 line, buffer = buffer.split("\n", 1)
                 if not line.strip():
                     continue
@@ -359,9 +369,9 @@ class Client:
                     self.last_activity = time.time()
                     buffer = initial_msg.replace("\r\n", "\n").replace("\r", "\n")
                     buffer, skipping_line = await self._process_buffer(buffer, skipping_line)
-                while True:
+                while not self._closing:
                     data = await self.reader.read(4096)
-                    if not data:
+                    if not data or self._closing:
                         break
                     # Server liveness (t5): any inbound bytes count as activity,
                     # not just PONG replies — see the field docstring on
@@ -380,6 +390,8 @@ class Client:
                 )
 
     async def _dispatch(self, msg: Message) -> None:
+        if self._closing:
+            return  # evicted: nothing more runs as this nick (culture#506 h2, M1)
         extract = extract_traceparent_from_tags(msg, peer=None)
         self.server.metrics.trace_inbound.add(1, {"result": extract.status, "peer": ""})
         if extract.status == "valid":
@@ -527,6 +539,18 @@ class Client:
             )
             return
 
+        # Printable ASCII only (culture#506 h2, M7): a non-ASCII lookalike
+        # of an account nick (Cyrillic "е" for "e") cannot be told apart
+        # from the real one by humans, and no confusables table is needed
+        # when only ASCII is allowed.
+        if not _NICK_ASCII_RE.match(nick):
+            await self.send_numeric(
+                replies.ERR_ERRONEUSNICKNAME,
+                nick,
+                "Nickname must be printable ASCII",
+            )
+            return
+
         # Enforce server name prefix
         expected_prefix = f"{self.server.config.name}-"
         if not nick.startswith(expected_prefix):
@@ -547,7 +571,19 @@ class Client:
 
         # Agent accounts (culture#506 t8). Exact match on the full nick, so
         # ``<agent>__peek…`` observer nicks are never covered by an account.
-        is_account_nick = self.server.accounts.get(nick) is not None
+        # A case variant of an account nick is refused outright (h2, M7).
+        canonical = self.server.accounts.lookalike_of(nick)
+        if canonical is not None:
+            await self.send_numeric(
+                replies.ERR_ERRONEUSNICKNAME,
+                nick,
+                f"Nickname differs only in case from agent account {canonical}",
+            )
+            return
+        # ``is_reserved`` also covers the nicks a rejected accounts file names
+        # (fail-closed, h2 M5): they are held like account nicks and refused
+        # at registration.
+        is_account_nick = self.server.accounts.is_reserved(nick)
         if self._registered and self.account is not None and nick != self.nick:
             await self.send_numeric(
                 replies.ERR_ERRONEUSNICKNAME,
@@ -611,6 +647,8 @@ class Client:
                 return
             self._registered = True
             await self._send_welcome()
+            if self._closing:
+                return  # evicted while the welcome was sent: announce nothing
             # Announce to linked peers
             for link in self.server.links.values():
                 await link.send_raw(f"SNICK {self.nick} {self.user} {self.host} :{self.realname}")
@@ -628,13 +666,20 @@ class Client:
         """
         account = self.server.accounts.get(self.nick)
         if self.account is not None and (account is None or self.account.nick != self.nick):
-            self._record_auth_failure("account_mismatch", count=False)
+            self._record_auth_failure("account_mismatch")
             await self._refuse_and_close("SASL account does not match nick")
             return False
         if account is None:
+            if self.server.accounts.is_reserved(self.nick):
+                # Fail-closed (h2, M5: the accounts file is invalid and names
+                # this nick, or no table loaded at all) or a case variant of
+                # an account that appeared after NICK (M7).
+                self._record_auth_failure("nick_reserved")
+                await self._refuse_and_close(f"Nickname {self.nick} is reserved")
+                return False
             return True
         if self.account is None:
-            self._record_auth_failure("nick_without_auth", count=False)
+            self._record_auth_failure("nick_without_auth")
             await self._refuse_and_close(f"SASL authentication required for {self.nick}")
             return False
         if not account.active or not hmac.compare_digest(
@@ -646,13 +691,17 @@ class Client:
                     if account.state == "revoked"
                     else "suspended" if not account.active else "bad_secret"
                 ),
-                count=False,
             )
             await self._refuse_and_close("SASL authentication failed")
             return False
         self.account = account  # pick up the freshest role/grants
-        holder = self.server.clients.get(self.nick)
-        if holder is not None and holder is not self:
+        # Re-check after every await (h2, M1): a concurrent login for the
+        # same nick may have taken it while we waited, and this session may
+        # itself have been evicted meanwhile. The latest credential wins.
+        for _ in range(8):
+            holder = self.server.clients.get(self.nick)
+            if holder is None or holder is self:
+                break
             if not isinstance(holder, Client):
                 # Pseudo-users (bots, system) are not evicted by an account.
                 await self.send_numeric(
@@ -660,22 +709,29 @@ class Client:
                 )
                 return False
             await holder.evict("Nick reclaimed by an authenticated session")
+            if self._closing:
+                return False
+        else:
+            await self._refuse_and_close("Nick reclaim did not settle")
+            return False
         self.server.clients[self.nick] = self
         return True
 
-    def _record_auth_failure(self, code: str, *, count: bool = True) -> None:
+    def _record_auth_failure(self, code: str, *, limit_key: tuple | None = None) -> None:
         """Log (nick, peer, reason code), bump the metric, feed the limiter.
 
         Never receives or logs secret material: only a fixed reason code.
-        ``count=False`` keeps registration-gate refusals (no credential was
-        guessed) out of the brute-force limiter.
+        Only credential failures from trusted peers pass a ``limit_key``
+        (``(peer, folded authcid)``, h2 M4); everything else — registration
+        gate refusals, malformed payloads, wrong mechanisms, untrusted peers
+        — stays out of the brute-force limiter.
         """
         logging.getLogger(__name__).warning(
             "auth failure nick=%r peer=%s reason=%s", self.nick or "*", self.host, code
         )
         self.server.metrics.auth_failures.add(1, {"reason": code})
-        if count:
-            self.server.auth_limiter.record(self.host)
+        if limit_key is not None:
+            self.server.auth_limiter.record(limit_key)
 
     async def _refuse_and_close(self, reason: str) -> None:
         """Send 904 + ERROR and close this connection. Never logs secrets."""
@@ -686,23 +742,42 @@ class Client:
         )
         raise ConnectionError(reason)
 
-    async def evict(self, reason: str) -> None:
-        """Disconnect this session because its nick was reclaimed.
+    # How long one channel member's QUIT write may take during an eviction
+    # before it is abandoned (culture#506 h2, M2).
+    _EVICT_SEND_TIMEOUT = 5.0
+    # Grace for the evicted socket to flush its ERROR line before it is
+    # aborted (a peer that stopped reading must not keep it open).
+    _EVICT_ABORT_AFTER = 2.0
 
-        Broadcasts QUIT to channel peers, emits the QUIT event (relayed to
-        linked servers as SQUITUSER), releases the nick and closes the socket.
-        The read loop then unwinds through ``IRCd._remove_client``, whose
-        identity check leaves the new owner's ``clients`` entry alone.
+    async def evict(self, reason: str) -> None:
+        """Disconnect this session (revoke / nick reclaim). Idempotent.
+
+        Order matters (culture#506 h2, M1/M2): the session first stops
+        acting (``_closing``, unregistered, no account — buffered lines are
+        dropped), then its socket is closed, then channel peers get the
+        QUIT as background writes that never wait on a slow peer, then the
+        nick is released and the QUIT event (relayed to linked servers as
+        SQUITUSER) is emitted once. The read loop then unwinds through
+        ``IRCd._remove_client``, whose identity check leaves the new owner's
+        ``clients`` entry alone.
         """
+        if self._closing:
+            return
+        self._closing = True
         nick = self.nick
+        was_registered = self._registered
+        self._registered = False
+        self.account = None
+        self._sasl_reset()
         quit_msg = Message(prefix=self.prefix, command="QUIT", params=[reason])
+        self._close_transport(f"ERROR :Closing Link: {self.host} ({reason})")
         channel_names = [ch.name for ch in self.channels]
         if BOT_CAP not in self.caps:
             notified: set[Client] = set()
             for channel in [*self.channels]:
                 for member in [*channel.members]:
                     if member is not self and member not in notified:
-                        await member.send(quit_msg)
+                        self._send_in_background(member, quit_msg)
                         notified.add(member)
         for channel in [*self.channels]:
             channel.remove(self)
@@ -712,7 +787,8 @@ class Client:
         self.channels.clear()
         self._release_nick()
         self.server.subscription_registry.remove_client(self)
-        if self._registered and nick:
+        modes, self.modes = set(self.modes), set()
+        if was_registered and nick:
             await self.server.emit_event(
                 Event(
                     type=EventType.QUIT,
@@ -721,13 +797,40 @@ class Client:
                     data={"reason": reason, "channels": channel_names},
                 )
             )
-            await self.server._emit_disconnect_events(nick, set(self.modes))
-        self.modes = set()
-        await self.send_raw(f"ERROR :Closing Link: {self.host} ({reason})")
+            await self.server._emit_disconnect_events(nick, modes)
+
+    def _close_transport(self, last_line: str) -> None:
+        """Write *last_line* without waiting for it to drain, then close."""
+        try:
+            self.writer.write(f"{last_line}\r\n".encode("utf-8"))
+        except (OSError, RuntimeError):
+            pass
         try:
             self.writer.close()
-        except OSError:
+        except (OSError, RuntimeError):
+            return
+        transport = self.writer.transport
+        try:
+            asyncio.get_running_loop().call_later(self._EVICT_ABORT_AFTER, transport.abort)
+        except RuntimeError:
             pass
+
+    def _send_in_background(self, member, message: Message) -> None:
+        """Send *message* to *member* without awaiting it (bounded by a timeout)."""
+
+        async def _send() -> None:
+            try:
+                await asyncio.wait_for(member.send(message), self._EVICT_SEND_TIMEOUT)
+            except (asyncio.TimeoutError, TimeoutError):
+                logging.getLogger(__name__).info(
+                    "QUIT to %s abandoned: peer is not reading", getattr(member, "nick", "?")
+                )
+            except Exception:  # noqa: BLE001 - one bad peer never breaks the eviction
+                logging.getLogger(__name__).debug("QUIT fan-out failed", exc_info=True)
+
+        task = asyncio.get_running_loop().create_task(_send())
+        self.server._background_tasks.add(task)
+        task.add_done_callback(self.server._background_tasks.discard)
 
     # --- SASL PLAIN (IRCv3 sasl-3.1; culture#506 t8) ---
 
@@ -741,10 +844,12 @@ class Client:
         self._sasl_mech = None
         self._sasl_buf = ""
 
-    async def _sasl_fail(self, code: str, *extra: tuple[str, str]) -> None:
-        """Credential attempt failed: log/count it, optional numerics, 904, close."""
+    async def _sasl_fail(
+        self, code: str, *extra: tuple[str, str], limit_key: tuple | None = None
+    ) -> None:
+        """SASL attempt failed: log it (count it if *limit_key*), numerics, 904, close."""
         self._sasl_reset()
-        self._record_auth_failure(code)
+        self._record_auth_failure(code, limit_key=limit_key)
         for numeric, text in extra:
             await self.send_numeric(numeric, text)
         await self._refuse_and_close("SASL authentication failed")
@@ -770,18 +875,21 @@ class Client:
             await self.send_numeric(ERR_SASLABORTED, "SASL authentication aborted")
             return
         if self._sasl_mech is None:
+            accounts_cfg = self.server.config.accounts
+            if not is_trusted_peer(
+                self.host, accounts_cfg.trusted_cidrs, trust_loopback=accounts_cfg.trust_loopback
+            ):
+                # Refuse before the "AUTHENTICATE +" prompt, so an untrusted
+                # peer never sends its secret over the network (h2, M3).
+                await self._sasl_fail("untrusted_peer")
+                return
             if arg.upper() != SASL_MECHANISMS:
                 await self.send_numeric(
                     RPL_SASLMECHS, SASL_MECHANISMS, "are available SASL mechanisms"
                 )
-                self._record_auth_failure("wrong_mechanism")
-                await self.send_numeric(ERR_SASLFAIL, "SASL authentication failed")
-                return
-            if self.server.auth_limiter.blocked(self.host):
-                # Over the per-address failure budget: refuse before any
-                # secret is read or checked.
-                self._record_auth_failure("rate_limited", count=False)
-                await self._refuse_and_close("SASL authentication failed")
+                # Closed, and not counted (no credential was guessed): one
+                # socket can no longer loop on wrong mechanisms (h2, M4).
+                await self._sasl_fail("wrong_mechanism")
                 return
             self._sasl_mech = SASL_MECHANISMS
             self._sasl_buf = ""
@@ -812,12 +920,16 @@ class Client:
         if (authzid and authzid != authcid) or not authcid:
             await self._sasl_fail("malformed")
             return
-        if not is_trusted_peer(self.host, self.server.config.accounts.trusted_cidrs):
-            await self._sasl_fail("untrusted_peer")
+        # Per (peer, account) budget (h2, M4): failures against one account
+        # never lock out another account from the same address.
+        limit_key = (self.host, fold_nick(authcid))
+        if self.server.auth_limiter.blocked(limit_key):
+            # Over the failure budget: refuse before the secret is checked.
+            await self._sasl_fail("rate_limited")
             return
         account, reason = self.server.accounts.check(authcid, secret)
         if account is None:
-            await self._sasl_fail(reason or "bad_secret")
+            await self._sasl_fail(reason or "bad_secret", limit_key=limit_key)
             return
         self.account = account
         mask = f"{self.nick or '*'}!{self.user or '*'}@{self.host}"
