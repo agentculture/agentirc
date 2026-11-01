@@ -25,9 +25,16 @@ closed, culture#506 h2 — see ``AccountStore._fail_closed``).
 A missing file (or no ``data_dir``) means "no accounts" — every nick
 registers as before (no flag day, culture#506 c18).
 
-Reload is lazy: every lookup ``stat()``s the file and re-reads it when its
-``(mtime_ns, size, inode)`` signature changed. ``reload()`` forces a
-re-read regardless (wired to SIGHUP by ``agentirc serve``).
+Lookups (``get``, ``is_reserved``, ``channel_access``, ``role_of`` …) read
+the cached table and never touch the file: they sit on hot paths (every
+EVENTSUB dispatch, every channel PRIVMSG). The file is ``stat()``ed — and
+re-read when its ``(mtime_ns, size, inode)`` signature changed — only by
+``maybe_reload()``, which runs on the IRCd's 1 s watcher tick and at the
+registration decision points (a connection's first pre-registration NICK, the
+SASL credential check and the registration gate — at most three ``stat()``
+calls per connection), so a freshly written account is enforced at the very
+next registration. ``reload()`` forces a re-read regardless (wired to SIGHUP
+by ``agentirc serve``).
 
 Account data is server-local. Nothing here is relayed over a server link.
 """
@@ -42,7 +49,7 @@ import logging
 import os
 import re
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Callable, Hashable, Iterable
 
@@ -73,6 +80,9 @@ def fold_nick(nick: str) -> str:
     """
     return nick.translate(_ASCII_LOWER)
 
+
+# Default key cap of ``AuthFailureLimiter`` (least recently used evicted).
+AUTH_LIMITER_MAX_KEYS = 4096
 
 # Constant used when the account does not exist, so a miss costs the same
 # sha256 + compare_digest as a hit.
@@ -240,7 +250,7 @@ class AccountStore:
             stat_error = str(exc)
         if stat_error is not None:
             # Logged after the ``except`` block on purpose: one line, no
-            # traceback (this runs on every lookup while the error persists).
+            # traceback (this runs on every watcher tick while the error persists).
             logger.error("accounts: cannot stat %s: %s", self.path, stat_error)
             return self._signature  # keep whatever we have
         return (st.st_mtime_ns, st.st_size, st.st_ino)
@@ -354,34 +364,33 @@ class AccountStore:
                 logger.exception("accounts: reload listener failed")
 
     def maybe_reload(self) -> None:
-        """Reload when the file's (mtime, size, inode) signature changed."""
+        """Reload when the file's (mtime, size, inode) signature changed.
+
+        One ``stat()`` per call. Called by the watcher tick and at the
+        registration decision points only; lookups never call it.
+        """
         if self.path is None:
             return
         if self._stat_signature() != self._signature:
             self.reload()
 
     def get(self, nick: str | None) -> Account | None:
-        """Exact-match lookup (after a lazy reload check)."""
-        if not nick:
-            return None
-        self.maybe_reload()
-        return self._table.get(nick)
-
-    def current(self, nick: str | None) -> Account | None:
-        """Lookup without the lazy reload check (for use inside reload hooks)."""
+        """Exact-match lookup in the cached table (never touches the file)."""
         return self._table.get(nick) if nick else None
 
-    def is_reserved(self, nick: str | None, *, reload: bool = True) -> bool:
+    def current(self, nick: str | None) -> Account | None:
+        """Alias of :meth:`get` kept for reload hooks."""
+        return self.get(nick)
+
+    def is_reserved(self, nick: str | None) -> bool:
         """True if *nick* may only be held by an authenticated session.
 
         Covers an account nick, any ASCII case variant of one (culture#506
         h2, M7), the nicks a rejected file names, and — in lockdown — every
-        nick (M5). ``reload=False`` skips the lazy reload (reload hooks).
+        nick (M5). Reads the cached table.
         """
         if not nick:
             return False
-        if reload:
-            self.maybe_reload()
         if self._lockdown:
             return True
         folded = fold_nick(nick)
@@ -391,7 +400,6 @@ class AccountStore:
         """The account nick *nick* is a case variant of (not equal to), else None."""
         if not nick:
             return None
-        self.maybe_reload()
         canonical = self._folded.get(fold_nick(nick))
         return canonical if canonical is not None and canonical != nick else None
 
@@ -399,9 +407,9 @@ class AccountStore:
         """Live access level of account *nick* on *channel*.
 
         Returns ``"speak"``, ``"read"`` or ``None`` (no access). Reads the
-        current table (lazy reload), so a grant change applies on the next
-        check. ``operator`` accounts have ``speak`` everywhere; a missing or
-        non-active account has no access.
+        cached table, which the watcher keeps current, so a grant change
+        applies within about 1 s. ``operator`` accounts have ``speak``
+        everywhere; a missing or non-active account has no access.
         """
         account = self.get(nick)
         if account is None or not account.active:
@@ -462,44 +470,58 @@ class AuthFailureLimiter:
     failures happened within the last *window* seconds. ``limit <= 0``
     disables it. The server keys it per ``(peer address, folded authcid)``
     (culture#506 h2, M4), so failures against one account never lock out
-    another account from the same address. State is in-memory and pruned as
-    windows expire.
+    another account from the same address.
+
+    The authcid is attacker-chosen, so the key space is unbounded: state is a
+    bounded LRU (agentirc#65). At most *max_keys* keys are kept; touching a
+    key (``record`` or ``blocked``) makes it most recent, and the least
+    recently used key is evicted beyond the cap. Each key keeps at most
+    *limit* timestamps and is pruned lazily when touched, so ``record`` and
+    ``blocked`` are O(1) amortised whatever the churn.
     """
 
-    def __init__(self, limit: int, window: float, clock: Callable[[], float] = time.monotonic):
+    def __init__(
+        self,
+        limit: int,
+        window: float,
+        clock: Callable[[], float] = time.monotonic,
+        *,
+        max_keys: int = AUTH_LIMITER_MAX_KEYS,
+    ):
         self.limit = limit
         self.window = window
+        self.max_keys = max(1, max_keys)
         self._clock = clock
-        self._events: dict[Hashable, deque[float]] = {}
+        self._events: OrderedDict[Hashable, deque[float]] = OrderedDict()
 
-    def _prune(self, addr: Hashable) -> deque[float] | None:
-        q = self._events.get(addr)
+    def _touch(self, key: Hashable) -> deque[float] | None:
+        """Prune *key*'s expired failures; mark it most recently used."""
+        q = self._events.get(key)
         if q is None:
             return None
         cutoff = self._clock() - self.window
         while q and q[0] <= cutoff:
             q.popleft()
         if not q:
-            del self._events[addr]
+            del self._events[key]
             return None
+        self._events.move_to_end(key)
         return q
 
-    def record(self, addr: Hashable) -> None:
+    def record(self, key: Hashable) -> None:
         if self.limit <= 0:
             return
-        if len(self._events) > 4096:  # bound memory under address churn
-            # Snapshot the keys: ``_prune`` deletes emptied entries.
-            for key in self._events.copy():
-                self._prune(key)
-        self._events.setdefault(addr, deque()).append(self._clock())
-        q = self._events[addr]
-        while len(q) > self.limit:
-            q.popleft()
+        q = self._touch(key)
+        if q is None:
+            q = self._events[key] = deque(maxlen=self.limit)
+        q.append(self._clock())
+        while len(self._events) > self.max_keys:
+            self._events.popitem(last=False)
 
-    def blocked(self, addr: Hashable) -> bool:
+    def blocked(self, key: Hashable) -> bool:
         if self.limit <= 0:
             return False
-        q = self._prune(addr)
+        q = self._touch(key)
         return q is not None and len(q) >= self.limit
 
 

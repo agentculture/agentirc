@@ -32,7 +32,7 @@ import pytest_asyncio
 from agentirc.accounts import ACCOUNTS_FILENAME, AccountStore
 from agentirc.config import AccountsConfig, ServerConfig, TelemetryConfig
 from agentirc.ircd import IRCd
-from tests.test_accounts_grants import SECRET_RES, _accts, _login, _plain
+from tests.test_accounts_grants import SECRET_RES, _accts, _login, _plain, wait_for_table
 from tests.test_accounts_sasl import (
     SECRET_ALICE,
     SECRET_BOB,
@@ -320,6 +320,7 @@ async def test_backfill_star_skips_channels_whose_grant_was_removed(srv):
     accts = [a for a in _accts() if a["nick"] != "testserv-res"]
     accts.append(_account("testserv-res", SECRET_RES, grants={"#speakroom": "speak"}))
     write_accounts(str(srv._tmp / "data"), accts)
+    await wait_for_table(srv, lambda a: "#readroom" not in a.get("testserv-res").grants)
     await c.send("BACKFILL * * 10")
     lines = await c.recv_all(0.5)
     assert not any("after-join-text" in d for d in _decoded_event_payloads(lines)), lines

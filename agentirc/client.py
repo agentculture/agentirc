@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import hmac
 import json
 import logging
@@ -130,6 +131,9 @@ class Client:
         self.account: Account | None = None
         self._sasl_mech: str | None = None
         self._sasl_buf: str = ""
+        # The first pre-registration NICK checks the accounts file once; later
+        # ones read the cached table (the registration gate re-checks).
+        self._nick_checked_accounts = False
         # Set the moment the session is evicted (revoke / nick reclaim):
         # from then on nothing it sent is dispatched (culture#506 h2, M1).
         self._closing = False
@@ -551,6 +555,12 @@ class Client:
 
         # Agent accounts (culture#506 t8). Exact match on the full nick, so
         # ``<agent>__peek…`` observer nicks are never covered by an account.
+        # Lookups read the cached table (no file I/O). The first NICK before
+        # registration checks the file once, so a freshly written account
+        # applies here; the registration gate re-checks before 001.
+        if not self._registered and not self._nick_checked_accounts:
+            self._nick_checked_accounts = True
+            self.server.accounts.maybe_reload()
         # A case variant of an account nick is refused outright (h2, M7).
         canonical = self.server.accounts.lookalike_of(nick)
         if canonical is not None:
@@ -666,6 +676,9 @@ class Client:
         When it passes, any other local connection holding the nick is
         evicted and this one takes it — the credential always wins.
         """
+        # One file check per registration: a freshly written account is
+        # enforced here without waiting for the 1 s watcher.
+        self.server.accounts.maybe_reload()
         account = self.server.accounts.get(self.nick)
         if self.account is not None and (account is None or self.account.nick != self.nick):
             self._record_auth_failure("account_mismatch")
@@ -945,6 +958,7 @@ class Client:
             # Over the failure budget: refuse before the secret is checked.
             await self._sasl_fail("rate_limited")
             return
+        self.server.accounts.maybe_reload()  # one file check per SASL attempt
         account, reason = self.server.accounts.check(authcid, secret)
         if account is None:
             await self._sasl_fail(reason or "bad_secret", limit_key=limit_key)
@@ -1039,19 +1053,79 @@ class Client:
     def can_read_event(self, event: Event) -> bool:
         """May this session receive *event* through EVENTSUB (culture#506 h1)?
 
-        Sessions without an account see every event, as before. For account
-        sessions a channel event needs :meth:`can_read` on its channel, and a
-        direct message (a ``message`` event with no channel) is visible only
-        to its sender and its target.
+        True when :meth:`visible_event` would deliver it (possibly with a
+        filtered channel list).
+        """
+        return self.visible_event(event) is not None
+
+    def visible_event(self, event: Event) -> Event | None:
+        """The form of *event* this session may receive through EVENTSUB.
+
+        Sessions without an account (and ``operator`` accounts) get *event*
+        unchanged, as before. For other account sessions:
+
+        - a channel event needs :meth:`can_read` on its channel;
+        - a direct message (a ``message`` event with no channel) is visible
+          only to its sender and its target;
+        - any other channel-less event is scoped by the channel names it
+          carries (:meth:`_scope_channelless_event`).
+
+        Returns ``None`` when the event must not be delivered.
         """
         if self.account is None:
-            return True
+            return event
         if event.channel is not None:
-            return self.can_read(event.channel)
+            return event if self.can_read(event.channel) else None
         if str(event.type) == EventType.MESSAGE.value:
             target = event.data.get("target") if isinstance(event.data, dict) else None
-            return self.nick is not None and self.nick in (event.nick, target)
-        return True
+            mine = self.nick is not None and self.nick in (event.nick, target)
+            return event if mine else None
+        if self.account_role() == "operator":
+            return event
+        return self._scope_channelless_event(event)
+
+    # Top-level payload keys of channel-less events that name one channel.
+    _EVENT_CHANNEL_KEYS = ("channel", "target")
+
+    def _scope_channelless_event(self, event: Event) -> Event | None:
+        """Scope a channel-less event to the channels this session can read.
+
+        Policy (agentirc#66 review): a payload that names a single channel
+        (``channel`` / ``target`` starting with ``#``) or a room
+        (``room_id``) the session cannot read drops the event. A
+        ``channels`` list is filtered to the readable channels and the event
+        is delivered with that filtered list — unless the list was non-empty
+        and nothing readable remains, in which case it is dropped (e.g. the
+        QUIT of someone who shared no readable channel with this session).
+        Events that name no channel (``agent.*``, ``console.*``,
+        ``server.*``, ``tags.update``, ``presence.update`` …) are delivered.
+        """
+        data = event.data if isinstance(event.data, dict) else {}
+        for key in self._EVENT_CHANNEL_KEYS:
+            name = data.get(key)
+            if isinstance(name, str) and name.startswith("#") and not self.can_read(name):
+                return None
+        if "room_id" in data and not self._can_read_room_id(data["room_id"]):
+            return None
+        channels = data.get("channels")
+        if not isinstance(channels, list):
+            return event
+        readable = [ch for ch in channels if isinstance(ch, str) and self.can_read(ch)]
+        if len(readable) == len(channels):
+            return event
+        if not readable:
+            return None
+        return dataclasses.replace(event, data={**data, "channels": readable})
+
+    def _can_read_room_id(self, room_id: object) -> bool:
+        """Can this session read the (current) channel whose room id is *room_id*?
+
+        An unknown room id is treated as unreadable: it cannot be checked.
+        """
+        for channel in self.server.channels.values():
+            if getattr(channel, "room_id", None) == room_id:
+                return self.can_read(channel.name)
+        return False
 
     async def _handle_join(self, msg: Message) -> None:
         if not self._registered:
@@ -1976,6 +2050,10 @@ class Client:
             return
 
         channel = None if target == "*" else target
+        if channel is None and not self._may_publish_serverwide():
+            # Channel-less EVENTPUB fans out server-wide (agentirc#66 review).
+            await self.send_raw(f"{EVENTERR} {type_str} :permission-denied")
+            return
         if channel is not None and channel not in self.server.channels:
             await self.send_raw(f"{EVENTERR} {type_str} :no-such-channel")
             return
@@ -2013,6 +2091,20 @@ class Client:
             timestamp=time.time(),
         )
         await self.server.emit_event(ev)
+
+    # Account roles allowed to EVENTPUB without a channel (server-wide).
+    _SERVERWIDE_PUBLISH_ROLES = frozenset({"operator", "resident"})
+
+    def _may_publish_serverwide(self) -> bool:
+        """May this session EVENTPUB to ``*`` (agentirc#66 review)?
+
+        Sessions without an account: yes, as before. Account sessions: only
+        an active ``operator`` or ``resident`` account; a ``guest``, or a
+        session whose account is suspended, revoked or gone, is refused.
+        """
+        if self.account is None:
+            return True
+        return self.account_role() in self._SERVERWIDE_PUBLISH_ROLES
 
     async def _handle_backfill(self, msg: Message) -> None:
         """``BACKFILL <channel-or-*> <cursor-or-*> [limit]`` (task t8).

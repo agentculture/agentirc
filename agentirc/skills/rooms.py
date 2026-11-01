@@ -637,7 +637,11 @@ class RoomsSkill(Skill):
         target_nick = msg.params[1]
 
         channel = self.server.channels.get(channel_name)
-        if not channel:
+        # An account session needs read access on the channel (operators have
+        # it everywhere); without it the channel looks nonexistent, so
+        # ROOMINVITE can't probe for it or push its metadata (agentirc#66).
+        can_read = getattr(client, "can_read", None)
+        if not channel or (can_read is not None and not can_read(channel_name)):
             await client.send_numeric(
                 replies.ERR_NOSUCHCHANNEL,
                 channel_name,
