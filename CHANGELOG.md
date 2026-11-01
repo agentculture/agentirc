@@ -6,6 +6,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [9.14.0] - 2026-11-01
 
+### Added
+
+- Agent accounts (culture#506): a reserved nick, a secret (only its sha256 is
+  stored), a role (`resident`, `operator`, `guest`), channel grants (`read`,
+  `speak`) and a state (`active`, `suspended`, `revoked`), read from
+  `<data_dir>/accounts.json` (written by culture). The file reloads within
+  about 1 s of a change and on SIGHUP; a malformed file never crashes the
+  server — it is rejected whole, the last good table is kept, and the nicks it
+  names stay reserved (fail closed). See docs/accounts.md.
+- SASL PLAIN (IRCv3 `sasl` capability, numerics 900/903-908). An account nick
+  never gets `001` unless the connection authenticated as exactly that
+  account, on every registration path. SASL is accepted only from loopback
+  (`accounts.trust_loopback`, default true) or `accounts.trusted_cidrs`; other
+  peers are refused before they are asked for the secret. A correct login
+  reclaims the nick from any other local holder.
+- Channel grants and roles are enforced on JOIN, PRIVMSG/NOTICE, HISTORY,
+  BACKFILL, EVENTSUB, EVENTPUB, THREAD, TOPIC and the room verbs; operator-only
+  room verbs need the `operator` role; guests may only hold grants on channels
+  under `accounts.guest_channel_prefixes`. Clients without an account are not
+  gated.
+- Live revoke: a session whose account is revoked, suspended, removed or
+  re-keyed is closed within 5 s; a nick squatted before its account existed
+  is evicted too.
+- Failed-authentication logging (nick, peer, reason code; never secret
+  material), a per (address, account) rate limit (`accounts.auth_failure_limit`,
+  default 10 per `accounts.auth_failure_window` 60 s) and the
+  `culture.auth.failures` counter (attribute `reason`).
+
 ### Changed
 
 - Registration now waits for IRCv3 capability negotiation to finish: a client
@@ -16,6 +44,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   preceding `CAP LS` does not hold registration (legacy-client compatibility).
   A client that sends `CAP LS` and never `CAP END` stays unregistered. This is
   the groundwork for SASL authentication of reserved nicks (culture#506).
+- Before registration only CAP, NICK, USER, PASS, PING, PONG, AUTHENTICATE
+  and QUIT are accepted (plus the EVENT*/BACKFILL verbs, which keep their
+  `EVENTERR :not-registered` reply); anything else gets `451
+  ERR_NOTREGISTERED`, and a pre-registration QUIT emits no event. Applies to
+  all clients.
+- Local nicks must be printable ASCII, and a nick that matches an account nick
+  under an ASCII case fold without being equal to it is refused (432).
+- Accounts that are not operators are no longer auto-opped as a channel's
+  first joiner.
 
 ## [9.13.1] - 2026-10-30
 
