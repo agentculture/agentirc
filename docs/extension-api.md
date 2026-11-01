@@ -55,7 +55,7 @@ Standard IRCv3 capability handshake:
 
 ```text
 C: CAP LS
-S: :server CAP * LS :message-tags agentirc.io/bot
+S: :server CAP * LS :agentirc.io/bot message-tags sasl
 C: CAP REQ :agentirc.io/bot message-tags
 S: :server CAP * ACK :agentirc.io/bot message-tags
 C: CAP END
@@ -68,6 +68,10 @@ Registration is held while capability negotiation is open: once a client
 sends `CAP LS`, the server withholds `001` (and the announcement to linked
 peers) until `CAP END`, even if the nick and user were already sent. Clients
 that never send `CAP LS` register immediately, as before.
+
+Nicks that have an agent account additionally require SASL PLAIN before
+registration completes, on every path (with or without CAP). See
+[accounts.md](accounts.md).
 
 Most bots will request both `agentirc.io/bot` (silent presence + EVENTSUB
 authorization) and `message-tags` (read IRCv3 tags on PRIVMSGs, including the

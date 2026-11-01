@@ -113,6 +113,9 @@ supervision is the caller's responsibility (systemd, container runtime,
 - **Stdout/stderr:** the daemon's log goes to the foreground streams.
 - **SIGTERM/SIGINT:** triggers a clean shutdown (closes listening
   socket, terminates active connections, flushes audit, exits 0).
+- **SIGHUP:** re-reads `<data_dir>/accounts.json` (agent accounts, see
+  [accounts.md](accounts.md)) without a restart. The server keeps running.
+  Same for `start` / `start --foreground`.
 - **No PID/port files:** `serve` deliberately writes neither, so
   `agentirc status` reports `not running` for it. Use `start
   --foreground` if you need PID/port-file integration with status

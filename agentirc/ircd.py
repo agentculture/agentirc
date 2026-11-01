@@ -80,6 +80,20 @@ class IRCd:
         self.subscription_registry = SubscriptionRegistry(
             queue_max=self.config.event_subscription_queue_max,
         )
+        # Agent accounts (culture#506 t8): <data_dir>/accounts.json, written
+        # by culture, read-only here. Server-local; never relayed over S2S.
+        from agentirc.accounts import AccountStore
+
+        self.accounts = AccountStore(self.config.data_dir)
+        # Every accepted local TCP client connection, registered or not.
+        # Pending account-nick connections are not in ``clients`` (they must
+        # not squat the nick), so shutdown closes connections from here.
+        self._local_connections: set[Client] = set()
+
+    def reload_accounts(self) -> None:
+        """Force a re-read of the accounts file (the SIGHUP handler)."""
+        logger.info("Reloading accounts")
+        self.accounts.reload()
 
     async def start(self) -> None:
         logger.info("Registering default skills...")
@@ -449,12 +463,13 @@ class IRCd:
         """
         from agentirc.client import Client
 
-        for client in [*self.clients.values()]:
-            if isinstance(client, Client):
-                try:
-                    client.writer.close()
-                except OSError:
-                    pass
+        targets = {c for c in self.clients.values() if isinstance(c, Client)}
+        targets.update(self._local_connections)
+        for client in targets:
+            try:
+                client.writer.close()
+            except OSError:
+                pass
 
     async def stop(self) -> None:
         """Shut down the server. Concurrent callers await the same teardown.
@@ -754,11 +769,13 @@ class IRCd:
 
         # C2S connection
         client = Client(reader, writer, self)
+        self._local_connections.add(client)
         try:
             await client.handle(initial_msg=initial_text)
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
+            self._local_connections.discard(client)
             await self._remove_client(client)
             writer.close()
             try:
@@ -794,7 +811,9 @@ class IRCd:
                 logger.exception("Failed to emit console.close for %s", nick)
 
     async def _remove_client(self, client: Client) -> None:
-        if client.nick and client.nick in self.clients:
+        # Identity check: an account session that reclaimed this nick
+        # (culture#506 t8) already owns the entry; don't delete it.
+        if client.nick and self.clients.get(client.nick) is client:
             del self.clients[client.nick]
         for channel in [*client.channels]:
             channel.remove(client)

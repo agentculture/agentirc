@@ -33,6 +33,7 @@ async def boot_linked_pair(
     link_password: str = TEST_LINK_PASSWORD,
     with_audit: bool = False,
     webhook_port: int | None = None,
+    data_dirs: tuple[str, str] | None = None,
 ) -> tuple[IRCd, IRCd]:
     """Boot two IRCd instances pre-wired with link configs.
 
@@ -58,6 +59,8 @@ async def boot_linked_pair(
     if webhook_port is not None:
         kwargs_a["webhook_port"] = webhook_port
         kwargs_b["webhook_port"] = webhook_port
+    if data_dirs is not None:
+        kwargs_a["data_dir"], kwargs_b["data_dir"] = data_dirs
 
     config_a = ServerConfig(name="alpha", host="127.0.0.1", port=0, **kwargs_a)
     config_b = ServerConfig(name="beta", host="127.0.0.1", port=0, **kwargs_b)
