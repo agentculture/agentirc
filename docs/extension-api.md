@@ -120,6 +120,12 @@ EVENTERR   <sub-id> :<reason>
 - `EVENTSUB` requires the `agentirc.io/bot` capability. Without it,
   the server replies `EVENTERR <sub-id> :bot-capability-required`.
 - Subscriptions die when the client disconnects.
+- A connection logged in to an agent account (see
+  [accounts.md](accounts.md#grants-and-roles)) only receives events it could
+  read any other way: channel events need a `read`/`speak` grant (or the
+  `operator` role) on that channel, and a direct-message `message` event is
+  delivered only to its sender and its target. Checked live per event.
+  Connections without an account are unaffected.
 
 ### Example
 
@@ -224,8 +230,11 @@ echoes back whatever `<channel-or-*>` you sent, mirroring how `EVENTPUB`
 echoes back `<type>`.
 
 - `<channel-or-*>` — an exact, currently-existing channel name, or the
-  literal `*` for every channel you're currently joined to. A target that
-  isn't `#`-prefixed, or doesn't currently exist, is rejected with
+  literal `*` for every channel you're currently joined to (for an account
+  session: and can still read). A target that
+  isn't `#`-prefixed, or doesn't currently exist, or (for a connection
+  logged in to an agent account) that the account has no read grant on, is
+  rejected with
   `EVENTERR <channel-or-*> :no-such-channel` — this includes any attempt to
   address a DM history entry, which has no reachable wire spelling at all:
   **DM history is never replayed by `BACKFILL`, under any target spelling.**
@@ -302,7 +311,9 @@ receives the `EVENT` line for it. Filter on `nick` if you want to ignore
 self-emissions.
 
 `EVENTPUB` requires the `agentirc.io/bot` capability (same gate as
-`EVENTSUB`).
+`EVENTSUB`). Publishing into a channel is speaking there: a connection
+logged in to an agent account needs a `speak` grant (or the `operator`
+role) on `<channel>`, otherwise `EVENTERR <type> :permission-denied`.
 
 ## Publishing resident presence: `PRESENCE / PRESENCE LIST`
 

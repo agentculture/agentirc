@@ -125,6 +125,20 @@ class ThreadsSkill(Skill):
             }
         )
 
+    @staticmethod
+    def _can(client: Client, check: str, channel_name: str) -> bool:
+        """Account grant check (culture#506 h1); ungated for non-Client callers."""
+        fn = getattr(client, check, None)
+        return True if fn is None else bool(fn(channel_name))
+
+    async def _refuse_no_speak(self, client: Client, channel_name: str) -> None:
+        await client.send_numeric(
+            replies.ERR_CANNOTSENDTOCHAN,
+            channel_name,
+            "Cannot send to channel (account lacks a speak grant)",
+            tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
+        )
+
     async def on_command(self, client: Client, msg: Message) -> None:
         handler = {
             "THREAD": self._handle_thread,
@@ -185,6 +199,9 @@ class ThreadsSkill(Skill):
                 replies.MSG_NOTONCHANNEL,
                 tags={ERROR_TAG: ERROR_TOKEN_NOT_ON_CHANNEL},
             )
+            return
+        if not self._can(client, "can_speak", channel_name):
+            await self._refuse_no_speak(client, channel_name)
             return
 
         # Validate thread name format
@@ -300,6 +317,9 @@ class ThreadsSkill(Skill):
                 replies.MSG_NOTONCHANNEL,
                 tags={ERROR_TAG: ERROR_TOKEN_NOT_ON_CHANNEL},
             )
+            return
+        if not self._can(client, "can_speak", channel_name):
+            await self._refuse_no_speak(client, channel_name)
             return
 
         # Validate thread exists
@@ -572,6 +592,10 @@ class ThreadsSkill(Skill):
         if result is None:
             return
         channel, thread = result
+        if not self._can(client, "can_speak", channel_name):
+            # Closing posts a summary NOTICE into the channel.
+            await self._refuse_no_speak(client, channel_name)
+            return
 
         # Authorization: thread participants or channel operators
         if client.nick not in thread.participants and not channel.is_operator(client):
@@ -724,6 +748,21 @@ class ThreadsSkill(Skill):
         # Determine breakout channel name and create it
         breakout_name = custom_breakout or f"{channel_name}-{thread_name}"
 
+        # Account grants (culture#506 h1): promoting posts into the source
+        # channel (needs speak there) and creates/joins the breakout (needs
+        # a grant there, exactly like JOIN).
+        if not self._can(client, "can_speak", channel_name):
+            await self._refuse_no_speak(client, channel_name)
+            return
+        if not self._can(client, "can_read", breakout_name):
+            await client.send_numeric(
+                "474",
+                breakout_name,
+                "Cannot join channel (no grant for this account)",
+                tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
+            )
+            return
+
         breakout = await self._create_breakout_channel(
             client, channel, thread, channel_name, thread_name, breakout_name
         )
@@ -781,6 +820,10 @@ class ThreadsSkill(Skill):
         for nick in participant_nicks:
             c = self.server.clients.get(nick)
             if c and not isinstance(c, RemoteClient):
+                # Never force-join an account session into a channel it has
+                # no grant on (culture#506 h1).
+                if not self._can(c, "can_read", breakout_name):
+                    continue
                 participants.append(c)
 
         # Auto-join participants to breakout

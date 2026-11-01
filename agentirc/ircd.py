@@ -141,7 +141,15 @@ class IRCd:
     async def _accounts_watch_loop(self) -> None:
         while True:
             await asyncio.sleep(self._ACCOUNTS_CHECK_INTERVAL)
-            self.accounts.maybe_reload()  # fires on_reload when the file changed
+            try:
+                self.accounts.maybe_reload()  # fires on_reload when the file changed
+            except Exception as exc:  # noqa: BLE001 - the watcher must outlive any bad tick
+                # Never let one failure silently end live revoke. Log the
+                # type only: the traceback could quote file contents.
+                logger.error(
+                    "accounts: watcher check failed (%s); retrying",
+                    type(exc).__name__,
+                )
 
     async def start(self) -> None:
         logger.info("Registering default skills...")
@@ -565,6 +573,8 @@ class IRCd:
                     await self._accounts_task
                 except asyncio.CancelledError:
                     pass
+                except Exception as exc:  # noqa: BLE001 - never skip the rest of teardown
+                    logger.error("accounts: watcher had failed (%s)", type(exc).__name__)
                 self._accounts_task = None
             for task in [*self._enforce_tasks]:
                 task.cancel()

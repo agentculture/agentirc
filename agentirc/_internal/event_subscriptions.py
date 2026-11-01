@@ -207,6 +207,12 @@ class SubscriptionRegistry:
         # ``add`` or ``remove`` and mutate the dicts. The ``list()`` snapshots
         # avoid ``RuntimeError: dictionary changed size during iteration``.
         for client, per_client in list(self._subs.items()):  # NOSONAR python:S7504: defensive snapshot vs. concurrent mutation
+            # Read grants (culture#506 h1): an account session only receives
+            # events it could read through any other path. Checked per event,
+            # live, so a grant change applies to the very next event.
+            can_read_event = getattr(client, "can_read_event", None)
+            if can_read_event is not None and not can_read_event(event):
+                continue
             for sub in list(per_client.values()):  # NOSONAR python:S7504: defensive snapshot vs. concurrent mutation
                 if sub.dropped:
                     continue
