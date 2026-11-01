@@ -84,7 +84,19 @@ class IRCd:
         # by culture, read-only here. Server-local; never relayed over S2S.
         from agentirc.accounts import AccountStore
 
-        self.accounts = AccountStore(self.config.data_dir, self.config.accounts.guest_channel_prefixes)
+        self.accounts = AccountStore(
+            self.config.data_dir, self.config.accounts.guest_channel_prefixes
+        )
+        from agentirc.accounts import AuthFailureLimiter
+
+        self.auth_limiter = AuthFailureLimiter(
+            self.config.accounts.auth_failure_limit, self.config.accounts.auth_failure_window
+        )
+        # Live revoke (t10): any reload of the table (lazy, SIGHUP or the
+        # periodic check below) closes sessions whose account went away.
+        self.accounts.on_reload = self._schedule_account_enforcement
+        self._accounts_task: asyncio.Task | None = None
+        self._enforce_tasks: set[asyncio.Task] = set()
         # Every accepted local TCP client connection, registered or not.
         # Pending account-nick connections are not in ``clients`` (they must
         # not squat the nick), so shutdown closes connections from here.
@@ -94,6 +106,42 @@ class IRCd:
         """Force a re-read of the accounts file (the SIGHUP handler)."""
         logger.info("Reloading accounts")
         self.accounts.reload()
+
+    # How often the table's file signature is polled so a revoke written
+    # while nobody is connecting is still noticed (acceptance: <= 5 s).
+    _ACCOUNTS_CHECK_INTERVAL = 1.0
+
+    def _schedule_account_enforcement(self) -> None:
+        try:
+            task = asyncio.get_running_loop().create_task(self._enforce_accounts())
+        except RuntimeError:
+            return  # no loop yet (construction) — nothing live to close
+        self._enforce_tasks.add(task)
+        task.add_done_callback(self._enforce_tasks.discard)
+
+    async def _enforce_accounts(self) -> None:
+        """Close local sessions whose account is missing, inactive or re-keyed."""
+        for client in [*self._local_connections]:
+            account = client.account
+            if account is None:
+                continue
+            current = self.accounts.current(account.nick)
+            if (
+                current is not None
+                and current.active
+                and current.secret_sha256 == account.secret_sha256
+            ):
+                continue
+            logger.info("Closing session of %s: account revoked or changed", account.nick)
+            try:
+                await client.evict("account revoked")
+            except Exception:  # noqa: BLE001 - keep walking the rest
+                logger.exception("failed to close revoked session %s", account.nick)
+
+    async def _accounts_watch_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._ACCOUNTS_CHECK_INTERVAL)
+            self.accounts.maybe_reload()  # fires on_reload when the file changed
 
     async def start(self) -> None:
         logger.info("Registering default skills...")
@@ -147,6 +195,8 @@ class IRCd:
         if self.config.ping_interval > 0:
             self._liveness_task = asyncio.create_task(self._liveness_sweep_loop())
 
+        self._accounts_task = asyncio.create_task(self._accounts_watch_loop())
+
         logger.info("Server ready")
 
     def _bootstrap_system_identity(self) -> None:
@@ -157,7 +207,11 @@ class IRCd:
         channel's invariants (persistent=True, archived=False) in case it
         was loaded from disk.
         """
-        from agentirc._internal.constants import SYSTEM_CHANNEL, SYSTEM_USER_PREFIX, SYSTEM_USER_REALNAME
+        from agentirc._internal.constants import (
+            SYSTEM_CHANNEL,
+            SYSTEM_USER_PREFIX,
+            SYSTEM_USER_REALNAME,
+        )
 
         system_nick = f"{SYSTEM_USER_PREFIX}{self.config.name}"
         system_client = VirtualClient(system_nick, "system", self)
@@ -505,6 +559,15 @@ class IRCd:
                 except asyncio.CancelledError:
                     pass
                 self._liveness_task = None
+            if self._accounts_task is not None:
+                self._accounts_task.cancel()
+                try:
+                    await self._accounts_task
+                except asyncio.CancelledError:
+                    pass
+                self._accounts_task = None
+            for task in [*self._enforce_tasks]:
+                task.cancel()
             # Stop bots and the webhook HTTP listener. ``BotManager.stop()``
             # tears down the listener (bound in ``start()`` since 9.7.0) before
             # stopping the bots, mirroring the lifecycle ``IRCd.start()`` drives.
@@ -651,9 +714,7 @@ class IRCd:
                 try:
                     await self._liveness_check_client(client, now, interval, timeout)
                 except Exception:
-                    logger.exception(
-                        "Liveness sweep failed for %s", getattr(client, "nick", "?")
-                    )
+                    logger.exception("Liveness sweep failed for %s", getattr(client, "nick", "?"))
 
     async def _liveness_check_client(
         self, client: "Client", now: float, interval: float, timeout: float
@@ -682,9 +743,7 @@ class IRCd:
         try:
             await client.send_raw(f"PING :{client.server.config.name}")
         except Exception:
-            logger.debug(
-                "Failed to send liveness PING to %s", getattr(client, "nick", "?")
-            )
+            logger.debug("Failed to send liveness PING to %s", getattr(client, "nick", "?"))
 
     @staticmethod
     def _reap_client(client: "Client") -> None:
@@ -699,8 +758,7 @@ class IRCd:
         broadcast, matching current natural-disconnect behavior.
         """
         logger.info(
-            "Reaping unresponsive client %s (no activity within "
-            "ping_interval + pong_timeout)",
+            "Reaping unresponsive client %s (no activity within " "ping_interval + pong_timeout)",
             getattr(client, "nick", None) or client.host,
         )
         try:

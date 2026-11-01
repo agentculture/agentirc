@@ -99,15 +99,42 @@ class AccountsConfig:
       ``ipaddress.ip_network(strict=False)`` — an invalid entry raises
       ``ValueError``.
     - ``guest_channel_prefixes``: the guest sandbox (see docs/accounts.md).
+    - ``auth_failure_limit`` / ``auth_failure_window``: failed authentications
+      allowed per peer address per window (seconds) before further
+      AUTHENTICATE attempts from that address are refused without checking the
+      secret. ``auth_failure_limit: 0`` disables the limiter. Loopback is not
+      exempt. Defaults: 10 per 60 s.
     """
 
     trusted_cidrs: list[str] = field(default_factory=list)
     # Guest sandbox (t9): a ``guest`` account may only hold grants on channels
     # starting with one of these prefixes; empty = guests hold no grants.
     guest_channel_prefixes: list[str] = field(default_factory=list)
+    # Failed-auth rate limit (t10), per peer address, sliding window.
+    auth_failure_limit: int = 10
+    auth_failure_window: float = 60
 
     def __post_init__(self) -> None:
         import ipaddress
+
+        if (
+            isinstance(self.auth_failure_limit, bool)
+            or not isinstance(self.auth_failure_limit, int)
+            or self.auth_failure_limit < 0
+        ):
+            raise ValueError(
+                f"accounts.auth_failure_limit must be an integer >= 0, got "
+                f"{self.auth_failure_limit!r}"
+            )
+        if (
+            isinstance(self.auth_failure_window, bool)
+            or not isinstance(self.auth_failure_window, (int, float))
+            or self.auth_failure_window <= 0
+        ):
+            raise ValueError(
+                f"accounts.auth_failure_window must be a number > 0, got "
+                f"{self.auth_failure_window!r}"
+            )
 
         if not isinstance(self.guest_channel_prefixes, list) or not all(
             isinstance(p, str) and p.startswith("#") for p in self.guest_channel_prefixes
