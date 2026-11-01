@@ -603,7 +603,8 @@ async def test_no_account_nick_registers_as_today(acct_server):
     await c.send("USER erin 0 * :erin")
     out = await c.recv_until(" 376 ")
     assert " 001 " in out
-    assert " 904 " not in out and " 900 " not in out
+    assert " 904 " not in out
+    assert " 900 " not in out
     # Prefix check still applies.
     d = await _connect(acct_server)
     await d.send("NICK otherserv-erin")

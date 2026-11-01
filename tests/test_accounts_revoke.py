@@ -120,7 +120,8 @@ async def test_sighup_reload_also_closes_revoked_session(tmp_path):
 async def test_periodic_task_cancelled_on_stop(tmp_path):
     server = await _boot(tmp_path)
     task = server._accounts_task
-    assert task is not None and not task.done()
+    assert task is not None
+    assert not task.done()
     await server.stop()
     assert task.done()
 
@@ -170,7 +171,9 @@ async def test_failed_auth_logs_nick_peer_reason_never_secret(
         records = _auth_records(caplog)
         assert len(records) == 1, records
         line = records[0]
-        assert nick in line and "127.0.0.1" in line and f"reason={reason}" in line
+        assert nick in line
+        assert "127.0.0.1" in line
+        assert f"reason={reason}" in line
         everything = "\n".join(r.getMessage() for r in caplog.records)
         for forbidden in (secret, payload, _sha(secret), _sha(SECRET_ALICE)):
             assert forbidden not in everything
@@ -223,7 +226,8 @@ def test_limiter_disabled_with_zero_limit():
 
 def test_accounts_config_rate_limit_keys_validated():
     cfg = AccountsConfig(auth_failure_limit=3, auth_failure_window=30)
-    assert cfg.auth_failure_limit == 3 and cfg.auth_failure_window == 30
+    assert cfg.auth_failure_limit == 3
+    assert cfg.auth_failure_window == 30
     assert AccountsConfig().auth_failure_limit == 10
     assert AccountsConfig().auth_failure_window == 60
     with pytest.raises(ValueError):
@@ -269,7 +273,8 @@ async def test_successful_logins_not_throttled_and_limit_not_loopback_exempt(tmp
         for _ in range(2):
             await _fail_sasl(server, "testserv-alice", "bad" + "q" * 20)
         lines, closed = await _fail_sasl(server, "testserv-alice", SECRET_ALICE)
-        assert closed and not any(" 903 " in line for line in lines)
+        assert closed
+        assert not any(" 903 " in line for line in lines)
     finally:
         await server.stop()
 

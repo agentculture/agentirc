@@ -205,7 +205,8 @@ def test_guest_violation_rejects_whole_file_keeps_last_good(tmp_path):
         ],
     )
     store.reload()
-    assert store.get("s-r") and store.get("s-new") is None
+    assert store.get("s-r")
+    assert store.get("s-new") is None
 
 
 def test_guest_prefix_config_validation():

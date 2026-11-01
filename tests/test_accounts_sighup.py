@@ -98,7 +98,8 @@ async def test_sighup_reloads_accounts(tmp_path):
 
         # alice is an account: refused without SASL.
         lines, closed = await _try_nick(port, "testserv-alice")
-        assert not _welcomed(lines) and closed
+        assert not _welcomed(lines)
+        assert closed
 
         # Rename the account in place, keeping size/mtime/inode identical.
         path = data_dir / ACCOUNTS_FILENAME
@@ -122,7 +123,8 @@ async def test_sighup_reloads_accounts(tmp_path):
         lines, _ = await _try_nick(port, "testserv-alice")
         assert _welcomed(lines), lines
         lines, closed = await _try_nick(port, "testserv-alicx")
-        assert not _welcomed(lines) and closed
+        assert not _welcomed(lines)
+        assert closed
     finally:
         proc.terminate()
         try:

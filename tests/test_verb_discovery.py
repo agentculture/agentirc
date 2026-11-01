@@ -205,7 +205,8 @@ async def test_unregistered_client_is_refused_consistently(server, make_client):
     # unregistered connection.
     await client.send("JOIN #should-not-work")
     lines = await client.recv_all(timeout=0.3)
-    assert len(lines) == 1 and " 451 " in lines[0], lines
+    assert len(lines) == 1, lines
+    assert " 451 " in lines[0], lines
 
 
 @pytest.mark.asyncio
