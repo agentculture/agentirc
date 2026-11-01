@@ -598,16 +598,26 @@ class Client:
         """
         account = self.server.accounts.get(self.nick)
         if self.account is not None and (account is None or self.account.nick != self.nick):
+            self._record_auth_failure("account_mismatch", count=False)
             await self._refuse_and_close("SASL account does not match nick")
             return False
         if account is None:
             return True
         if self.account is None:
+            self._record_auth_failure("nick_without_auth", count=False)
             await self._refuse_and_close(f"SASL authentication required for {self.nick}")
             return False
         if not account.active or not hmac.compare_digest(
             account.secret_sha256, self.account.secret_sha256
         ):
+            self._record_auth_failure(
+                (
+                    "revoked"
+                    if account.state == "revoked"
+                    else "suspended" if not account.active else "bad_secret"
+                ),
+                count=False,
+            )
             await self._refuse_and_close("SASL authentication failed")
             return False
         self.account = account  # pick up the freshest role/grants
@@ -622,6 +632,20 @@ class Client:
             await holder.evict("Nick reclaimed by an authenticated session")
         self.server.clients[self.nick] = self
         return True
+
+    def _record_auth_failure(self, code: str, *, count: bool = True) -> None:
+        """Log (nick, peer, reason code), bump the metric, feed the limiter.
+
+        Never receives or logs secret material: only a fixed reason code.
+        ``count=False`` keeps registration-gate refusals (no credential was
+        guessed) out of the brute-force limiter.
+        """
+        logging.getLogger(__name__).warning(
+            "auth failure nick=%r peer=%s reason=%s", self.nick or "*", self.host, code
+        )
+        self.server.metrics.auth_failures.add(1, {"reason": code})
+        if count:
+            self.server.auth_limiter.record(self.host)
 
     async def _refuse_and_close(self, reason: str) -> None:
         """Send 904 + ERROR and close this connection. Never logs secrets."""
@@ -687,11 +711,12 @@ class Client:
         self._sasl_mech = None
         self._sasl_buf = ""
 
-    async def _sasl_fail(self, *extra: tuple[str, str]) -> None:
-        """Credential attempt failed: optional extra numerics, 904, close."""
+    async def _sasl_fail(self, code: str, *extra: tuple[str, str]) -> None:
+        """Credential attempt failed: log/count it, optional numerics, 904, close."""
         self._sasl_reset()
-        for code, text in extra:
-            await self.send_numeric(code, text)
+        self._record_auth_failure(code)
+        for numeric, text in extra:
+            await self.send_numeric(numeric, text)
         await self._refuse_and_close("SASL authentication failed")
 
     async def _handle_authenticate(self, msg: Message) -> None:
@@ -719,7 +744,14 @@ class Client:
                 await self.send_numeric(
                     RPL_SASLMECHS, SASL_MECHANISMS, "are available SASL mechanisms"
                 )
+                self._record_auth_failure("wrong_mechanism")
                 await self.send_numeric(ERR_SASLFAIL, "SASL authentication failed")
+                return
+            if self.server.auth_limiter.blocked(self.host):
+                # Over the per-address failure budget: refuse before any
+                # secret is read or checked.
+                self._record_auth_failure("rate_limited", count=False)
+                await self._refuse_and_close("SASL authentication failed")
                 return
             self._sasl_mech = SASL_MECHANISMS
             self._sasl_buf = ""
@@ -727,11 +759,11 @@ class Client:
             return
         if arg != "+":
             if len(arg) > self._SASL_CHUNK:
-                await self._sasl_fail((ERR_SASLTOOLONG, "SASL message too long"))
+                await self._sasl_fail("too_long", (ERR_SASLTOOLONG, "SASL message too long"))
                 return
             self._sasl_buf += arg
             if len(self._sasl_buf) > self._SASL_MAX_PAYLOAD:
-                await self._sasl_fail((ERR_SASLTOOLONG, "SASL message too long"))
+                await self._sasl_fail("too_long", (ERR_SASLTOOLONG, "SASL message too long"))
                 return
             if len(arg) == self._SASL_CHUNK:
                 return  # more follows
@@ -745,17 +777,17 @@ class Client:
             authzid, authcid, secret = decoded.split("\0")
         except (binascii.Error, ValueError):
             # Never log the payload: it carries the secret.
-            await self._sasl_fail()
+            await self._sasl_fail("malformed")
             return
         if (authzid and authzid != authcid) or not authcid:
-            await self._sasl_fail()
+            await self._sasl_fail("malformed")
             return
         if not is_trusted_peer(self.host, self.server.config.accounts.trusted_cidrs):
-            await self._sasl_fail()
+            await self._sasl_fail("untrusted_peer")
             return
-        account = self.server.accounts.verify(authcid, secret)
+        account, reason = self.server.accounts.check(authcid, secret)
         if account is None:
-            await self._sasl_fail()
+            await self._sasl_fail(reason or "bad_secret")
             return
         self.account = account
         mask = f"{self.nick or '*'}!{self.user or '*'}@{self.host}"

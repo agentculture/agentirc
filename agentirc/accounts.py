@@ -39,8 +39,10 @@ import json
 import logging
 import os
 import re
+import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +163,10 @@ class AccountStore:
         )
         self._table: dict[str, Account] = {}
         self._signature: tuple | None = None
+        # Called (synchronously, no args) after every successful table
+        # replacement from a *later* reload — the IRCd uses it to close live
+        # sessions whose account was revoked (culture#506 t10).
+        self.on_reload: Callable[[], None] | None = None
         self.reload()
 
     def _stat_signature(self) -> tuple | None:
@@ -190,6 +196,7 @@ class AccountStore:
                 logger.info("accounts: %s is gone; no accounts are enforced", self.path)
             self._table = {}
             self._signature = None
+            self._notify_reload()
             return True
         try:
             with open(self.path, encoding="utf-8") as f:
@@ -210,7 +217,15 @@ class AccountStore:
         self._table = table
         self._signature = signature
         logger.info("accounts: loaded %d accounts from %s", len(table), self.path)
+        self._notify_reload()
         return True
+
+    def _notify_reload(self) -> None:
+        if self.on_reload is not None:
+            try:
+                self.on_reload()
+            except Exception:  # noqa: BLE001 - a listener must never break a lookup
+                logger.exception("accounts: reload listener failed")
 
     def maybe_reload(self) -> None:
         """Reload when the file's (mtime, size, inode) signature changed."""
@@ -225,6 +240,10 @@ class AccountStore:
             return None
         self.maybe_reload()
         return self._table.get(nick)
+
+    def current(self, nick: str | None) -> Account | None:
+        """Lookup without the lazy reload check (for use inside reload hooks)."""
+        return self._table.get(nick) if nick else None
 
     def channel_access(self, nick: str | None, channel: str) -> str | None:
         """Live access level of account *nick* on *channel*.
@@ -254,6 +273,26 @@ class AccountStore:
     def is_account(self, nick: str | None) -> bool:
         return self.get(nick) is not None
 
+    def check(self, nick: str, secret: str) -> tuple[Account | None, str | None]:
+        """Like :meth:`verify`, but also returns a failure reason code.
+
+        Reasons: ``unknown_account``, ``bad_secret``, ``revoked``,
+        ``suspended``. The reason is for server-side logs/metrics only; the
+        client always gets a generic 904. A wrong secret on a revoked or
+        suspended account reports ``bad_secret``; the state is reported only
+        when the secret was right.
+        """
+        account = self.get(nick)
+        expected = account.secret_sha256 if account is not None else _DUMMY_HASH
+        ok = hmac.compare_digest(hash_secret(secret), expected)
+        if account is None:
+            return None, "unknown_account"
+        if not ok:
+            return None, "bad_secret"
+        if not account.active:
+            return None, account.state
+        return account, None
+
     def verify(self, nick: str, secret: str) -> Account | None:
         """Return the account if *secret* matches and the account is active.
 
@@ -267,6 +306,51 @@ class AccountStore:
         if account is None or not ok or not account.active:
             return None
         return account
+
+
+class AuthFailureLimiter:
+    """Per-peer-address sliding-window limiter for failed authentications.
+
+    ``record(addr)`` notes a failure; ``blocked(addr)`` is True once *limit*
+    failures happened within the last *window* seconds. ``limit <= 0``
+    disables it. Loopback is deliberately not exempt. State is in-memory and
+    pruned as windows expire.
+    """
+
+    def __init__(self, limit: int, window: float, clock: Callable[[], float] = time.monotonic):
+        self.limit = limit
+        self.window = window
+        self._clock = clock
+        self._events: dict[str, deque[float]] = {}
+
+    def _prune(self, addr: str) -> deque[float] | None:
+        q = self._events.get(addr)
+        if q is None:
+            return None
+        cutoff = self._clock() - self.window
+        while q and q[0] <= cutoff:
+            q.popleft()
+        if not q:
+            del self._events[addr]
+            return None
+        return q
+
+    def record(self, addr: str) -> None:
+        if self.limit <= 0:
+            return
+        if len(self._events) > 4096:  # bound memory under address churn
+            for key in list(self._events):
+                self._prune(key)
+        self._events.setdefault(addr, deque()).append(self._clock())
+        q = self._events[addr]
+        while len(q) > self.limit:
+            q.popleft()
+
+    def blocked(self, addr: str) -> bool:
+        if self.limit <= 0:
+            return False
+        q = self._prune(addr)
+        return q is not None and len(q) >= self.limit
 
 
 def _parse_ip(host: str):

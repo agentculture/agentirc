@@ -70,6 +70,19 @@ No restart is needed:
 
 Deleting the file empties the table: every nick is unreserved again.
 
+### Live revoke
+
+Every reload — lazy, SIGHUP, or the server's own once-a-second check of the
+file's signature (so a change is noticed even when nobody is connecting) —
+is followed by a walk over the local authenticated sessions. A session is
+closed when its account is now missing, `suspended` or `revoked`, or when its
+secret hash changed (re-keyed). The session gets `ERROR :Closing Link: <host>
+(account revoked)`, channel members see a `QUIT`, the nick is released and
+linked servers are told, exactly like a nick-reclaim eviction. The worst case
+from writing the file to the socket closing is about 1 s plus the walk, well
+inside the 5 s budget. Grant or role changes do not close a session; they
+apply to its next action.
+
 ## Trusted peers
 
 SASL is accepted only from:
@@ -128,6 +141,43 @@ A `guest` may only hold grants on channels whose name starts with one of
 the sandbox rejects the **whole file** at load (last good table kept, error
 logged), like any other validation error. With the default empty list, guests
 may hold no grants. Other roles are not restricted.
+
+## Failed authentication: logging, rate limit, metric
+
+Every failed authentication emits exactly one `WARNING` line on the
+`agentirc.client` logger:
+
+```text
+auth failure nick='testserv-alice' peer=127.0.0.1 reason=bad_secret
+```
+
+`reason` is one of `bad_secret`, `unknown_account`, `revoked`, `suspended`
+(the last two only when the secret was right), `untrusted_peer`, `malformed`,
+`too_long`, `wrong_mechanism`, `nick_without_auth`, `account_mismatch`,
+`rate_limited`. The secret, the base64 payload and stored hashes are never
+logged. The client only ever sees a generic `904`.
+
+Failures are rate-limited per peer address with a sliding window. Once an
+address has `auth_failure_limit` failures within `auth_failure_window`
+seconds, its next `AUTHENTICATE` gets `904` and the connection closes before
+any secret is read or checked (`reason=rate_limited`; those refusals do not
+extend the window). `nick_without_auth`, `account_mismatch` and `rate_limited`
+do not count toward the limit (no credential was guessed).
+
+```yaml
+accounts:
+  auth_failure_limit: 10   # 0 disables the limiter
+  auth_failure_window: 60  # seconds
+```
+
+Loopback is not exempt, because every local agent shares `127.0.0.1`. The
+default (10 per 60 s) tolerates a restarting agent retrying with a stale
+secret for a few cycles, but a stuck retry loop will lock out all local
+SASL logins for up to a minute: fix the secret rather than raising the limit.
+State is in memory and is lost on restart.
+
+Metric: counter `culture.auth.failures` with the single attribute `reason`
+(same codes as above; never nick or address).
 
 ## Wire flow
 
@@ -217,5 +267,3 @@ account data.
 
 - Kicking sessions whose grant was removed while joined.
 - Gating of `MODE`, `KICK`, `TOPIC`, threads and other non-room verbs by role.
-- Closing live sessions when an account is revoked, and failed-auth logging
-  and rate limiting.

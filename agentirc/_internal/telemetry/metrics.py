@@ -66,6 +66,8 @@ class MetricsRegistry:
     # Bots (Plan 7)
     bot_invocations: Counter
     bot_webhook_duration: Histogram
+    # Agent accounts (culture#506 t10)
+    auth_failures: Counter
 
 
 def reset_for_tests() -> None:
@@ -180,6 +182,11 @@ def _build_registry(meter: Meter) -> MetricsRegistry:
             "culture.bot.webhook.duration",
             unit="s",
             description="Webhook request handler duration by bot and status_class=2xx|3xx|4xx|5xx",
+        ),
+        # Agent accounts (culture#506 t10)
+        auth_failures=meter.create_counter(
+            "culture.auth.failures",
+            description="Failed authentications by reason (bad_secret, unknown_account, ...)",
         ),
     )
 
