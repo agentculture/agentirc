@@ -31,7 +31,39 @@ if TYPE_CHECKING:
 
 class RoomsSkill(Skill):
     name = "rooms"
-    commands = {"ROOMCREATE", "ROOMMETA", "TAGS", "ROOMINVITE", "ROOMKICK", "ROOMARCHIVE"}
+    commands = {
+        "ROOMCREATE",
+        "ROOMMETA",
+        "TAGS",
+        "ROOMINVITE",
+        "ROOMKICK",
+        "ROOMARCHIVE",
+    }
+
+    @staticmethod
+    def _acct_role(client: Client) -> str | None:
+        """Live account role; None = no account (today's behaviour)."""
+        return client.account_role()
+
+    async def _deny_unless_operator_account(self, client: Client, what: str) -> bool:
+        """culture#506 t9: authenticated resident/guest accounts are refused.
+
+        Returns True (after sending the refusal) when the session has an
+        account whose live role is not ``operator``. Sessions without an
+        account, and operator accounts, pass.
+        """
+        role = self._acct_role(client)
+        if role is None or role == "operator":
+            return False
+        await client.send_tagged(
+            Message(
+                prefix=self.server.config.name,
+                command="NOTICE",
+                params=[client.nick, f"Operator role required to {what}"],
+                tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
+            )
+        )
+        return True
 
     async def on_command(self, client: Client, msg: Message) -> None:
         handler = {
@@ -53,6 +85,9 @@ class RoomsSkill(Skill):
                 replies.MSG_NEEDMOREPARAMS,
                 tags={ERROR_TAG: ERROR_TOKEN_MISSING_PARAMS},
             )
+            return
+
+        if await self._deny_unless_operator_account(client, "create rooms"):
             return
 
         channel_name = msg.params[0]
@@ -160,7 +195,10 @@ class RoomsSkill(Skill):
                 type=EventType.ROOMMETA,
                 channel=channel_name,
                 nick=client.nick,
-                data={"room_id": channel.room_id, "meta": self._serialize_meta(channel)},
+                data={
+                    "room_id": channel.room_id,
+                    "meta": self._serialize_meta(channel),
+                },
             )
         )
 
@@ -207,7 +245,7 @@ class RoomsSkill(Skill):
                 "instructions": ch.instructions or "",
                 "tags": ",".join(ch.tags),
                 "persistent": str(ch.persistent).lower(),
-                "agent_limit": str(ch.agent_limit) if ch.agent_limit is not None else "",
+                "agent_limit": (str(ch.agent_limit) if ch.agent_limit is not None else ""),
                 "archived": str(ch.archived).lower(),
                 "created_at": str(ch.created_at) if ch.created_at is not None else "",
             }
@@ -222,7 +260,12 @@ class RoomsSkill(Skill):
             )
         else:
             await self._update_roommeta(
-                client, channel, channel_name, msg.params[1], msg.params[2], READ_ONLY_KEYS
+                client,
+                channel,
+                channel_name,
+                msg.params[1],
+                msg.params[2],
+                READ_ONLY_KEYS,
             )
 
     async def _query_all_roommeta(
@@ -247,7 +290,12 @@ class RoomsSkill(Skill):
         )
 
     async def _query_single_roommeta(
-        self, client: Client, channel, channel_name: str, key: str, _channel_meta: Callable
+        self,
+        client: Client,
+        channel,
+        channel_name: str,
+        key: str,
+        _channel_meta: Callable,
     ) -> None:
         """Send a single metadata value for a channel."""
         meta = _channel_meta(channel)
@@ -322,12 +370,21 @@ class RoomsSkill(Skill):
         return None
 
     async def _update_roommeta(
-        self, client: Client, channel, channel_name: str, key: str, value: str, read_only_keys: set
+        self,
+        client: Client,
+        channel,
+        channel_name: str,
+        key: str,
+        value: str,
+        read_only_keys: set,
     ) -> None:
         """Validate permissions and apply a metadata update."""
+        if await self._deny_unless_operator_account(client, "update room metadata"):
+            return
         is_owner = channel.owner == client.nick
         is_operator = channel.is_operator(client)
-        if not is_owner and not is_operator:
+        acct_operator = self._acct_role(client) == "operator"
+        if not is_owner and not is_operator and not acct_operator:
             await client.send_numeric(
                 replies.ERR_CHANOPRIVSNEEDED,
                 channel_name,
@@ -372,7 +429,10 @@ class RoomsSkill(Skill):
                 type=EventType.ROOMMETA,
                 channel=channel.name,
                 nick=client.nick,
-                data={"room_id": channel.room_id, "meta": self._serialize_meta(channel)},
+                data={
+                    "room_id": channel.room_id,
+                    "meta": self._serialize_meta(channel),
+                },
             )
         )
 
@@ -468,7 +528,7 @@ class RoomsSkill(Skill):
             # Set tags — self only (unless server operator)
             tags_value = msg.params[1]
 
-            if nick != client.nick:
+            if nick != client.nick and self._acct_role(client) != "operator":
                 await client.send_tagged(
                     Message(
                         prefix=self.server.config.name,
@@ -670,7 +730,9 @@ class RoomsSkill(Skill):
             return
 
         # Owner-only permission check
-        if channel.owner != client.nick:
+        if await self._deny_unless_operator_account(client, "kick room members"):
+            return
+        if channel.owner != client.nick and self._acct_role(client) != "operator":
             await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
@@ -731,7 +793,10 @@ class RoomsSkill(Skill):
         notice_msg = Message(
             prefix=self.server.config.name,
             command="NOTICE",
-            params=[channel_name, f"{channel_name} is being archived as {archive_name}"],
+            params=[
+                channel_name,
+                f"{channel_name} is being archived as {archive_name}",
+            ],
         )
         for member in [*channel.members]:
             await member.send(notice_msg)
@@ -788,14 +853,19 @@ class RoomsSkill(Skill):
             return
 
         # Owner or channel operator only
+        if await self._deny_unless_operator_account(client, "archive rooms"):
+            return
         is_owner = channel.owner == client.nick
         is_operator = channel.is_operator(client)
-        if not is_owner and not is_operator:
+        if not is_owner and not is_operator and self._acct_role(client) != "operator":
             await client.send_tagged(
                 Message(
                     prefix=self.server.config.name,
                     command="NOTICE",
-                    params=[client.nick, f"You do not have permission to archive {channel_name}"],
+                    params=[
+                        client.nick,
+                        f"You do not have permission to archive {channel_name}",
+                    ],
                     tags={ERROR_TAG: ERROR_TOKEN_PERMISSION_DENIED},
                 )
             )

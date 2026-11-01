@@ -76,7 +76,7 @@ class AccountsFileError(ValueError):
     """The accounts file is malformed; the message never includes secrets."""
 
 
-def _parse_account(index: int, raw: object) -> Account:
+def _parse_account(index: int, raw: object, guest_channel_prefixes: Iterable[str] = ()) -> Account:
     if not isinstance(raw, dict):
         raise AccountsFileError(f"accounts[{index}] must be an object")
     nick = raw.get("nick")
@@ -89,9 +89,7 @@ def _parse_account(index: int, raw: object) -> Account:
         )
     role = raw.get("role")
     if role not in ROLES:
-        raise AccountsFileError(
-            f"accounts[{index}] ({nick}): role must be one of {sorted(ROLES)}"
-        )
+        raise AccountsFileError(f"accounts[{index}] ({nick}): role must be one of {sorted(ROLES)}")
     state = raw.get("state")
     if state not in STATES:
         raise AccountsFileError(
@@ -105,6 +103,14 @@ def _parse_account(index: int, raw: object) -> Account:
             f"accounts[{index}] ({nick}): grants must map channel -> one of "
             f"{sorted(GRANT_LEVELS)}"
         )
+    if role == "guest":
+        prefixes = tuple(p.casefold() for p in guest_channel_prefixes)
+        for ch in grants:
+            if not prefixes or not ch.casefold().startswith(prefixes):
+                raise AccountsFileError(
+                    f"accounts[{index}] ({nick}): guest grant on {ch!r} is outside "
+                    "the guest sandbox (accounts.guest_channel_prefixes)"
+                )
     return Account(
         nick=nick,
         secret_sha256=secret_hash,
@@ -114,8 +120,13 @@ def _parse_account(index: int, raw: object) -> Account:
     )
 
 
-def parse_accounts(data: object) -> dict[str, Account]:
-    """Validate a decoded accounts document and return ``{nick: Account}``."""
+def parse_accounts(data: object, guest_channel_prefixes: Iterable[str] = ()) -> dict[str, Account]:
+    """Validate a decoded accounts document and return ``{nick: Account}``.
+
+    ``guest_channel_prefixes`` is the guest sandbox: a ``guest`` account may
+    only hold grants on channels starting with one of these prefixes (empty =
+    guests may hold no grants). A violation rejects the whole file.
+    """
     if not isinstance(data, dict):
         raise AccountsFileError("root must be an object")
     version = data.get("version")
@@ -128,7 +139,7 @@ def parse_accounts(data: object) -> dict[str, Account]:
         raise AccountsFileError("'accounts' must be a list")
     table: dict[str, Account] = {}
     for index, raw in enumerate(records):
-        account = _parse_account(index, raw)
+        account = _parse_account(index, raw, guest_channel_prefixes)
         if account.nick in table:
             raise AccountsFileError(f"duplicate nick {account.nick!r}")
         table[account.nick] = account
@@ -143,11 +154,10 @@ def hash_secret(secret: str) -> str:
 class AccountStore:
     """Read-only, auto-reloading view of ``<data_dir>/accounts.json``."""
 
-    def __init__(self, data_dir: str | None):
+    def __init__(self, data_dir: str | None, guest_channel_prefixes: Iterable[str] = ()):
+        self.guest_channel_prefixes: tuple[str, ...] = tuple(guest_channel_prefixes)
         self.path: str | None = (
-            os.path.join(os.path.expanduser(data_dir), ACCOUNTS_FILENAME)
-            if data_dir
-            else None
+            os.path.join(os.path.expanduser(data_dir), ACCOUNTS_FILENAME) if data_dir else None
         )
         self._table: dict[str, Account] = {}
         self._signature: tuple | None = None
@@ -184,7 +194,7 @@ class AccountStore:
         try:
             with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
-            table = parse_accounts(data)
+            table = parse_accounts(data, self.guest_channel_prefixes)
         except (OSError, ValueError) as exc:
             # json.JSONDecodeError and AccountsFileError are both ValueErrors.
             # Message carries only structural info — never record contents.
@@ -215,6 +225,31 @@ class AccountStore:
             return None
         self.maybe_reload()
         return self._table.get(nick)
+
+    def channel_access(self, nick: str | None, channel: str) -> str | None:
+        """Live access level of account *nick* on *channel*.
+
+        Returns ``"speak"``, ``"read"`` or ``None`` (no access). Reads the
+        current table (lazy reload), so a grant change applies on the next
+        check. ``operator`` accounts have ``speak`` everywhere; a missing or
+        non-active account has no access.
+        """
+        account = self.get(nick)
+        if account is None or not account.active:
+            return None
+        if account.role == "operator":
+            return "speak"
+        want = channel.casefold()
+        level = None
+        for ch, lvl in account.grants.items():
+            if ch.casefold() == want and (level is None or lvl == "speak"):
+                level = lvl
+        return level
+
+    def role_of(self, nick: str | None) -> str | None:
+        """Live role of an active account, else ``None``."""
+        account = self.get(nick)
+        return account.role if account is not None and account.active else None
 
     def is_account(self, nick: str | None) -> bool:
         return self.get(nick) is not None

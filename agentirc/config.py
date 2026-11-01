@@ -65,9 +65,7 @@ class PresenceConfig:
             # with a clear message rather than letting the `<=` comparison
             # below raise a bare TypeError on str-vs-int.
             if not isinstance(_val, int) or isinstance(_val, bool):
-                raise ValueError(
-                    f"presence.{_key} must be a positive integer, got {_val!r}"
-                )
+                raise ValueError(f"presence.{_key} must be a positive integer, got {_val!r}")
         if self.heartbeat_interval_seconds <= 0:
             raise ValueError(
                 "presence.heartbeat_interval_seconds must be a positive "
@@ -100,24 +98,32 @@ class AccountsConfig:
       fails with 904. Each entry is validated with
       ``ipaddress.ip_network(strict=False)`` — an invalid entry raises
       ``ValueError``.
+    - ``guest_channel_prefixes``: the guest sandbox (see docs/accounts.md).
     """
 
     trusted_cidrs: list[str] = field(default_factory=list)
+    # Guest sandbox (t9): a ``guest`` account may only hold grants on channels
+    # starting with one of these prefixes; empty = guests hold no grants.
+    guest_channel_prefixes: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         import ipaddress
 
-        if not isinstance(self.trusted_cidrs, list):
+        if not isinstance(self.guest_channel_prefixes, list) or not all(
+            isinstance(p, str) and p.startswith("#") for p in self.guest_channel_prefixes
+        ):
             raise ValueError(
-                f"accounts.trusted_cidrs must be a list, got {self.trusted_cidrs!r}"
+                "accounts.guest_channel_prefixes must be a list of strings "
+                f"starting with '#', got {self.guest_channel_prefixes!r}"
             )
+
+        if not isinstance(self.trusted_cidrs, list):
+            raise ValueError(f"accounts.trusted_cidrs must be a list, got {self.trusted_cidrs!r}")
         for cidr in self.trusted_cidrs:
             try:
                 ipaddress.ip_network(str(cidr), strict=False)
             except ValueError as exc:
-                raise ValueError(
-                    f"accounts.trusted_cidrs: invalid CIDR {cidr!r}: {exc}"
-                ) from exc
+                raise ValueError(f"accounts.trusted_cidrs: invalid CIDR {cidr!r}: {exc}") from exc
         self.trusted_cidrs = [str(c) for c in self.trusted_cidrs]
 
 
@@ -199,8 +205,7 @@ def _load_root_mapping(p: Path) -> dict[str, Any]:
         return {}
     if not isinstance(loaded, dict):
         raise yaml.YAMLError(
-            f"agentirc config {str(p)!r}: root must be a mapping, "
-            f"got {type(loaded).__name__}"
+            f"agentirc config {str(p)!r}: root must be a mapping, " f"got {type(loaded).__name__}"
         )
     return loaded
 

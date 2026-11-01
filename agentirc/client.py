@@ -47,7 +47,9 @@ from agentirc._internal.telemetry.context import (
     current_traceparent,
     extract_traceparent_from_tags,
 )
-from agentirc._internal.telemetry.context import inject_traceparent as _inject_traceparent
+from agentirc._internal.telemetry.context import (
+    inject_traceparent as _inject_traceparent,
+)
 from agentirc.channel import Channel
 from agentirc.protocol import (
     BACKFILLEND,
@@ -389,7 +391,7 @@ class Client:
         attrs = {
             "irc.command": verb,
             "irc.prefix_nick": (msg.prefix.split("!")[0] if msg.prefix else ""),
-            "culture.trace.origin": "local" if extract.status == "missing" else "remote",
+            "culture.trace.origin": ("local" if extract.status == "missing" else "remote"),
         }
         if extract.status in ("malformed", "too_long"):
             attrs["culture.trace.dropped_reason"] = extract.status
@@ -460,9 +462,7 @@ class Client:
                 f"{cap}={SASL_MECHANISMS}" if cap == SASL_CAP and v302 else cap
                 for cap in sorted(self._SUPPORTED_CAPS)
             )
-            await self.send_raw(
-                f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}"
-            )
+            await self.send_raw(f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}")
         elif sub == "REQ":
             requested = msg.params[1].split() if len(msg.params) >= 2 else []
             if all(cap in self._SUPPORTED_CAPS for cap in requested):
@@ -803,6 +803,28 @@ class Client:
             return
         await self._send_motd()
 
+    def account_role(self) -> str | None:
+        """Live role of this session's account; ``None`` if it has no account.
+
+        Authenticated sessions whose account has since vanished or been
+        deactivated report ``"none"`` (no privileges) rather than ``None``,
+        so they never fall back to ungated behaviour.
+        """
+        if self.account is None:
+            return None
+        return self.server.accounts.role_of(self.account.nick) or "none"
+
+    def account_access(self, channel_name: str) -> str | None | bool:
+        """Channel access for an authenticated session (culture#506 t9).
+
+        Returns ``True`` for sessions without an account (ungated, today's
+        behaviour), else ``"speak"`` / ``"read"`` / ``None`` from the live
+        account table.
+        """
+        if self.account is None:
+            return True
+        return self.server.accounts.channel_access(self.account.nick, channel_name)
+
     async def _handle_join(self, msg: Message) -> None:
         if not self._registered:
             return
@@ -825,8 +847,21 @@ class Client:
                     Message(
                         prefix=self.server.config.name,
                         command="NOTICE",
-                        params=[self.nick, f"{channel_name} is archived and cannot be joined"],
+                        params=[
+                            self.nick,
+                            f"{channel_name} is archived and cannot be joined",
+                        ],
                     )
+                )
+                return
+
+            if not self.account_access(channel_name):
+                # 474 ERR_BANNEDFROMCHAN: the authenticated account holds no
+                # grant (read or speak) on this channel.
+                await self.send_numeric(
+                    "474",
+                    channel_name,
+                    "Cannot join channel (no grant for this account)",
                 )
                 return
 
@@ -991,7 +1026,14 @@ class Client:
         applied_params.append(param_value)
 
     async def _apply_mode_membership(
-        self, channel, channel_name, ch, adding, param_value, applied_modes, applied_params
+        self,
+        channel,
+        channel_name,
+        ch,
+        adding,
+        param_value,
+        applied_modes,
+        applied_params,
     ):
         target_nick = param_value
         target_client = self.server.clients.get(target_nick)
@@ -1350,6 +1392,13 @@ class Client:
                         replies.ERR_CANNOTSENDTOCHAN, target, "Cannot send to channel"
                     )
                     return
+                if self.account_access(target) != "speak" and self.account is not None:
+                    await self.send_numeric(
+                        replies.ERR_CANNOTSENDTOCHAN,
+                        target,
+                        "Cannot send to channel (account lacks a speak grant)",
+                    )
+                    return
                 for chunk in self._split_outbound_text(target, text):
                     # One fresh msgid per chunk, stamped identically on
                     # every recipient's delivery of *that* chunk (fan-out
@@ -1363,9 +1412,7 @@ class Client:
                         params=[target, chunk],
                         tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
                     )
-                    await self._send_to_channel(
-                        channel, target, relay, chunk, False, msgid=msgid
-                    )
+                    await self._send_to_channel(channel, target, relay, chunk, False, msgid=msgid)
                 await self._notify_mentions(target, text)
             else:
                 await self._relay_direct_privmsg(target, text)
@@ -1450,6 +1497,8 @@ class Client:
                 return
             if self not in channel.members:
                 return
+            if self.account is not None and self.account_access(target) != "speak":
+                return  # NOTICE never gets error replies (RFC 2812)
             await self._send_to_channel(channel, target, relay, text, True)
         else:
             await self._send_to_client(target, relay, text, True)
@@ -1864,9 +1913,7 @@ class Client:
         merged.sort(key=lambda pair: (pair[1].timestamp, pair[1].id))
         return merged[:limit]
 
-    async def _emit_backfill_entries(
-        self, merged: list[tuple[str, "HistoryEntry"]]
-    ) -> None:
+    async def _emit_backfill_entries(self, merged: list[tuple[str, "HistoryEntry"]]) -> None:
         """Replay ``merged`` history entries as ``EVENT`` lines for ``BACKFILL``.
 
         Extracted from ``_handle_backfill`` (S3776 cognitive-complexity fix).
