@@ -89,17 +89,20 @@ def _parse_account(index: int, raw: object, guest_channel_prefixes: Iterable[str
         raise AccountsFileError(
             f"accounts[{index}] ({nick}): secret_sha256 must be 64 lowercase hex chars"
         )
+    # isinstance before membership: an unhashable JSON value ([] / {}) must
+    # be a validation error, never a TypeError (culture#506 h1).
     role = raw.get("role")
-    if role not in ROLES:
+    if not isinstance(role, str) or role not in ROLES:
         raise AccountsFileError(f"accounts[{index}] ({nick}): role must be one of {sorted(ROLES)}")
     state = raw.get("state")
-    if state not in STATES:
+    if not isinstance(state, str) or state not in STATES:
         raise AccountsFileError(
             f"accounts[{index}] ({nick}): state must be one of {sorted(STATES)}"
         )
     grants = raw.get("grants", {})
     if not isinstance(grants, dict) or not all(
-        isinstance(ch, str) and ch and lvl in GRANT_LEVELS for ch, lvl in grants.items()
+        isinstance(ch, str) and ch and isinstance(lvl, str) and lvl in GRANT_LEVELS
+        for ch, lvl in grants.items()
     ):
         raise AccountsFileError(
             f"accounts[{index}] ({nick}): grants must map channel -> one of "
@@ -202,9 +205,13 @@ class AccountStore:
             with open(self.path, encoding="utf-8") as f:
                 data = json.load(f)
             table = parse_accounts(data, self.guest_channel_prefixes)
-        except (OSError, ValueError) as exc:
-            # json.JSONDecodeError and AccountsFileError are both ValueErrors.
-            # Message carries only structural info — never record contents.
+        except Exception as exc:  # noqa: BLE001 - a bad file must never crash the server
+            # Anything goes: json.JSONDecodeError / AccountsFileError
+            # (ValueErrors), OSError, RecursionError on deeply nested JSON, or
+            # a TypeError we did not foresee. The message carries only
+            # structural info (our own AccountsFileError text, else just the
+            # exception type) — never record contents. ``_signature`` is
+            # updated so the same bad file is not re-parsed on every lookup.
             logger.error(
                 "accounts: rejected %s (%s: %s); keeping the last good table (%d accounts)",
                 self.path,

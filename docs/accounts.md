@@ -48,11 +48,20 @@ Format, version 1:
   log in.
 
 Validation is all-or-nothing. If the file is not valid JSON, has the wrong
-version, or any record is invalid (unknown role, state or grant level, a hash
-that is not 64 lowercase hex chars, a duplicate nick), the whole file is
-rejected: the server keeps the last good table and logs an error that names
-the problem but never the record contents. A malformed file never crashes the
-server. If the file is malformed at startup, the table starts empty.
+version, or any record is invalid (unknown role, state or grant level, a value
+of the wrong JSON type such as `"role": []`, a hash that is not 64 lowercase
+hex chars, a duplicate nick), the whole file is rejected: the server keeps the
+last good table and logs an error that names the problem but never the record
+contents. A malformed file never crashes the server. If the file is malformed
+at startup, the table starts empty.
+
+Concretely, any failure while reading or validating the file (including
+unforeseen ones, such as `RecursionError` on absurdly nested JSON) is caught
+and logged with only the exception type or our own structural message. A
+rejected file is remembered by its signature, so it is not re-parsed on every
+NICK or SASL attempt; the next write to the file is picked up as usual. The
+once-a-second watcher logs and keeps running if a check fails, and server
+shutdown never fails because of it.
 
 Write the file atomically (write a temp file in the same directory, then
 rename it over `accounts.json`).
@@ -113,25 +122,63 @@ accounts:
 Enforcement applies only to sessions that logged in through SASL
 (`Client.account` set). Clients without an account behave exactly as before.
 Grants and roles are read from the live account table on every check, so a
-change to `accounts.json` takes effect on the next JOIN/PRIVMSG with no
-reconnect. A channel the session already joined stays joined after its grant
-is removed (live revoke is a later release); its next PRIVMSG is refused.
+change to `accounts.json` takes effect on the next action with no reconnect.
+A channel the session already joined stays joined after its grant is removed
+(no live kick yet), but every read and write path below re-checks the grant.
 
-- **JOIN** needs a grant (`read` or `speak`) on the channel; otherwise the
-  server sends `474 ERR_BANNEDFROMCHAN` (`Cannot join channel (no grant for
-  this account)`) and the session does not join. Channel names match
-  case-insensitively.
-- **PRIVMSG** to a channel needs `speak`; with `read` or no grant the server
-  sends `404 ERR_CANNOTSENDTOCHAN`. `NOTICE` to a channel is silently dropped
-  (no error replies for NOTICE). PRIVMSG/NOTICE to a nick (DMs) are never gated.
-- **`operator`** accounts may JOIN and speak on every channel and pass the
-  owner/admin checks of the room verbs below.
+Two checks, used on every path (`Client.can_read` / `Client.can_speak`):
+
+- **read** = a `read` or `speak` grant on the channel, or the `operator` role;
+- **speak** = a `speak` grant on the channel, or the `operator` role.
+
+Channel names match case-insensitively. What is enforced where:
+
+Read paths (need **read**):
+
+- `JOIN`: refused with `474 ERR_BANNEDFROMCHAN` (`Cannot join channel (no
+  grant for this account)`).
+- `HISTORY RECENT` / `SEARCH` / `SINCE` on a channel: `403` with the
+  `no-such-channel` tag, exactly like a missing channel.
+- `BACKFILL <#channel>`: `EVENTERR <#channel> :no-such-channel`.
+  `BACKFILL *` leaves joined channels without read out of the replay.
+- `EVENTSUB` delivery: an event for a channel without read is not
+  delivered (checked per event, live). A direct-message `message` event is
+  delivered only to its sender and its target.
+- `THREADCLOSE PROMOTE` auto-join: participants without read on the
+  breakout channel are not joined to it.
+
+Write paths (need **speak**):
+
+- `PRIVMSG` to a channel: `404 ERR_CANNOTSENDTOCHAN`.
+- `NOTICE` to a channel: silently dropped (no error replies for NOTICE).
+- `TOPIC <#channel> :text` (set): `482` (`Cannot set topic (account lacks a
+  speak grant)`).
+- `THREAD CREATE`, `THREAD REPLY` and `THREADCLOSE` (which posts a
+  summary): `404` with the `permission-denied` tag.
+- `THREADCLOSE PROMOTE`: speak on the source channel (`404`) and read on
+  the breakout channel (`474`), both with the `permission-denied` tag.
+- `EVENTPUB <type> <#channel>`: `EVENTERR <type> :permission-denied`.
+
+`TOPIC <#channel>` (query), `NAMES`, `THREADS` and the other membership-gated
+reads work as before once the session is in the channel. DMs (`PRIVMSG` /
+`NOTICE` to a nick) are never gated.
+
+Roles:
+
+- **`operator`** accounts read and speak on every channel, pass the
+  owner/admin checks of the room verbs below, and are the only account
+  sessions that become channel operator automatically.
 - **`resident`** and **`guest`** accounts are refused (`NOTICE` with the
   `permission-denied` error tag, `Operator role required to ...`) on the
   operator-only verbs: `ROOMCREATE`, `ROOMMETA` (set), `ROOMKICK`,
   `ROOMARCHIVE`, and `TAGS <other-nick> :...` (setting another nick's tags).
   Setting your own tags and read-only queries stay open. `ROOMINVITE` has no
   permission check today and is unchanged.
+- **Auto-op.** A `resident` or `guest` session is never auto-opped: not as the
+  first joiner of an empty channel, and not by auto-promotion when the last
+  op leaves. Such a channel gives op to the next eligible joiner (a client
+  without an account, or an `operator` account), exactly as a bot-first
+  channel does. A chanop can still `MODE +o` an account session explicitly.
 - A suspended or revoked account that is still connected has no access.
 
 ### Guest sandbox
@@ -240,6 +287,32 @@ nick while it waits.
 If the account was revoked, suspended or re-keyed between `903` and
 `CAP END`, registration is refused the same way.
 
+### Before registration: 451
+
+Until registration completes (`001`), a connection has no proven identity —
+the nick it sent is only a request. So before registration the server
+dispatches only `CAP`, `NICK`, `USER`, `PASS`, `PING`, `PONG`,
+`AUTHENTICATE` and `QUIT`. Every other verb gets
+
+```text
+:srv 451 <nick-or-*> <VERB> :You have not registered
+```
+
+and is not executed. This applies to every connection, with or without an
+account, so an unregistered socket can never `PRIVMSG`/`NOTICE` (or do
+anything else) as the nick it merely requested — an account nick, or any
+other. The bot-extension verbs `EVENTSUB`, `EVENTUNSUB`, `EVENTPUB` and
+`BACKFILL` keep their documented refusal
+(`EVENTERR <id> :not-registered`, see `extension-api.md`) instead of `451`.
+A `QUIT` before registration closes the connection without emitting a
+`QUIT` event, so nothing (no `SQUITUSER`) reaches linked servers for the
+requested nick.
+
+This replaces older pre-registration behaviour: `JOIN`, `MOTD`, `VERBS` and
+user `MODE` used to be silently ignored, skill verbs (`HISTORY`, `THREAD`,
+…) and unknown verbs answered `421`, and `PRIVMSG`, `NOTICE`, `TOPIC`,
+`PART`, `NAMES`, `LIST`, `WHO` and `WHOIS` used to run.
+
 ### The credential always wins
 
 A connection that logs in with the right secret registers whether or not the
@@ -265,5 +338,9 @@ account data.
 
 ## What is not here yet
 
-- Kicking sessions whose grant was removed while joined.
-- Gating of `MODE`, `KICK`, `TOPIC`, threads and other non-room verbs by role.
+- Kicking sessions whose grant was removed while joined. Until then such a
+  session keeps receiving live channel traffic (`PRIVMSG`/`NOTICE` fan-out)
+  for the channel, but `HISTORY`, `BACKFILL` and `EVENTSUB` stop serving it
+  and it can no longer post.
+- Role gating of `MODE` beyond auto-op (a chanop can still `MODE +o` an
+  account session).

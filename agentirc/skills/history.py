@@ -427,7 +427,8 @@ class HistorySkill(Skill):
     def _resolve_history_target(self, client: Client, requested: str) -> str | None:
         """Resolve a HISTORY <target> param to an internal store key.
 
-        ``#``-prefixed -> a channel key, used verbatim (unchanged behavior).
+        ``#``-prefixed -> a channel key, used verbatim (unchanged behavior),
+        or ``None`` when the client's account lacks read access to it.
         ``@``-prefixed -> rejected (``None``); ``@dm:...`` is the internal DM
         pair-key format and is never directly addressable over the wire —
         the caller must send the ``no-such-channel`` error and stop.
@@ -439,6 +440,12 @@ class HistorySkill(Skill):
         if requested.startswith("@"):
             return None
         if requested.startswith("#"):
+            # Read grants (culture#506 h1): an account session without read
+            # access gets the same no-such-channel reply as a bad target, so
+            # it cannot tell a forbidden channel from a missing one.
+            can_read = getattr(client, "can_read", None)
+            if can_read is not None and not can_read(requested):
+                return None
             return requested
         return _dm_pair_key(client.nick, requested)
 

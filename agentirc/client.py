@@ -404,7 +404,15 @@ class Client:
             attributes=attrs,
         ):
             handler = getattr(self, f"_handle_{msg.command.lower()}", None)
-            if handler:
+            if not self._registered and verb not in self._PREREGISTRATION_VERBS:
+                # 451 rule (culture#506 h1): before registration a connection
+                # has no proven identity, so it may only register. Without
+                # this, an unregistered socket could PRIVMSG/NOTICE as the
+                # nick it merely requested -- including an account nick.
+                await self.send_numeric(
+                    replies.ERR_NOTREGISTERED, msg.command, replies.MSG_NOTREGISTERED
+                )
+            elif handler:
                 await maybe_await(handler(msg))
             else:
                 skill = self.server.get_skill_for_command(msg.command)
@@ -422,6 +430,28 @@ class Client:
         self.server.metrics.client_command_duration.record(
             (time.perf_counter() - cmd_started) * 1000.0, {"verb": verb}
         )
+
+    # Verbs dispatched before registration completes; everything else gets
+    # 451 ERR_NOTREGISTERED (see ``_dispatch``). The four bot-extension verbs
+    # are not registration verbs, but they keep their documented
+    # ``EVENTERR <id> :not-registered`` refusal (``_bot_verb_gate``) instead
+    # of a 451, so bots parsing EVENTERR see no wire change.
+    _PREREGISTRATION_VERBS: frozenset[str] = frozenset(
+        {
+            "CAP",
+            "NICK",
+            "USER",
+            "PASS",
+            "PING",
+            "PONG",
+            "AUTHENTICATE",
+            "QUIT",
+            "EVENTSUB",
+            "EVENTUNSUB",
+            "EVENTPUB",
+            "BACKFILL",
+        }
+    )
 
     async def _handle_ping(self, msg: Message) -> None:
         token = msg.params[0] if msg.params else ""
@@ -857,6 +887,42 @@ class Client:
             return True
         return self.server.accounts.channel_access(self.account.nick, channel_name)
 
+    def can_read(self, channel_name: str) -> bool:
+        """May this session read *channel_name* (culture#506 h1)?
+
+        Sessions without an account are ungated (``True``). An account needs
+        a ``read`` or ``speak`` grant, or the ``operator`` role. Live: read
+        from the current account table on every call. The single check every
+        read path uses (JOIN, HISTORY, BACKFILL, EVENTSUB, THREAD PROMOTE).
+        """
+        return bool(self.account_access(channel_name))
+
+    def can_speak(self, channel_name: str) -> bool:
+        """May this session post into *channel_name* (culture#506 h1)?
+
+        Sessions without an account are ungated (``True``). An account needs
+        a ``speak`` grant or the ``operator`` role. The single check every
+        write path uses (PRIVMSG, NOTICE, TOPIC set, THREAD, EVENTPUB).
+        """
+        return self.account is None or self.account_access(channel_name) == "speak"
+
+    def can_read_event(self, event: Event) -> bool:
+        """May this session receive *event* through EVENTSUB (culture#506 h1)?
+
+        Sessions without an account see every event, as before. For account
+        sessions a channel event needs :meth:`can_read` on its channel, and a
+        direct message (a ``message`` event with no channel) is visible only
+        to its sender and its target.
+        """
+        if self.account is None:
+            return True
+        if event.channel is not None:
+            return self.can_read(event.channel)
+        if str(event.type) == EventType.MESSAGE.value:
+            target = event.data.get("target") if isinstance(event.data, dict) else None
+            return self.nick is not None and self.nick in (event.nick, target)
+        return True
+
     async def _handle_join(self, msg: Message) -> None:
         if not self._registered:
             return
@@ -887,7 +953,7 @@ class Client:
                 )
                 return
 
-            if not self.account_access(channel_name):
+            if not self.can_read(channel_name):
                 # 474 ERR_BANNEDFROMCHAN: the authenticated account holds no
                 # grant (read or speak) on this channel.
                 await self.send_numeric(
@@ -994,7 +1060,15 @@ class Client:
             else:
                 await self.send_numeric(replies.RPL_NOTOPIC, channel_name, "No topic is set")
         else:
-            # Set topic
+            # Set topic: posting into the channel, so it needs speak
+            # (culture#506 h1); ungated for sessions without an account.
+            if not self.can_speak(channel_name):
+                await self.send_numeric(
+                    replies.ERR_CHANOPRIVSNEEDED,
+                    channel_name,
+                    "Cannot set topic (account lacks a speak grant)",
+                )
+                return
             channel.topic = msg.params[1]
             topic_msg = Message(
                 prefix=self.prefix,
@@ -1424,7 +1498,7 @@ class Client:
                         replies.ERR_CANNOTSENDTOCHAN, target, "Cannot send to channel"
                     )
                     return
-                if self.account_access(target) != "speak" and self.account is not None:
+                if not self.can_speak(target):
                     await self.send_numeric(
                         replies.ERR_CANNOTSENDTOCHAN,
                         target,
@@ -1529,7 +1603,7 @@ class Client:
                 return
             if self not in channel.members:
                 return
-            if self.account is not None and self.account_access(target) != "speak":
+            if not self.can_speak(target):
                 return  # NOTICE never gets error replies (RFC 2812)
             await self._send_to_channel(channel, target, relay, text, True)
         else:
@@ -1645,14 +1719,18 @@ class Client:
                         await member.send(quit_msg)
                         notified.add(member)
 
-        await self.server.emit_event(
-            Event(
-                type=EventType.QUIT,
-                channel=None,
-                nick=self.nick,
-                data={"reason": reason, "channels": channel_names},
+        if self._registered:
+            # A pre-registration QUIT has no proven identity: emitting a QUIT
+            # event for the requested nick would reach peers as SQUITUSER and
+            # drop the real (possibly account) session there (culture#506 h1).
+            await self.server.emit_event(
+                Event(
+                    type=EventType.QUIT,
+                    channel=None,
+                    nick=self.nick,
+                    data={"reason": reason, "channels": channel_names},
+                )
             )
-        )
 
         raise ConnectionError("Client quit")
 
@@ -1770,6 +1848,10 @@ class Client:
         channel = None if target == "*" else target
         if channel is not None and channel not in self.server.channels:
             await self.send_raw(f"{EVENTERR} {type_str} :no-such-channel")
+            return
+        if channel is not None and not self.can_speak(channel):
+            # Publishing into a channel is speaking there (culture#506 h1).
+            await self.send_raw(f"{EVENTERR} {type_str} :permission-denied")
             return
 
         # ``base64.b64decode`` can raise ``binascii.Error`` (a subclass of
@@ -1910,8 +1992,16 @@ class Client:
         returns ``None`` so the caller knows to stop.
         """
         if channel_param == "*":
-            return sorted(ch.name for ch in self.channels)
-        if not channel_param.startswith("#") or channel_param not in self.server.channels:
+            # Joined channels the session can still read: a grant removed
+            # while joined stops the replay (culture#506 h1).
+            return sorted(ch.name for ch in self.channels if self.can_read(ch.name))
+        if (
+            not channel_param.startswith("#")
+            or channel_param not in self.server.channels
+            or not self.can_read(channel_param)
+        ):
+            # No read grant is reported exactly like a missing channel, so
+            # an account cannot probe which channels exist.
             await self.send_raw(f"{EVENTERR} {channel_param} :no-such-channel")
             return None
         return [channel_param]
