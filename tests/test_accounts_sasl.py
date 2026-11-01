@@ -253,6 +253,7 @@ def test_malformed_file_keeps_last_good_table(tmp_path, caplog, content):
     path.write_text(content, encoding="utf-8")
     os.utime(path, ns=(1, 1))  # force a signature change regardless of fs granularity
     with caplog.at_level("ERROR", logger="agentirc.accounts"):
+        store.maybe_reload()  # the watcher tick (lookups never touch the file)
         assert store.get("testserv-alice") is not None  # last good table kept
         assert store.get("testserv-x") is None
     assert any("accounts" in r.getMessage() for r in caplog.records)

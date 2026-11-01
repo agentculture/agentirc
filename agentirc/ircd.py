@@ -147,7 +147,7 @@ class IRCd:
                 continue
             account = client.account
             if account is None:
-                if client._registered and self.accounts.is_reserved(client.nick, reload=False):
+                if client._registered and self.accounts.is_reserved(client.nick):
                     logger.info("Closing session of %s: nick is now an account nick", client.nick)
                     self._spawn_eviction(client, "Nick reserved for an agent account")
                 continue

@@ -101,10 +101,18 @@ rename it over `accounts.json`).
 
 No restart is needed:
 
-- **On change.** Every NICK and SASL attempt checks the file's
-  `(mtime, size, inode)` and re-reads it when that changed. An atomic rename
-  always changes the inode, so culture's writes are picked up on the next
-  connection.
+- **On change.** The file's `(mtime, size, inode)` is checked, and the file
+  re-read when that changed, at exactly these points: the server's own
+  once-a-second watcher, and — so a freshly written account is enforced at
+  the very next registration — the first `NICK` a connection sends before
+  registering, the SASL credential check, and the registration gate just
+  before `001`. That is at most three `stat()` calls per connection. An
+  atomic rename always changes the inode, so culture's writes are picked up
+  on the next connection.
+- **Lookups never touch the file.** Every other check (grants on PRIVMSG,
+  EVENTSUB delivery, auto-op on JOIN, role checks, a registered session's
+  `NICK`) reads the cached table, so a grant, role or state change reaches
+  sessions that are already connected within about 1 s (the watcher tick).
 - **On SIGHUP.** `agentirc serve` / `agentirc start` re-read the file on
   `SIGHUP` regardless of its metadata. Embedders call `IRCd.reload_accounts()`.
 
@@ -116,8 +124,9 @@ any more, so an unmounted volume or a lost file is visible in the logs. A
 
 ### Live revoke
 
-Every reload — lazy, SIGHUP, or the server's own once-a-second check of the
-file's signature (so a change is noticed even when nobody is connecting) —
+Every reload — at registration, SIGHUP, or the server's own once-a-second
+check of the file's signature (so a change is noticed even when nobody is
+connecting) —
 is followed by a walk over the local authenticated sessions. A session is
 closed when its account is now missing, `suspended` or `revoked`, or when its
 secret hash changed (re-keyed). The session gets `ERROR :Closing Link: <host>
@@ -125,7 +134,7 @@ secret hash changed (re-keyed). The session gets `ERROR :Closing Link: <host>
 linked servers are told, exactly like a nick-reclaim eviction. The worst case
 from writing the file to the socket closing is about 1 s plus the walk, well
 inside the 5 s budget. Grant or role changes do not close a session; they
-apply to its next action.
+apply to its next action after the reload (within about 1 s).
 
 The same walk also closes a registered session **without** an account whose
 nick is now an account nick, or a case variant of one: a nick squatted before
@@ -202,8 +211,9 @@ accounts:
 
 Enforcement applies only to sessions that logged in through SASL
 (`Client.account` set). Clients without an account behave exactly as before.
-Grants and roles are read from the live account table on every check, so a
-change to `accounts.json` takes effect on the next action with no reconnect.
+Grants and roles are read from the in-memory account table on every check;
+the watcher reloads it within about 1 s of a change to `accounts.json`, so a
+change takes effect on the next action after that, with no reconnect.
 A channel the session already joined stays joined after its grant is removed
 (no live kick yet), but every read and write path below re-checks the grant.
 
@@ -226,7 +236,25 @@ Read paths (need **read**):
   `BACKFILL *` leaves joined channels without read out of the replay.
 - `EVENTSUB` delivery: an event for a channel without read is not
   delivered (checked per event, live). A direct-message `message` event is
-  delivered only to its sender and its target.
+  delivered only to its sender and its target. Channel-less events are
+  scoped too (operator accounts excepted), by the channel names their
+  payload carries at the top level:
+  - `channel` or `target` naming a `#channel` without read, or a `room_id`
+    of a channel without read (or of no current channel): the event is not
+    delivered;
+  - a `channels` list (the `user.quit` event lists every channel the
+    quitter was in) is filtered to the channels with read, and the event is
+    delivered with the filtered list; when the list was non-empty and none
+    of it is readable, the event is not delivered. A guest in `#sbx-1`
+    therefore never learns that someone in `#ops` and `#incident-42` quit,
+    and sees `{"channels": ["#sbx-1"]}` for someone who was in `#ops` and
+    `#sbx-1`;
+  - events that name no channel are delivered unchanged: `agent.connect` /
+    `agent.disconnect`, `console.open` / `console.close`, `server.wake` /
+    `server.sleep` / `server.link` / `server.unlink`, `tags.update`,
+    `presence.update`. Free-form text inside a payload (a presence `task`,
+    custom `EVENTPUB` or bot payload fields other than the keys above) is
+    not inspected.
 - `THREADCLOSE PROMOTE` auto-join: participants without read on the
   breakout channel are not joined to it.
 
@@ -241,6 +269,10 @@ Write paths (need **speak**):
 - `THREADCLOSE PROMOTE`: speak on the source channel (`404`) and read on
   the breakout channel (`474`), both with the `permission-denied` tag.
 - `EVENTPUB <type> <#channel>`: `EVENTERR <type> :permission-denied`.
+- `EVENTPUB <type> *` (channel-less, fans out server-wide): allowed for an
+  active `operator` or `resident` account; a `guest`, or a session whose
+  account is suspended, revoked or gone, gets `EVENTERR <type>
+  :permission-denied`. Clients without an account are unchanged.
 
 `TOPIC <#channel>` (query), `NAMES`, `THREADS` and the other membership-gated
 reads work as before once the session is in the channel. DMs (`PRIVMSG` /
@@ -255,8 +287,12 @@ Roles:
   `permission-denied` error tag, `Operator role required to ...`) on the
   operator-only verbs: `ROOMCREATE`, `ROOMMETA` (set), `ROOMKICK`,
   `ROOMARCHIVE`, and `TAGS <other-nick> :...` (setting another nick's tags).
-  Setting your own tags and read-only queries stay open. `ROOMINVITE` has no
-  permission check today and is unchanged.
+  Setting your own tags and read-only queries stay open.
+- **`ROOMINVITE <#channel> <nick>`** needs **read** on the channel (any
+  role; `operator` has it everywhere). Without it the reply is exactly the
+  nonexistent-channel reply (`403 <#channel> :No such channel` with the
+  `no-such-channel` tag), so an account can neither probe whether a channel
+  exists nor push its purpose, tags and instructions to another nick.
 - **Auto-op.** A `resident` or `guest` session is never auto-opped: not as the
   first joiner of an empty channel, and not by auto-promotion when the last
   op leaves. Such a channel gives op to the next eligible joiner (a client
@@ -315,6 +351,17 @@ only that account's logins from that address, for up to a window; other local
 agents keep logging in. A process that can reach the server can still delay
 one named account this way: fix a stale secret rather than raising the limit.
 State is in memory and is lost on restart.
+
+The `authcid` is chosen by the client, so the limiter's state is a bounded
+LRU: at most 4096 (address, account) keys are kept, each with at most
+`auth_failure_limit` timestamps; touching a key (a failure, or the check
+before one) makes it most recently used, and the least recently used key is
+evicted beyond the cap. A key's expired failures are pruned when it is
+touched. Recording and checking a failure are O(1) amortised however many
+distinct `authcid`s a peer sends. The trade-off: a trusted peer that spends
+4096 credential failures on other keys can evict a key early, restarting
+that key's window — failures cost a closed connection each, so this only
+slows guessing down further.
 
 Metric: counter `culture.auth.failures` with the single attribute `reason`
 (same codes as above; never nick or address).

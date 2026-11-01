@@ -210,16 +210,20 @@ class SubscriptionRegistry:
             # Read grants (culture#506 h1): an account session only receives
             # events it could read through any other path. Checked per event,
             # live, so a grant change applies to the very next event.
-            can_read_event = getattr(client, "can_read_event", None)
-            if can_read_event is not None and not can_read_event(event):
+            # Channel-less events are scoped to the channels the session can
+            # read (agentirc#66 review): ``visible_event`` may return a copy
+            # with a filtered channel list, or ``None`` to drop the event.
+            visible_event = getattr(client, "visible_event", None)
+            delivered = event if visible_event is None else visible_event(event)
+            if delivered is None:
                 continue
             for sub in list(per_client.values()):  # NOSONAR python:S7504: defensive snapshot vs. concurrent mutation
                 if sub.dropped:
                     continue
-                if not sub.matches(event):
+                if not sub.matches(delivered):
                     continue
                 try:
-                    sub.queue.put_nowait(event)
+                    sub.queue.put_nowait(delivered)
                 except asyncio.QueueFull:
                     await self._handle_overflow(client, sub)
 

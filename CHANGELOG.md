@@ -53,6 +53,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   under an ASCII case fold without being equal to it is refused (432).
 - Accounts that are not operators are no longer auto-opped as a channel's
   first joiner.
+- EVENTSUB scopes channel-less events for non-operator account sessions: a
+  payload `channel` / `target` / `room_id` the session cannot read drops the
+  event, and a `channels` list (e.g. `user.quit`) is filtered to readable
+  channels (dropped when none remain). Clients without an account are
+  unchanged.
+- Channel-less `EVENTPUB <type> *` is refused (`permission-denied`) for
+  `guest` accounts and for sessions whose account is suspended, revoked or
+  gone; `operator` and `resident` accounts and clients without an account
+  are unchanged.
+- `ROOMINVITE` needs read access on the channel for an account session;
+  without it the reply is the same `403` as for a nonexistent channel.
+- The failed-authentication limiter is a bounded LRU (4096 keys, O(1)
+  amortised per failure) instead of growing without bound under churning
+  `authcid`s (agentirc#65).
+- Account lookups no longer `stat()` the accounts file: they read the cached
+  table, refreshed by the 1 s watcher, SIGHUP, and at most three file checks
+  per connection on the registration/SASL path. Grant and role changes reach
+  connected sessions within about 1 s instead of on the next lookup.
 
 ## [9.13.1] - 2026-10-30
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 
@@ -53,6 +55,17 @@ async def srv(tmp_path):
     ircd._tmp = tmp_path
     yield ircd
     await ircd.stop()
+
+
+async def wait_for_table(srv, predicate, timeout: float = 3.0) -> None:
+    """Wait until the accounts watcher (1 s tick) has loaded a table matching *predicate*.
+
+    Lookups read the cached table, so a file change reaches running sessions
+    on the watcher's next tick, not on the next lookup.
+    """
+    async with asyncio.timeout(timeout):
+        while not predicate(srv.accounts):
+            await asyncio.sleep(0.05)
 
 
 async def _login(srv, nick, secret):
@@ -120,6 +133,7 @@ async def test_grant_change_applies_without_reconnect(srv):
             _account("testserv-op", SECRET_BOB, role="operator", grants={}),
         ],
     )
+    await wait_for_table(srv, lambda a: "#late" in a.get("testserv-res").grants)
     await c.send("JOIN #late")
     assert any("JOIN" in ln for ln in await c.recv_all(0.5))
 
