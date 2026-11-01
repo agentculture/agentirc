@@ -39,10 +39,11 @@ Format, version 1:
   exactly, so `spark-culture__peekab12` is not covered by `spark-culture`.
 - `secret_sha256` (64 lowercase hex chars): `sha256(secret)` of the UTF-8
   secret, hex encoded. The secret itself is never stored.
-- `role` (`resident`, `operator` or `guest`): carried on the session after
-  login (enforced in a later release).
-- `grants` (object, channel to `read` or `speak`): carried on the session
-  after login (enforced in a later release). May be `{}`.
+- `role` (`resident`, `operator` or `guest`): enforced, see
+  [Grants and roles](#grants-and-roles).
+- `grants` (object, channel to `read` or `speak`): enforced, see
+  [Grants and roles](#grants-and-roles). May be `{}`. A `guest` account's
+  grants must all be inside the guest sandbox.
 - `state` (`active`, `suspended` or `revoked`): only `active` accounts can
   log in.
 
@@ -87,6 +88,46 @@ accounts:
 entry that is not a valid CIDR or address fails config loading with
 `ValueError`. A SASL attempt from any other peer fails with `904` and the
 connection is closed, even with the right secret.
+
+```yaml
+accounts:
+  guest_channel_prefixes:   # guest sandbox; default [] = guests hold no grants
+    - "#sbx-"
+```
+
+## Grants and roles
+
+Enforcement applies only to sessions that logged in through SASL
+(`Client.account` set). Clients without an account behave exactly as before.
+Grants and roles are read from the live account table on every check, so a
+change to `accounts.json` takes effect on the next JOIN/PRIVMSG with no
+reconnect. A channel the session already joined stays joined after its grant
+is removed (live revoke is a later release); its next PRIVMSG is refused.
+
+- **JOIN** needs a grant (`read` or `speak`) on the channel; otherwise the
+  server sends `474 ERR_BANNEDFROMCHAN` (`Cannot join channel (no grant for
+  this account)`) and the session does not join. Channel names match
+  case-insensitively.
+- **PRIVMSG** to a channel needs `speak`; with `read` or no grant the server
+  sends `404 ERR_CANNOTSENDTOCHAN`. `NOTICE` to a channel is silently dropped
+  (no error replies for NOTICE). PRIVMSG/NOTICE to a nick (DMs) are never gated.
+- **`operator`** accounts may JOIN and speak on every channel and pass the
+  owner/admin checks of the room verbs below.
+- **`resident`** and **`guest`** accounts are refused (`NOTICE` with the
+  `permission-denied` error tag, `Operator role required to ...`) on the
+  operator-only verbs: `ROOMCREATE`, `ROOMMETA` (set), `ROOMKICK`,
+  `ROOMARCHIVE`, and `TAGS <other-nick> :...` (setting another nick's tags).
+  Setting your own tags and read-only queries stay open. `ROOMINVITE` has no
+  permission check today and is unchanged.
+- A suspended or revoked account that is still connected has no access.
+
+### Guest sandbox
+
+A `guest` may only hold grants on channels whose name starts with one of
+`accounts.guest_channel_prefixes` (case-insensitive). A guest grant outside
+the sandbox rejects the **whole file** at load (last good table kept, error
+logged), like any other validation error. With the default empty list, guests
+may hold no grants. Other roles are not restricted.
 
 ## Wire flow
 
@@ -174,7 +215,7 @@ account data.
 
 ## What is not here yet
 
-- Role and grant enforcement (`client.account.role` / `.grants` are loaded and
-  carried on the session but not yet enforced).
+- Kicking sessions whose grant was removed while joined.
+- Gating of `MODE`, `KICK`, `TOPIC`, threads and other non-room verbs by role.
 - Closing live sessions when an account is revoked, and failed-auth logging
   and rate limiting.

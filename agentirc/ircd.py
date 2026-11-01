@@ -84,7 +84,7 @@ class IRCd:
         # by culture, read-only here. Server-local; never relayed over S2S.
         from agentirc.accounts import AccountStore
 
-        self.accounts = AccountStore(self.config.data_dir)
+        self.accounts = AccountStore(self.config.data_dir, self.config.accounts.guest_channel_prefixes)
         # Every accepted local TCP client connection, registered or not.
         # Pending account-nick connections are not in ``clients`` (they must
         # not squat the nick), so shutdown closes connections from here.
