@@ -217,15 +217,19 @@ class SubscriptionRegistry:
             delivered = event if visible_event is None else visible_event(event)
             if delivered is None:
                 continue
-            for sub in list(per_client.values()):  # NOSONAR python:S7504: defensive snapshot vs. concurrent mutation
-                if sub.dropped:
-                    continue
-                if not sub.matches(delivered):
-                    continue
-                try:
-                    sub.queue.put_nowait(delivered)
-                except asyncio.QueueFull:
-                    await self._handle_overflow(client, sub)
+            await self._deliver_to_client(client, per_client, delivered)
+
+    async def _deliver_to_client(
+        self, client: Client, per_client: dict[str, Subscription], delivered: Event
+    ) -> None:
+        """Enqueue *delivered* on each live, matching subscription of *client*."""
+        for sub in list(per_client.values()):  # NOSONAR python:S7504: defensive snapshot vs. concurrent mutation
+            if sub.dropped or not sub.matches(delivered):
+                continue
+            try:
+                sub.queue.put_nowait(delivered)
+            except asyncio.QueueFull:
+                await self._handle_overflow(client, sub)
 
     async def _handle_overflow(self, client: Client, sub: Subscription) -> None:
         sub.dropped = True
