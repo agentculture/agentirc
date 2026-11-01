@@ -192,22 +192,21 @@ async def test_server_version_matches_agentirc_dunder_version(server, make_clien
 
 @pytest.mark.asyncio
 async def test_unregistered_client_is_refused_consistently(server, make_client):
-    """An unregistered connection issuing VERBS gets no reply -- the same
-    silent pre-registration refusal ``_handle_join`` gives an unregistered
-    client (see agentirc/client.py's ``_handle_join``/``_handle_user_mode``),
-    not an error numeric."""
+    """An unregistered connection issuing VERBS gets ``451 ERR_NOTREGISTERED``
+    and no VERBS payload -- the same pre-registration refusal every
+    non-registration verb gets (the 451 rule, culture#506 h1; see
+    ``Client._dispatch``)."""
     client = await make_client()  # no NICK/USER
     await client.send("VERBS")
     lines = await client.recv_all(timeout=0.3)
-    assert not any(" VERBS " in l for l in lines), f"unregistered VERBS got a reply: {lines!r}"
+    assert lines == [":testserv 451 * VERBS :You have not registered"], lines
 
-    # Cross-check: JOIN (an already-established pre-registration verb)
-    # is refused the exact same way on this same unregistered connection --
-    # confirms VERBS mirrors existing behavior rather than inventing a new
-    # refusal shape.
+    # Cross-check: JOIN is refused the exact same way on this same
+    # unregistered connection.
     await client.send("JOIN #should-not-work")
     lines = await client.recv_all(timeout=0.3)
-    assert not lines, f"unregistered JOIN unexpectedly got a reply too: {lines!r}"
+    assert len(lines) == 1, lines
+    assert " 451 " in lines[0], lines
 
 
 @pytest.mark.asyncio

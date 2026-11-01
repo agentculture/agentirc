@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
+import hmac
 import json
 import logging
 import re
@@ -26,6 +28,7 @@ from opentelemetry.context import Context as _OtelContext
 from opentelemetry.trace import Span as _OtelSpan
 
 from agentirc._internal.aio import maybe_await
+from agentirc.accounts import Account, fold_nick, is_trusted_peer
 from agentirc._internal.constants import (
     EVENT_TYPE_RE,
     MAX_INBOUND_LINE,
@@ -44,17 +47,28 @@ from agentirc._internal.telemetry.context import (
     current_traceparent,
     extract_traceparent_from_tags,
 )
-from agentirc._internal.telemetry.context import inject_traceparent as _inject_traceparent
+from agentirc._internal.telemetry.context import (
+    inject_traceparent as _inject_traceparent,
+)
 from agentirc.channel import Channel
 from agentirc.protocol import (
     BACKFILLEND,
     BOT_CAP,
+    ERR_SASLABORTED,
+    ERR_SASLALREADY,
+    ERR_SASLFAIL,
+    ERR_SASLTOOLONG,
     ERROR_TAG,
     ERROR_TOKEN_LINE_TOO_LONG,
     ERROR_TOKENS_VERSION,
     EVENT,
     EVENTERR,
     MSGID_TAG,
+    RPL_LOGGEDIN,
+    RPL_SASLMECHS,
+    RPL_SASLSUCCESS,
+    SASL_CAP,
+    SASL_MECHANISMS,
     SERVER_TIME_TAG,
     VERBS,
     VERBS_DISCOVERY_VERSION,
@@ -79,6 +93,19 @@ if TYPE_CHECKING:
     from agentirc.skills.history import HistoryEntry
 
 
+# Local nicks are printable ASCII without spaces (culture#506 h2, M7).
+_NICK_ASCII_RE = re.compile(r"^[\x21-\x7e]+$")
+
+
+def _registration_failure_code(account: Account) -> str:
+    """Reason code for a registration refused on an inactive or re-keyed account."""
+    if account.state == "revoked":
+        return "revoked"
+    if not account.active:
+        return "suspended"
+    return "bad_secret"
+
+
 class Client:
     """A connected IRC client."""
 
@@ -97,6 +124,19 @@ class Client:
         self.host: str = writer.get_extra_info("peername", ("unknown", 0))[0]
         self.channels: set[Channel] = set()
         self._registered = False
+        # IRCv3: CAP LS opens negotiation; registration is held until CAP END.
+        self._cap_negotiating = False
+        # SASL PLAIN (culture#506 t8). ``account`` is set only after a
+        # successful AUTHENTICATE and carries role/grants for enforcement.
+        self.account: Account | None = None
+        self._sasl_mech: str | None = None
+        self._sasl_buf: str = ""
+        # The first pre-registration NICK checks the accounts file once; later
+        # ones read the cached table (the registration gate re-checks).
+        self._nick_checked_accounts = False
+        # Set the moment the session is evicted (revoke / nick reclaim):
+        # from then on nothing it sent is dispatched (culture#506 h2, M1).
+        self._closing = False
         self.tags: list[str] = []
         self.caps: set[str] = set()
         self.modes: set[str] = set()
@@ -232,6 +272,9 @@ class Client:
                 skipping_line = False
 
             while "\n" in buffer:
+                if self._closing:
+                    # Evicted mid-buffer: drop every line still queued.
+                    return "", False
                 line, buffer = buffer.split("\n", 1)
                 if not line.strip():
                     continue
@@ -338,9 +381,9 @@ class Client:
                     self.last_activity = time.time()
                     buffer = initial_msg.replace("\r\n", "\n").replace("\r", "\n")
                     buffer, skipping_line = await self._process_buffer(buffer, skipping_line)
-                while True:
+                while not self._closing:
                     data = await self.reader.read(4096)
-                    if not data:
+                    if not data or self._closing:
                         break
                     # Server liveness (t5): any inbound bytes count as activity,
                     # not just PONG replies — see the field docstring on
@@ -359,6 +402,8 @@ class Client:
                 )
 
     async def _dispatch(self, msg: Message) -> None:
+        if self._closing:
+            return  # evicted: nothing more runs as this nick (culture#506 h2, M1)
         extract = extract_traceparent_from_tags(msg, peer=None)
         self.server.metrics.trace_inbound.add(1, {"result": extract.status, "peer": ""})
         if extract.status == "valid":
@@ -370,7 +415,7 @@ class Client:
         attrs = {
             "irc.command": verb,
             "irc.prefix_nick": (msg.prefix.split("!")[0] if msg.prefix else ""),
-            "culture.trace.origin": "local" if extract.status == "missing" else "remote",
+            "culture.trace.origin": ("local" if extract.status == "missing" else "remote"),
         }
         if extract.status in ("malformed", "too_long"):
             attrs["culture.trace.dropped_reason"] = extract.status
@@ -383,24 +428,56 @@ class Client:
             attributes=attrs,
         ):
             handler = getattr(self, f"_handle_{msg.command.lower()}", None)
-            if handler:
+            if not self._registered and verb not in self._PREREGISTRATION_VERBS:
+                # 451 rule (culture#506 h1): before registration a connection
+                # has no proven identity, so it may only register. Without
+                # this, an unregistered socket could PRIVMSG/NOTICE as the
+                # nick it merely requested -- including an account nick.
+                await self.send_numeric(
+                    replies.ERR_NOTREGISTERED, msg.command, replies.MSG_NOTREGISTERED
+                )
+            elif handler:
                 await maybe_await(handler(msg))
             else:
-                skill = self.server.get_skill_for_command(msg.command)
-                if skill and self._registered:
-                    try:
-                        await skill.on_command(self, msg)
-                    except Exception:
-                        logging.getLogger(__name__).exception(
-                            "Skill %s failed on command %s", skill.name, msg.command
-                        )
-                else:
-                    await self.send_numeric(
-                        replies.ERR_UNKNOWNCOMMAND, msg.command, "Unknown command"
-                    )
+                await self._dispatch_to_skill(msg)
         self.server.metrics.client_command_duration.record(
             (time.perf_counter() - cmd_started) * 1000.0, {"verb": verb}
         )
+
+    async def _dispatch_to_skill(self, msg: Message) -> None:
+        """Route a verb with no ``_handle_*`` method to its skill, else 421."""
+        skill = self.server.get_skill_for_command(msg.command)
+        if skill and self._registered:
+            try:
+                await skill.on_command(self, msg)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Skill %s failed on command %s", skill.name, msg.command
+                )
+        else:
+            await self.send_numeric(replies.ERR_UNKNOWNCOMMAND, msg.command, "Unknown command")
+
+    # Verbs dispatched before registration completes; everything else gets
+    # 451 ERR_NOTREGISTERED (see ``_dispatch``). The four bot-extension verbs
+    # are not registration verbs, but they keep their documented
+    # ``EVENTERR <id> :not-registered`` refusal (``_bot_verb_gate``) instead
+    # of a 451, so bots parsing EVENTERR see no wire change.
+    _PREREGISTRATION_VERBS: frozenset[str] = frozenset(
+        {
+            "CAP",
+            "NICK",
+            "USER",
+            "PASS",
+            "PING",
+            "PONG",
+            "AUTHENTICATE",
+            "QUIT",
+            "EVENTSUB",
+            "EVENTUNSUB",
+            "EVENTPUB",
+            "BACKFILL",
+        }
+    )
 
     async def _handle_ping(self, msg: Message) -> None:
         token = msg.params[0] if msg.params else ""
@@ -425,30 +502,44 @@ class Client:
     # Capabilities advertised in CAP LS and accepted in CAP REQ. Adding
     # a new cap here is a minor bump per docs/api-stability.md; removing
     # one is a major bump.
-    _SUPPORTED_CAPS: frozenset[str] = frozenset({"message-tags", BOT_CAP})
+    _SUPPORTED_CAPS: frozenset[str] = frozenset({"message-tags", BOT_CAP, SASL_CAP})
 
     async def _handle_cap(self, msg: Message) -> None:
         sub = msg.params[0].upper() if msg.params else ""
+        # Per IRCv3, CAP LS opens negotiation and suspends registration until
+        # CAP END. A bare CAP REQ (no preceding LS) does not suspend it, which
+        # keeps legacy clients that REQ before NICK/USER registering as before.
+        if sub == "LS" and not self._registered:
+            self._cap_negotiating = True
         if sub == "LS":
-            cap_list = " ".join(sorted(self._SUPPORTED_CAPS))
-            await self.send_raw(
-                f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}"
-            )
+            await self._cap_ls(msg)
         elif sub == "REQ":
-            requested = msg.params[1].split() if len(msg.params) >= 2 else []
-            if all(cap in self._SUPPORTED_CAPS for cap in requested):
-                self.caps.update(requested)
-                await self.send_raw(
-                    f":{self.server.config.name} CAP {self.nick or '*'}"
-                    f" ACK :{' '.join(requested)}"
-                )
-            else:
-                await self.send_raw(
-                    f":{self.server.config.name} CAP {self.nick or '*'}"
-                    f" NAK :{' '.join(requested)}"
-                )
+            await self._cap_req(msg)
         elif sub == "END":
-            pass  # no registration-gating in v1
+            # Negotiation over: complete any registration held since CAP LS/REQ.
+            self._cap_negotiating = False
+            await self._try_register()
+
+    async def _cap_ls(self, msg: Message) -> None:
+        # CAP LS 302 clients get cap values (sasl=PLAIN); older ones the bare name.
+        v302 = len(msg.params) >= 2 and msg.params[1].isdigit() and int(msg.params[1]) >= 302
+        cap_list = " ".join(
+            f"{cap}={SASL_MECHANISMS}" if cap == SASL_CAP and v302 else cap
+            for cap in sorted(self._SUPPORTED_CAPS)
+        )
+        await self.send_raw(f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}")
+
+    async def _cap_req(self, msg: Message) -> None:
+        requested = msg.params[1].split() if len(msg.params) >= 2 else []
+        if all(cap in self._SUPPORTED_CAPS for cap in requested):
+            self.caps.update(requested)
+            await self.send_raw(
+                f":{self.server.config.name} CAP {self.nick or '*'} ACK :{' '.join(requested)}"
+            )
+        else:
+            await self.send_raw(
+                f":{self.server.config.name} CAP {self.nick or '*'} NAK :{' '.join(requested)}"
+            )
 
     async def _handle_nick(self, msg: Message) -> None:
         if not msg.params:
@@ -457,46 +548,98 @@ class Client:
 
         nick = msg.params[0]
 
-        # Reject reserved system-* nick prefix
-        if nick.startswith(SYSTEM_USER_PREFIX):
+        format_error = self._nick_format_error(nick)
+        if format_error is not None:
+            await self.send_numeric(replies.ERR_ERRONEUSNICKNAME, nick, format_error)
+            return
+
+        # Agent accounts (culture#506 t8). Exact match on the full nick, so
+        # ``<agent>__peek…`` observer nicks are never covered by an account.
+        # Lookups read the cached table (no file I/O). The first NICK before
+        # registration checks the file once, so a freshly written account
+        # applies here; the registration gate re-checks before 001.
+        if not self._registered and not self._nick_checked_accounts:
+            self._nick_checked_accounts = True
+            self.server.accounts.maybe_reload()
+        # A case variant of an account nick is refused outright (h2, M7).
+        canonical = self.server.accounts.lookalike_of(nick)
+        if canonical is not None:
             await self.send_numeric(
                 replies.ERR_ERRONEUSNICKNAME,
                 nick,
-                "Nickname prefix 'system-' is reserved",
+                f"Nickname differs only in case from agent account {canonical}",
+            )
+            return
+        # ``is_reserved`` also covers the nicks a rejected accounts file names
+        # (fail-closed, h2 M5): they are held like account nicks and refused
+        # at registration.
+        is_account_nick = self.server.accounts.is_reserved(nick)
+        if self._registered and self.account is not None and nick != self.nick:
+            await self.send_numeric(
+                replies.ERR_ERRONEUSNICKNAME,
+                nick,
+                "An authenticated session keeps its account nick",
+            )
+            return
+        if is_account_nick and self._registered and nick != self.nick:
+            await self.send_numeric(
+                replies.ERR_ERRONEUSNICKNAME,
+                nick,
+                "Nickname is reserved for an agent account; authenticate with SASL",
             )
             return
 
-        # Enforce server name prefix
-        expected_prefix = f"{self.server.config.name}-"
-        if not nick.startswith(expected_prefix):
-            await self.send_numeric(
-                replies.ERR_ERRONEUSNICKNAME,
-                nick,
-                f"Nickname must start with {expected_prefix}",
-            )
-            return
-
-        if len(nick) <= len(expected_prefix):
-            await self.send_numeric(
-                replies.ERR_ERRONEUSNICKNAME,
-                nick,
-                f"Nickname must have an agent name after {expected_prefix}",
-            )
+        if is_account_nick and not self._registered:
+            # Hold the nick on this connection without claiming it in
+            # ``server.clients``: an unauthenticated connection must never
+            # squat an account nick. Collision is resolved at registration,
+            # after SASL (see ``_try_register``).
+            self._release_nick()
+            self.nick = nick
+            if self._session_span is not None:
+                self._session_span.set_attribute(_ATTR_NICK, nick)
+            await self._try_register()
             return
 
         if nick in self.server.clients:
             await self.send_numeric(replies.ERR_NICKNAMEINUSE, nick, "Nickname is already in use")
             return
 
-        old_nick = self.nick
-        if old_nick and old_nick in self.server.clients:
-            del self.server.clients[old_nick]
+        self._release_nick()
 
         self.nick = nick
         self.server.clients[nick] = self
         if self._session_span is not None:
             self._session_span.set_attribute(_ATTR_NICK, nick)
         await self._try_register()
+
+    def _nick_format_error(self, nick: str) -> str | None:
+        """Return the 432 text for a syntactically unacceptable *nick*, else None.
+
+        Checks run in a fixed order; the first failure wins.
+        """
+        # Reject reserved system-* nick prefix
+        if nick.startswith(SYSTEM_USER_PREFIX):
+            return "Nickname prefix 'system-' is reserved"
+        # Printable ASCII only (culture#506 h2, M7): a non-ASCII lookalike
+        # of an account nick (Cyrillic "е" for "e") cannot be told apart
+        # from the real one by humans, and no confusables table is needed
+        # when only ASCII is allowed.
+        if not _NICK_ASCII_RE.match(nick):
+            return "Nickname must be printable ASCII"
+        # Enforce server name prefix
+        expected_prefix = f"{self.server.config.name}-"
+        if not nick.startswith(expected_prefix):
+            return f"Nickname must start with {expected_prefix}"
+        if len(nick) <= len(expected_prefix):
+            return f"Nickname must have an agent name after {expected_prefix}"
+        return None
+
+    def _release_nick(self) -> None:
+        """Drop this connection's current nick from ``server.clients`` (if it owns it)."""
+        old_nick = self.nick
+        if old_nick and self.server.clients.get(old_nick) is self:
+            del self.server.clients[old_nick]
 
     async def _handle_user(self, msg: Message) -> None:
         if self._registered:
@@ -511,12 +654,322 @@ class Client:
         await self._try_register()
 
     async def _try_register(self) -> None:
-        if self.nick and self.user and not self._registered:
+        if self.nick and self.user and not self._registered and not self._cap_negotiating:
+            if not await self._authorize_registration():
+                return
             self._registered = True
             await self._send_welcome()
+            if self._closing:
+                return  # evicted while the welcome was sent: announce nothing
             # Announce to linked peers
             for link in self.server.links.values():
                 await link.send_raw(f"SNICK {self.nick} {self.user} {self.host} :{self.realname}")
+
+    async def _authorize_registration(self) -> bool:
+        """Account gate for registration (culture#506 t8).
+
+        Runs on every registration path (CAP LS…END, bare CAP REQ, no CAP), so
+        it does not rely on the CAP hold. A nick with no account passes
+        untouched. An account nick registers only if this connection completed
+        SASL PLAIN as exactly that account and the account is still active
+        with the same secret; otherwise 904 and the connection is closed.
+        When it passes, any other local connection holding the nick is
+        evicted and this one takes it — the credential always wins.
+        """
+        # One file check per registration: a freshly written account is
+        # enforced here without waiting for the 1 s watcher.
+        self.server.accounts.maybe_reload()
+        account = self.server.accounts.get(self.nick)
+        if self.account is not None and (account is None or self.account.nick != self.nick):
+            self._record_auth_failure("account_mismatch")
+            await self._refuse_and_close("SASL account does not match nick")
+            return False
+        if account is None:
+            if self.server.accounts.is_reserved(self.nick):
+                # Fail-closed (h2, M5: the accounts file is invalid and names
+                # this nick, or no table loaded at all) or a case variant of
+                # an account that appeared after NICK (M7).
+                self._record_auth_failure("nick_reserved")
+                await self._refuse_and_close(f"Nickname {self.nick} is reserved")
+                return False
+            return True
+        if self.account is None:
+            self._record_auth_failure("nick_without_auth")
+            await self._refuse_and_close(f"SASL authentication required for {self.nick}")
+            return False
+        if not account.active or not hmac.compare_digest(
+            account.secret_sha256, self.account.secret_sha256
+        ):
+            self._record_auth_failure(_registration_failure_code(account))
+            await self._refuse_and_close("SASL authentication failed")
+            return False
+        self.account = account  # pick up the freshest role/grants
+        return await self._reclaim_account_nick()
+
+    async def _reclaim_account_nick(self) -> bool:
+        """Take ``self.nick`` from any other local holder; True once it is ours.
+
+        Re-check after every await (h2, M1): a concurrent login for the
+        same nick may have taken it while we waited, and this session may
+        itself have been evicted meanwhile. The latest credential wins.
+        """
+        for _ in range(8):
+            holder = self.server.clients.get(self.nick)
+            if holder is None or holder is self:
+                break
+            if not isinstance(holder, Client):
+                # Pseudo-users (bots, system) are not evicted by an account.
+                await self.send_numeric(
+                    replies.ERR_NICKNAMEINUSE, self.nick, "Nickname is already in use"
+                )
+                return False
+            await holder.evict("Nick reclaimed by an authenticated session")
+            if self._closing:
+                return False
+        else:
+            await self._refuse_and_close("Nick reclaim did not settle")
+            return False
+        self.server.clients[self.nick] = self
+        return True
+
+    def _record_auth_failure(self, code: str, *, limit_key: tuple | None = None) -> None:
+        """Log (nick, peer, reason code), bump the metric, feed the limiter.
+
+        Never receives or logs secret material: only a fixed reason code.
+        Only credential failures from trusted peers pass a ``limit_key``
+        (``(peer, folded authcid)``, h2 M4); everything else — registration
+        gate refusals, malformed payloads, wrong mechanisms, untrusted peers
+        — stays out of the brute-force limiter.
+        """
+        logging.getLogger(__name__).warning(
+            "auth failure nick=%r peer=%s reason=%s", self.nick or "*", self.host, code
+        )
+        self.server.metrics.auth_failures.add(1, {"reason": code})
+        if limit_key is not None:
+            self.server.auth_limiter.record(limit_key)
+
+    async def _refuse_and_close(self, reason: str) -> None:
+        """Send 904 + ERROR and close this connection. Never logs secrets."""
+        await self.send_numeric(ERR_SASLFAIL, reason)
+        await self.send_raw(f"ERROR :Closing Link: {self.host} ({reason})")
+        logging.getLogger(__name__).info(
+            "Refused %s from %s: %s", self.nick or "*", self.host, reason
+        )
+        raise ConnectionError(reason)
+
+    # How long one channel member's QUIT write may take during an eviction
+    # before it is abandoned (culture#506 h2, M2).
+    _EVICT_SEND_TIMEOUT = 5.0
+    # Grace for the evicted socket to flush its ERROR line before it is
+    # aborted (a peer that stopped reading must not keep it open).
+    _EVICT_ABORT_AFTER = 2.0
+
+    async def evict(self, reason: str) -> None:
+        """Disconnect this session (revoke / nick reclaim). Idempotent.
+
+        Order matters (culture#506 h2, M1/M2): the session first stops
+        acting (``_closing``, unregistered, no account — buffered lines are
+        dropped), then its socket is closed, then channel peers get the
+        QUIT as background writes that never wait on a slow peer, then the
+        nick is released and the QUIT event (relayed to linked servers as
+        SQUITUSER) is emitted once. The read loop then unwinds through
+        ``IRCd._remove_client``, whose identity check leaves the new owner's
+        ``clients`` entry alone.
+        """
+        if self._closing:
+            return
+        self._closing = True
+        nick = self.nick
+        was_registered = self._registered
+        self._registered = False
+        self.account = None
+        self._sasl_reset()
+        quit_msg = Message(prefix=self.prefix, command="QUIT", params=[reason])
+        self._close_transport(f"ERROR :Closing Link: {self.host} ({reason})")
+        channel_names = [ch.name for ch in self.channels]
+        if BOT_CAP not in self.caps:
+            self._fan_out_quit(quit_msg)
+        self._leave_all_channels()
+        self._release_nick()
+        self.server.subscription_registry.remove_client(self)
+        modes, self.modes = set(self.modes), set()
+        if was_registered and nick:
+            await self.server.emit_event(
+                Event(
+                    type=EventType.QUIT,
+                    channel=None,
+                    nick=nick,
+                    data={"reason": reason, "channels": channel_names},
+                )
+            )
+            await self.server._emit_disconnect_events(nick, modes)
+
+    def _fan_out_quit(self, quit_msg: Message) -> None:
+        """Queue *quit_msg* once to every channel peer, as background writes."""
+        notified: set[Client] = set()
+        for channel in [*self.channels]:
+            for member in [*channel.members]:
+                if member is not self and member not in notified:
+                    self._send_in_background(member, quit_msg)
+                    notified.add(member)
+
+    def _leave_all_channels(self) -> None:
+        """Part every channel; drop the ones left empty unless persistent."""
+        for channel in [*self.channels]:
+            channel.remove(self)
+            if not channel.members and not channel.persistent:
+                if self.server.channels.get(channel.name) is channel:
+                    del self.server.channels[channel.name]
+        self.channels.clear()
+
+    def _close_transport(self, last_line: str) -> None:
+        """Write *last_line* without waiting for it to drain, then close."""
+        try:
+            self.writer.write(f"{last_line}\r\n".encode("utf-8"))
+        except (OSError, RuntimeError):
+            pass
+        try:
+            self.writer.close()
+        except (OSError, RuntimeError):
+            return
+        transport = self.writer.transport
+        try:
+            asyncio.get_running_loop().call_later(self._EVICT_ABORT_AFTER, transport.abort)
+        except RuntimeError:
+            pass
+
+    def _send_in_background(self, member, message: Message) -> None:
+        """Send *message* to *member* without awaiting it (bounded by a timeout)."""
+
+        async def _send() -> None:
+            try:
+                await asyncio.wait_for(member.send(message), self._EVICT_SEND_TIMEOUT)
+            except (asyncio.TimeoutError, TimeoutError):
+                logging.getLogger(__name__).info(
+                    "QUIT to %s abandoned: peer is not reading", getattr(member, "nick", "?")
+                )
+            except Exception:  # noqa: BLE001 - one bad peer never breaks the eviction
+                logging.getLogger(__name__).debug("QUIT fan-out failed", exc_info=True)
+
+        task = asyncio.get_running_loop().create_task(_send())
+        self.server._background_tasks.add(task)
+        task.add_done_callback(self.server._background_tasks.discard)
+
+    # --- SASL PLAIN (IRCv3 sasl-3.1; culture#506 t8) ---
+
+    # A single AUTHENTICATE chunk is at most 400 bytes; a chunk of exactly
+    # 400 means "more follows" and a lone "+" ends the payload. A PLAIN
+    # payload for a nick + 64-hex secret fits in one chunk; allow two.
+    _SASL_CHUNK = 400
+    _SASL_MAX_PAYLOAD = 800
+
+    def _sasl_reset(self) -> None:
+        self._sasl_mech = None
+        self._sasl_buf = ""
+
+    async def _sasl_fail(
+        self, code: str, *extra: tuple[str, str], limit_key: tuple | None = None
+    ) -> None:
+        """SASL attempt failed: log it (count it if *limit_key*), numerics, 904, close."""
+        self._sasl_reset()
+        self._record_auth_failure(code, limit_key=limit_key)
+        for numeric, text in extra:
+            await self.send_numeric(numeric, text)
+        await self._refuse_and_close("SASL authentication failed")
+
+    async def _handle_authenticate(self, msg: Message) -> None:
+        if not msg.params:
+            await self.send_numeric(
+                replies.ERR_NEEDMOREPARAMS, "AUTHENTICATE", replies.MSG_NEEDMOREPARAMS
+            )
+            return
+        arg = msg.params[0]
+        if self.account is not None:
+            await self.send_numeric(ERR_SASLALREADY, "You have already authenticated")
+            return
+        if self._registered:
+            await self.send_numeric(ERR_SASLFAIL, "SASL is only available before registration")
+            return
+        if SASL_CAP not in self.caps:
+            await self.send_numeric(ERR_SASLFAIL, "SASL capability not negotiated")
+            return
+        if arg == "*":
+            self._sasl_reset()
+            await self.send_numeric(ERR_SASLABORTED, "SASL authentication aborted")
+            return
+        if self._sasl_mech is None:
+            await self._sasl_start(arg)
+            return
+        if arg != "+" and not await self._sasl_take_chunk(arg):
+            return
+        await self._sasl_plain_finish()
+
+    async def _sasl_start(self, arg: str) -> None:
+        """First AUTHENTICATE: vet the peer and mechanism, then prompt for the payload."""
+        accounts_cfg = self.server.config.accounts
+        if not is_trusted_peer(
+            self.host, accounts_cfg.trusted_cidrs, trust_loopback=accounts_cfg.trust_loopback
+        ):
+            # Refuse before the "AUTHENTICATE +" prompt, so an untrusted
+            # peer never sends its secret over the network (h2, M3).
+            await self._sasl_fail("untrusted_peer")
+            return
+        if arg.upper() != SASL_MECHANISMS:
+            await self.send_numeric(RPL_SASLMECHS, SASL_MECHANISMS, "are available SASL mechanisms")
+            # Closed, and not counted (no credential was guessed): one
+            # socket can no longer loop on wrong mechanisms (h2, M4).
+            await self._sasl_fail("wrong_mechanism")
+            return
+        self._sasl_mech = SASL_MECHANISMS
+        self._sasl_buf = ""
+        await self.send_raw("AUTHENTICATE +")
+
+    async def _sasl_take_chunk(self, arg: str) -> bool:
+        """Buffer one payload chunk. True when the payload is complete.
+
+        False when more chunks follow or the attempt was refused as too long.
+        """
+        if len(arg) > self._SASL_CHUNK:
+            await self._sasl_fail("too_long", (ERR_SASLTOOLONG, "SASL message too long"))
+            return False
+        self._sasl_buf += arg
+        if len(self._sasl_buf) > self._SASL_MAX_PAYLOAD:
+            await self._sasl_fail("too_long", (ERR_SASLTOOLONG, "SASL message too long"))
+            return False
+        return len(arg) != self._SASL_CHUNK  # a full-size chunk means more follows
+
+    async def _sasl_plain_finish(self) -> None:
+        payload = self._sasl_buf
+        self._sasl_reset()
+        try:
+            decoded = base64.b64decode(payload, validate=True).decode("utf-8")
+            authzid, authcid, secret = decoded.split("\0")
+        except ValueError:  # includes binascii.Error and UnicodeDecodeError
+            # Never log the payload: it carries the secret.
+            await self._sasl_fail("malformed")
+            return
+        if (authzid and authzid != authcid) or not authcid:
+            await self._sasl_fail("malformed")
+            return
+        # Per (peer, account) budget (h2, M4): failures against one account
+        # never lock out another account from the same address.
+        limit_key = (self.host, fold_nick(authcid))
+        if self.server.auth_limiter.blocked(limit_key):
+            # Over the failure budget: refuse before the secret is checked.
+            await self._sasl_fail("rate_limited")
+            return
+        self.server.accounts.maybe_reload()  # one file check per SASL attempt
+        account, reason = self.server.accounts.check(authcid, secret)
+        if account is None:
+            await self._sasl_fail(reason or "bad_secret", limit_key=limit_key)
+            return
+        self.account = account
+        mask = f"{self.nick or '*'}!{self.user or '*'}@{self.host}"
+        await self.send_numeric(
+            RPL_LOGGEDIN, mask, account.nick, f"You are now logged in as {account.nick}"
+        )
+        await self.send_numeric(RPL_SASLSUCCESS, "SASL authentication successful")
+        await self._try_register()
 
     async def _send_welcome(self) -> None:
         await self.send_numeric(
@@ -556,6 +1009,124 @@ class Client:
             return
         await self._send_motd()
 
+    def account_role(self) -> str | None:
+        """Live role of this session's account; ``None`` if it has no account.
+
+        Authenticated sessions whose account has since vanished or been
+        deactivated report ``"none"`` (no privileges) rather than ``None``,
+        so they never fall back to ungated behaviour.
+        """
+        if self.account is None:
+            return None
+        return self.server.accounts.role_of(self.account.nick) or "none"
+
+    def account_access(self, channel_name: str) -> str | None | bool:
+        """Channel access for an authenticated session (culture#506 t9).
+
+        Returns ``True`` for sessions without an account (ungated, today's
+        behaviour), else ``"speak"`` / ``"read"`` / ``None`` from the live
+        account table.
+        """
+        if self.account is None:
+            return True
+        return self.server.accounts.channel_access(self.account.nick, channel_name)
+
+    def can_read(self, channel_name: str) -> bool:
+        """May this session read *channel_name* (culture#506 h1)?
+
+        Sessions without an account are ungated (``True``). An account needs
+        a ``read`` or ``speak`` grant, or the ``operator`` role. Live: read
+        from the current account table on every call. The single check every
+        read path uses (JOIN, HISTORY, BACKFILL, EVENTSUB, THREAD PROMOTE).
+        """
+        return bool(self.account_access(channel_name))
+
+    def can_speak(self, channel_name: str) -> bool:
+        """May this session post into *channel_name* (culture#506 h1)?
+
+        Sessions without an account are ungated (``True``). An account needs
+        a ``speak`` grant or the ``operator`` role. The single check every
+        write path uses (PRIVMSG, NOTICE, TOPIC set, THREAD, EVENTPUB).
+        """
+        return self.account is None or self.account_access(channel_name) == "speak"
+
+    def can_read_event(self, event: Event) -> bool:
+        """May this session receive *event* through EVENTSUB (culture#506 h1)?
+
+        True when :meth:`visible_event` would deliver it (possibly with a
+        filtered channel list).
+        """
+        return self.visible_event(event) is not None
+
+    def visible_event(self, event: Event) -> Event | None:
+        """The form of *event* this session may receive through EVENTSUB.
+
+        Sessions without an account (and ``operator`` accounts) get *event*
+        unchanged, as before. For other account sessions:
+
+        - a channel event needs :meth:`can_read` on its channel;
+        - a direct message (a ``message`` event with no channel) is visible
+          only to its sender and its target;
+        - any other channel-less event is scoped by the channel names it
+          carries (:meth:`_scope_channelless_event`).
+
+        Returns ``None`` when the event must not be delivered.
+        """
+        if self.account is None:
+            return event
+        if event.channel is not None:
+            return event if self.can_read(event.channel) else None
+        if str(event.type) == EventType.MESSAGE.value:
+            target = event.data.get("target") if isinstance(event.data, dict) else None
+            mine = self.nick is not None and self.nick in (event.nick, target)
+            return event if mine else None
+        if self.account_role() == "operator":
+            return event
+        return self._scope_channelless_event(event)
+
+    # Top-level payload keys of channel-less events that name one channel.
+    _EVENT_CHANNEL_KEYS = ("channel", "target")
+
+    def _scope_channelless_event(self, event: Event) -> Event | None:
+        """Scope a channel-less event to the channels this session can read.
+
+        Policy (agentirc#66 review): a payload that names a single channel
+        (``channel`` / ``target`` starting with ``#``) or a room
+        (``room_id``) the session cannot read drops the event. A
+        ``channels`` list is filtered to the readable channels and the event
+        is delivered with that filtered list — unless the list was non-empty
+        and nothing readable remains, in which case it is dropped (e.g. the
+        QUIT of someone who shared no readable channel with this session).
+        Events that name no channel (``agent.*``, ``console.*``,
+        ``server.*``, ``tags.update``, ``presence.update`` …) are delivered.
+        """
+        data = event.data if isinstance(event.data, dict) else {}
+        for key in self._EVENT_CHANNEL_KEYS:
+            name = data.get(key)
+            if isinstance(name, str) and name.startswith("#") and not self.can_read(name):
+                return None
+        if "room_id" in data and not self._can_read_room_id(data["room_id"]):
+            return None
+        channels = data.get("channels")
+        if not isinstance(channels, list):
+            return event
+        readable = [ch for ch in channels if isinstance(ch, str) and self.can_read(ch)]
+        if len(readable) == len(channels):
+            return event
+        if not readable:
+            return None
+        return dataclasses.replace(event, data={**data, "channels": readable})
+
+    def _can_read_room_id(self, room_id: object) -> bool:
+        """Can this session read the (current) channel whose room id is *room_id*?
+
+        An unknown room id is treated as unreadable: it cannot be checked.
+        """
+        for channel in self.server.channels.values():
+            if getattr(channel, "room_id", None) == room_id:
+                return self.can_read(channel.name)
+        return False
+
     async def _handle_join(self, msg: Message) -> None:
         if not self._registered:
             return
@@ -578,8 +1149,21 @@ class Client:
                     Message(
                         prefix=self.server.config.name,
                         command="NOTICE",
-                        params=[self.nick, f"{channel_name} is archived and cannot be joined"],
+                        params=[
+                            self.nick,
+                            f"{channel_name} is archived and cannot be joined",
+                        ],
                     )
+                )
+                return
+
+            if not self.can_read(channel_name):
+                # 474 ERR_BANNEDFROMCHAN: the authenticated account holds no
+                # grant (read or speak) on this channel.
+                await self.send_numeric(
+                    "474",
+                    channel_name,
+                    "Cannot join channel (no grant for this account)",
                 )
                 return
 
@@ -680,7 +1264,15 @@ class Client:
             else:
                 await self.send_numeric(replies.RPL_NOTOPIC, channel_name, "No topic is set")
         else:
-            # Set topic
+            # Set topic: posting into the channel, so it needs speak
+            # (culture#506 h1); ungated for sessions without an account.
+            if not self.can_speak(channel_name):
+                await self.send_numeric(
+                    replies.ERR_CHANOPRIVSNEEDED,
+                    channel_name,
+                    "Cannot set topic (account lacks a speak grant)",
+                )
+                return
             channel.topic = msg.params[1]
             topic_msg = Message(
                 prefix=self.prefix,
@@ -744,7 +1336,14 @@ class Client:
         applied_params.append(param_value)
 
     async def _apply_mode_membership(
-        self, channel, channel_name, ch, adding, param_value, applied_modes, applied_params
+        self,
+        channel,
+        channel_name,
+        ch,
+        adding,
+        param_value,
+        applied_modes,
+        applied_params,
     ):
         target_nick = param_value
         target_client = self.server.clients.get(target_nick)
@@ -1103,6 +1702,13 @@ class Client:
                         replies.ERR_CANNOTSENDTOCHAN, target, "Cannot send to channel"
                     )
                     return
+                if not self.can_speak(target):
+                    await self.send_numeric(
+                        replies.ERR_CANNOTSENDTOCHAN,
+                        target,
+                        "Cannot send to channel (account lacks a speak grant)",
+                    )
+                    return
                 for chunk in self._split_outbound_text(target, text):
                     # One fresh msgid per chunk, stamped identically on
                     # every recipient's delivery of *that* chunk (fan-out
@@ -1116,9 +1722,7 @@ class Client:
                         params=[target, chunk],
                         tags={MSGID_TAG: msgid, SERVER_TIME_TAG: server_time_now()},
                     )
-                    await self._send_to_channel(
-                        channel, target, relay, chunk, False, msgid=msgid
-                    )
+                    await self._send_to_channel(channel, target, relay, chunk, False, msgid=msgid)
                 await self._notify_mentions(target, text)
             else:
                 await self._relay_direct_privmsg(target, text)
@@ -1203,6 +1807,8 @@ class Client:
                 return
             if self not in channel.members:
                 return
+            if not self.can_speak(target):
+                return  # NOTICE never gets error replies (RFC 2812)
             await self._send_to_channel(channel, target, relay, text, True)
         else:
             await self._send_to_client(target, relay, text, True)
@@ -1317,14 +1923,18 @@ class Client:
                         await member.send(quit_msg)
                         notified.add(member)
 
-        await self.server.emit_event(
-            Event(
-                type=EventType.QUIT,
-                channel=None,
-                nick=self.nick,
-                data={"reason": reason, "channels": channel_names},
+        if self._registered:
+            # A pre-registration QUIT has no proven identity: emitting a QUIT
+            # event for the requested nick would reach peers as SQUITUSER and
+            # drop the real (possibly account) session there (culture#506 h1).
+            await self.server.emit_event(
+                Event(
+                    type=EventType.QUIT,
+                    channel=None,
+                    nick=self.nick,
+                    data={"reason": reason, "channels": channel_names},
+                )
             )
-        )
 
         raise ConnectionError("Client quit")
 
@@ -1440,8 +2050,16 @@ class Client:
             return
 
         channel = None if target == "*" else target
+        if channel is None and not self._may_publish_serverwide():
+            # Channel-less EVENTPUB fans out server-wide (agentirc#66 review).
+            await self.send_raw(f"{EVENTERR} {type_str} :permission-denied")
+            return
         if channel is not None and channel not in self.server.channels:
             await self.send_raw(f"{EVENTERR} {type_str} :no-such-channel")
+            return
+        if channel is not None and not self.can_speak(channel):
+            # Publishing into a channel is speaking there (culture#506 h1).
+            await self.send_raw(f"{EVENTERR} {type_str} :permission-denied")
             return
 
         # ``base64.b64decode`` can raise ``binascii.Error`` (a subclass of
@@ -1473,6 +2091,20 @@ class Client:
             timestamp=time.time(),
         )
         await self.server.emit_event(ev)
+
+    # Account roles allowed to EVENTPUB without a channel (server-wide).
+    _SERVERWIDE_PUBLISH_ROLES = frozenset({"operator", "resident"})
+
+    def _may_publish_serverwide(self) -> bool:
+        """May this session EVENTPUB to ``*`` (agentirc#66 review)?
+
+        Sessions without an account: yes, as before. Account sessions: only
+        an active ``operator`` or ``resident`` account; a ``guest``, or a
+        session whose account is suspended, revoked or gone, is refused.
+        """
+        if self.account is None:
+            return True
+        return self.account_role() in self._SERVERWIDE_PUBLISH_ROLES
 
     async def _handle_backfill(self, msg: Message) -> None:
         """``BACKFILL <channel-or-*> <cursor-or-*> [limit]`` (task t8).
@@ -1582,8 +2214,16 @@ class Client:
         returns ``None`` so the caller knows to stop.
         """
         if channel_param == "*":
-            return sorted(ch.name for ch in self.channels)
-        if not channel_param.startswith("#") or channel_param not in self.server.channels:
+            # Joined channels the session can still read: a grant removed
+            # while joined stops the replay (culture#506 h1).
+            return sorted(ch.name for ch in self.channels if self.can_read(ch.name))
+        if (
+            not channel_param.startswith("#")
+            or channel_param not in self.server.channels
+            or not self.can_read(channel_param)
+        ):
+            # No read grant is reported exactly like a missing channel, so
+            # an account cannot probe which channels exist.
             await self.send_raw(f"{EVENTERR} {channel_param} :no-such-channel")
             return None
         return [channel_param]
@@ -1617,9 +2257,7 @@ class Client:
         merged.sort(key=lambda pair: (pair[1].timestamp, pair[1].id))
         return merged[:limit]
 
-    async def _emit_backfill_entries(
-        self, merged: list[tuple[str, "HistoryEntry"]]
-    ) -> None:
+    async def _emit_backfill_entries(self, merged: list[tuple[str, "HistoryEntry"]]) -> None:
         """Replay ``merged`` history entries as ``EVENT`` lines for ``BACKFILL``.
 
         Extracted from ``_handle_backfill`` (S3776 cognitive-complexity fix).

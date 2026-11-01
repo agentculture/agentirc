@@ -172,7 +172,7 @@ def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (
     then calls ``_resolve_server_name`` to pick up the default-server
     file or the ``agentirc`` fallback.
     """
-    from agentirc.config import ServerConfig
+    from agentirc.config import ServerConfig, build_accounts_config
 
     raw = _load_raw_yaml(getattr(args, "config", None) or DEFAULT_CONFIG)
     yaml_server = raw.get("server") or {}
@@ -205,6 +205,7 @@ def _resolve_config(args: argparse.Namespace) -> "ServerConfig":  # noqa: F821 (
         system_bots=raw.get("system_bots") or {},
         telemetry=_build_telemetry(raw.get("telemetry") or {}),
         event_subscription_queue_max=event_subscription_queue_max,
+        accounts=build_accounts_config(raw.get("accounts") or {}),
     )
 
     args.name = name  # may be None — handler resolves via default-server file
@@ -529,6 +530,14 @@ async def _run_server(config: "ServerConfig") -> None:  # noqa: F821 (forward re
             # also catches the Windows event-loop case where the
             # add_signal_handler API isn't implemented.
             signal.signal(sig, lambda *_: stop_event.set())
+
+    # SIGHUP re-reads <data_dir>/accounts.json (culture#506 t8). POSIX only;
+    # the lazy mtime check covers platforms without SIGHUP.
+    if hasattr(signal, "SIGHUP"):
+        try:
+            loop.add_signal_handler(signal.SIGHUP, ircd.reload_accounts)
+        except (RuntimeError, ValueError):
+            logger.warning("SIGHUP handler unavailable; accounts reload on file change only")
 
     await stop_event.wait()
     logger.info("Server '%s' shutting down", config.name)

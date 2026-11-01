@@ -41,6 +41,27 @@ class Channel:
         """True if this channel was created via ROOMCREATE."""
         return self.room_id is not None
 
+    @staticmethod
+    def _op_eligible(client) -> bool:
+        """May *client* be auto-opped (first joiner / auto-promotion)?
+
+        Remote, virtual and bot-CAP clients never are. An authenticated
+        account session is only when its live role is ``operator``
+        (culture#506 h1): chanop would let a resident or guest change the
+        topic and modes of a channel it was only granted to read or speak
+        in. Clients without an account are unchanged.
+        """
+        from agentirc.remote_client import RemoteClient
+        from agentirc.virtual_client import VirtualClient
+
+        if isinstance(client, (RemoteClient, VirtualClient)):
+            return False
+        if BOT_CAP in getattr(client, "caps", frozenset()):
+            return False
+        if getattr(client, "account", None) is not None:
+            return client.account_role() == "operator"
+        return True
+
     def _local_members(self) -> set[Client]:
         """Return only local (non-remote, non-virtual, non-bot-CAP) members.
 
@@ -63,16 +84,13 @@ class Channel:
         # (real or VirtualClient) are excluded — they never auto-op,
         # so a bot joining an empty channel stays unprivileged and
         # the next human becomes op.
-        if not self._local_members():
-            from agentirc.remote_client import RemoteClient
-            from agentirc.virtual_client import VirtualClient
-
-            is_op_eligible = (
-                not isinstance(client, (RemoteClient, VirtualClient))
-                and BOT_CAP not in getattr(client, "caps", frozenset())
-            )
-            if is_op_eligible:
-                self.operators.add(client)
+        # "First" counts only op-eligible members, so a channel opened by a
+        # resident account still gives op to the next eligible joiner, the
+        # same way a bot-first channel does.
+        if self._op_eligible(client) and not any(
+            self._op_eligible(m) for m in self._local_members()
+        ):
+            self.operators.add(client)
         self.members.add(client)
 
     def remove(self, client: Client) -> None:
@@ -82,7 +100,7 @@ class Channel:
         self.voiced.discard(client)
         if was_op and not self.operators:
             # Auto-promote only among local members
-            local = self._local_members()
+            local = {m for m in self._local_members() if self._op_eligible(m)}
             if local:
                 self.operators.add(min(local, key=lambda m: m.nick))
 

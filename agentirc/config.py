@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -65,9 +66,7 @@ class PresenceConfig:
             # with a clear message rather than letting the `<=` comparison
             # below raise a bare TypeError on str-vs-int.
             if not isinstance(_val, int) or isinstance(_val, bool):
-                raise ValueError(
-                    f"presence.{_key} must be a positive integer, got {_val!r}"
-                )
+                raise ValueError(f"presence.{_key} must be a positive integer, got {_val!r}")
         if self.heartbeat_interval_seconds <= 0:
             raise ValueError(
                 "presence.heartbeat_interval_seconds must be a positive "
@@ -85,6 +84,95 @@ class PresenceConfig:
                 "than presence.heartbeat_interval_seconds "
                 f"({self.heartbeat_interval_seconds!r})"
             )
+
+
+@dataclass
+class AccountsConfig:
+    """Agent-account / SASL settings. Mirrors server.yaml ``accounts:`` block.
+
+    The accounts themselves live in ``<data_dir>/accounts.json`` (written by
+    culture; see ``agentirc.accounts`` and docs/accounts.md). This block only
+    carries server-side policy:
+
+    - ``trusted_cidrs``: peers allowed to attempt SASL in addition to loopback.
+      SASL from any other peer fails with 904 at ``AUTHENTICATE PLAIN``,
+      before a secret is sent. Each entry is validated with
+      ``ipaddress.ip_network(strict=False)`` — an invalid entry raises
+      ``ValueError``; IPv4-mapped IPv6 entries (``::ffff:10.0.0.0/104``) are
+      normalised to IPv4 (``10.0.0.0/8``); a /0 entry logs a warning.
+    - ``trust_loopback``: loopback (127.0.0.0/8, ::1) is trusted without a
+      ``trusted_cidrs`` entry. Default ``True``. Set ``False`` when a local
+      forwarder (cloudflared, a websocket bridge, ``ssh -L``, ``tailscale
+      serve``) makes remote users connect from loopback.
+    - ``guest_channel_prefixes``: the guest sandbox (see docs/accounts.md).
+    - ``auth_failure_limit`` / ``auth_failure_window``: failed authentications
+      allowed per peer address per window (seconds) before further
+      AUTHENTICATE attempts from that address are refused without checking the
+      secret. ``auth_failure_limit: 0`` disables the limiter. Loopback is not
+      exempt. Defaults: 10 per 60 s.
+    """
+
+    trusted_cidrs: list[str] = field(default_factory=list)
+    # culture#506 h2 (M3): loopback is trusted unless this is False.
+    trust_loopback: bool = True
+    # Guest sandbox (t9): a ``guest`` account may only hold grants on channels
+    # starting with one of these prefixes; empty = guests hold no grants.
+    guest_channel_prefixes: list[str] = field(default_factory=list)
+    # Failed-auth rate limit (t10), per peer address, sliding window.
+    auth_failure_limit: int = 10
+    auth_failure_window: float = 60
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.auth_failure_limit, bool)
+            or not isinstance(self.auth_failure_limit, int)
+            or self.auth_failure_limit < 0
+        ):
+            raise ValueError(
+                f"accounts.auth_failure_limit must be an integer >= 0, got "
+                f"{self.auth_failure_limit!r}"
+            )
+        if (
+            isinstance(self.auth_failure_window, bool)
+            or not isinstance(self.auth_failure_window, (int, float))
+            or self.auth_failure_window <= 0
+        ):
+            raise ValueError(
+                f"accounts.auth_failure_window must be a number > 0, got "
+                f"{self.auth_failure_window!r}"
+            )
+
+        if not isinstance(self.guest_channel_prefixes, list) or not all(
+            isinstance(p, str) and p.startswith("#") for p in self.guest_channel_prefixes
+        ):
+            raise ValueError(
+                "accounts.guest_channel_prefixes must be a list of strings "
+                f"starting with '#', got {self.guest_channel_prefixes!r}"
+            )
+
+        if not isinstance(self.trust_loopback, bool):
+            raise ValueError(
+                f"accounts.trust_loopback must be true or false, got {self.trust_loopback!r}"
+            )
+
+        from agentirc.accounts import normalize_network
+
+        if not isinstance(self.trusted_cidrs, list):
+            raise ValueError(f"accounts.trusted_cidrs must be a list, got {self.trusted_cidrs!r}")
+        normalized = []
+        for cidr in self.trusted_cidrs:
+            try:
+                net = normalize_network(str(cidr))
+            except ValueError as exc:
+                raise ValueError(f"accounts.trusted_cidrs: invalid CIDR {cidr!r}: {exc}") from exc
+            if net.prefixlen == 0:
+                logging.getLogger(__name__).warning(
+                    "accounts.trusted_cidrs: %s trusts every %s address to attempt SASL",
+                    cidr,
+                    f"IPv{net.version}",
+                )
+            normalized.append(str(net))
+        self.trusted_cidrs = normalized
 
 
 @dataclass
@@ -113,6 +201,9 @@ class ServerConfig:
     ping_interval: float = 60.0
     pong_timeout: float = 120.0
     presence: PresenceConfig = field(default_factory=PresenceConfig)
+    # Agent accounts + SASL (culture#506 t8): trusted-peer policy. The
+    # account table itself is <data_dir>/accounts.json.
+    accounts: AccountsConfig = field(default_factory=AccountsConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "ServerConfig":
@@ -124,7 +215,9 @@ class ServerConfig:
         ``system_bots``, ``event_subscription_queue_max`` (added in
         9.5.0a1; consumed by the subscription registry that lands in
         9.5.0a3), and ``ping_interval``/``pong_timeout`` (t5: server
-        liveness sweep — see ``ServerConfig.ping_interval``/``pong_timeout``).
+        liveness sweep — see ``ServerConfig.ping_interval``/``pong_timeout``),
+        and ``accounts`` (t8: ``trusted_cidrs`` for SASL — see
+        ``AccountsConfig``).
         Unknown top-level keys (``supervisor``, ``agents``, ``buffer_size``,
         ``poll_interval``, ``sleep_start``, ``sleep_end``) are silently
         ignored — those belong to culture's broader process supervisor,
@@ -160,8 +253,7 @@ def _load_root_mapping(p: Path) -> dict[str, Any]:
         return {}
     if not isinstance(loaded, dict):
         raise yaml.YAMLError(
-            f"agentirc config {str(p)!r}: root must be a mapping, "
-            f"got {type(loaded).__name__}"
+            f"agentirc config {str(p)!r}: root must be a mapping, got {type(loaded).__name__}"
         )
     return loaded
 
@@ -182,6 +274,13 @@ def _yaml_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in raw:
             kwargs[key] = raw[key]
+    kwargs.update(_section_kwargs(raw))
+    return kwargs
+
+
+def _section_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
+    """Build the nested-section kwargs (links, telemetry, presence, accounts, bots)."""
+    kwargs: dict[str, Any] = {}
     links_section = raw.get("links") or []
     if links_section:
         kwargs["links"] = [LinkConfig(**entry) for entry in links_section]
@@ -191,6 +290,9 @@ def _yaml_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
     presence_section = raw.get("presence") or {}
     if presence_section:
         kwargs["presence"] = _build_presence(presence_section)
+    accounts_section = raw.get("accounts") or {}
+    if accounts_section:
+        kwargs["accounts"] = build_accounts_config(accounts_section)
     system_bots = raw.get("system_bots") or {}
     if system_bots:
         kwargs["system_bots"] = system_bots
@@ -214,3 +316,16 @@ def _build_presence(yaml_presence: dict) -> PresenceConfig:
     known = {f.name for f in PresenceConfig.__dataclass_fields__.values()}
     pcfg = {k: v for k, v in yaml_presence.items() if k in known}
     return PresenceConfig(**pcfg)
+
+
+def build_accounts_config(yaml_accounts: dict) -> AccountsConfig:
+    """Build an AccountsConfig, dropping keys not on the dataclass.
+
+    Same culture-coexistence tolerance as ``_build_telemetry``; an invalid
+    CIDR still raises ``ValueError`` via ``AccountsConfig.__post_init__``.
+    """
+    if not isinstance(yaml_accounts, dict):
+        raise ValueError(f"accounts: must be a mapping, got {yaml_accounts!r}")
+    known = {f.name for f in AccountsConfig.__dataclass_fields__.values()}
+    acfg = {k: v for k, v in yaml_accounts.items() if k in known}
+    return AccountsConfig(**acfg)

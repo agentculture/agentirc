@@ -80,6 +80,111 @@ class IRCd:
         self.subscription_registry = SubscriptionRegistry(
             queue_max=self.config.event_subscription_queue_max,
         )
+        # Agent accounts (culture#506 t8): <data_dir>/accounts.json, written
+        # by culture, read-only here. Server-local; never relayed over S2S.
+        from agentirc.accounts import AccountStore
+
+        self.accounts = AccountStore(
+            self.config.data_dir, self.config.accounts.guest_channel_prefixes
+        )
+        from agentirc.accounts import AuthFailureLimiter
+
+        self.auth_limiter = AuthFailureLimiter(
+            self.config.accounts.auth_failure_limit, self.config.accounts.auth_failure_window
+        )
+        # Live revoke (t10): any reload of the table (lazy, SIGHUP or the
+        # periodic check below) closes sessions whose account went away.
+        self.accounts.on_reload = self._schedule_account_enforcement
+        self._accounts_task: asyncio.Task | None = None
+        self._enforce_tasks: set[asyncio.Task] = set()
+        # Pending (not yet run) account-enforcement walks, cancelled by stop().
+        self._enforce_handles: set[asyncio.Handle] = set()
+        # Every accepted local TCP client connection, registered or not.
+        # Pending account-nick connections are not in ``clients`` (they must
+        # not squat the nick), so shutdown closes connections from here.
+        self._local_connections: set[Client] = set()
+
+    def reload_accounts(self) -> None:
+        """Force a re-read of the accounts file (the SIGHUP handler)."""
+        logger.info("Reloading accounts")
+        self.accounts.reload()
+
+    # How often the table's file signature is polled so a revoke written
+    # while nobody is connecting is still noticed (acceptance: <= 5 s).
+    _ACCOUNTS_CHECK_INTERVAL = 1.0
+
+    def _schedule_account_enforcement(self) -> None:
+        # Deferred to the next loop iteration (never run inline from the
+        # reload that fired it), exactly when a freshly created task would
+        # first run; the walk never awaits, so a plain callback suffices.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop yet (construction) — nothing live to close
+        handle: asyncio.Handle | None = None
+
+        def _run() -> None:
+            self._enforce_handles.discard(handle)
+            self._enforce_accounts()
+
+        handle = loop.call_soon(_run)
+        self._enforce_handles.add(handle)
+
+    def _enforce_accounts(self) -> None:
+        """Close local sessions the current account table no longer allows.
+
+        - an authenticated session whose account is missing, inactive or
+          re-keyed (t10);
+        - a registered session *without* an account whose nick is now an
+          account nick or a case variant of one — a nick squatted before its
+          account existed (culture#506 h2, M6).
+
+        Each eviction runs as its own task, so one slow session never delays
+        the rest of the walk (h2, M2).
+        """
+        for client in [*self._local_connections]:
+            if client._closing:
+                continue
+            account = client.account
+            if account is None:
+                if client._registered and self.accounts.is_reserved(client.nick):
+                    logger.info("Closing session of %s: nick is now an account nick", client.nick)
+                    self._spawn_eviction(client, "Nick reserved for an agent account")
+                continue
+            current = self.accounts.current(account.nick)
+            if (
+                current is not None
+                and current.active
+                and current.secret_sha256 == account.secret_sha256
+            ):
+                continue
+            logger.info("Closing session of %s: account revoked or changed", account.nick)
+            self._spawn_eviction(client, "account revoked")
+
+    def _spawn_eviction(self, client: Client, reason: str) -> None:
+        async def _run() -> None:
+            try:
+                await client.evict(reason)
+            except Exception:  # noqa: BLE001 - one failure never stops the others
+                logger.exception("failed to close session %s", client.nick)
+
+        task = asyncio.get_running_loop().create_task(_run())
+        self._enforce_tasks.add(task)
+        task.add_done_callback(self._enforce_tasks.discard)
+
+    async def _accounts_watch_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._ACCOUNTS_CHECK_INTERVAL)
+            failure: str | None = None
+            try:
+                self.accounts.maybe_reload()  # fires on_reload when the file changed
+            except Exception as exc:  # noqa: BLE001 - the watcher must outlive any bad tick
+                # Never let one failure silently end live revoke. Keep the
+                # type only, logged outside this block: the traceback could
+                # quote file contents.
+                failure = type(exc).__name__
+            if failure is not None:
+                logger.error("accounts: watcher check failed (%s); retrying", failure)
 
     async def start(self) -> None:
         logger.info("Registering default skills...")
@@ -133,6 +238,8 @@ class IRCd:
         if self.config.ping_interval > 0:
             self._liveness_task = asyncio.create_task(self._liveness_sweep_loop())
 
+        self._accounts_task = asyncio.create_task(self._accounts_watch_loop())
+
         logger.info("Server ready")
 
     def _bootstrap_system_identity(self) -> None:
@@ -143,7 +250,11 @@ class IRCd:
         channel's invariants (persistent=True, archived=False) in case it
         was loaded from disk.
         """
-        from agentirc._internal.constants import SYSTEM_CHANNEL, SYSTEM_USER_PREFIX, SYSTEM_USER_REALNAME
+        from agentirc._internal.constants import (
+            SYSTEM_CHANNEL,
+            SYSTEM_USER_PREFIX,
+            SYSTEM_USER_REALNAME,
+        )
 
         system_nick = f"{SYSTEM_USER_PREFIX}{self.config.name}"
         system_client = VirtualClient(system_nick, "system", self)
@@ -449,12 +560,13 @@ class IRCd:
         """
         from agentirc.client import Client
 
-        for client in [*self.clients.values()]:
-            if isinstance(client, Client):
-                try:
-                    client.writer.close()
-                except OSError:
-                    pass
+        targets = {c for c in self.clients.values() if isinstance(c, Client)}
+        targets.update(self._local_connections)
+        for client in targets:
+            try:
+                client.writer.close()
+            except OSError:
+                pass
 
     async def stop(self) -> None:
         """Shut down the server. Concurrent callers await the same teardown.
@@ -490,6 +602,14 @@ class IRCd:
                 except asyncio.CancelledError:
                     pass
                 self._liveness_task = None
+            if self._accounts_task is not None:
+                await self._stop_accounts_watcher(self._accounts_task)
+                self._accounts_task = None
+            for handle in [*self._enforce_handles]:
+                handle.cancel()
+            self._enforce_handles.clear()
+            for task in [*self._enforce_tasks]:
+                task.cancel()
             # Stop bots and the webhook HTTP listener. ``BotManager.stop()``
             # tears down the listener (bound in ``start()`` since 9.7.0) before
             # stopping the bots, mirroring the lifecycle ``IRCd.start()`` drives.
@@ -517,6 +637,25 @@ class IRCd:
             await self.audit.shutdown()
         finally:
             self._stopped.set()
+
+    @staticmethod
+    async def _stop_accounts_watcher(task: asyncio.Task) -> None:
+        """Cancel the accounts watcher and wait for it; a failed watcher never
+        skips the rest of teardown.
+
+        ``gather(..., return_exceptions=True)`` absorbs the watcher's own
+        cancellation or failure, while a cancellation of the task running
+        ``stop()`` still propagates.
+        """
+        task.cancel()
+        (outcome,) = await asyncio.gather(task, return_exceptions=True)
+        if isinstance(outcome, asyncio.CancelledError):
+            return
+        if isinstance(outcome, Exception):
+            # Type only: the traceback could quote accounts file contents.
+            logger.error("accounts: watcher had failed (%s)", type(outcome).__name__)
+        elif isinstance(outcome, BaseException):
+            raise outcome  # e.g. KeyboardInterrupt / SystemExit, as ``await task`` did
 
     async def connect_to_peer(
         self, host: str, port: int, password: str, trust: str = "full"
@@ -636,9 +775,7 @@ class IRCd:
                 try:
                     await self._liveness_check_client(client, now, interval, timeout)
                 except Exception:
-                    logger.exception(
-                        "Liveness sweep failed for %s", getattr(client, "nick", "?")
-                    )
+                    logger.exception("Liveness sweep failed for %s", getattr(client, "nick", "?"))
 
     async def _liveness_check_client(
         self, client: "Client", now: float, interval: float, timeout: float
@@ -667,9 +804,7 @@ class IRCd:
         try:
             await client.send_raw(f"PING :{client.server.config.name}")
         except Exception:
-            logger.debug(
-                "Failed to send liveness PING to %s", getattr(client, "nick", "?")
-            )
+            logger.debug("Failed to send liveness PING to %s", getattr(client, "nick", "?"))
 
     @staticmethod
     def _reap_client(client: "Client") -> None:
@@ -684,8 +819,7 @@ class IRCd:
         broadcast, matching current natural-disconnect behavior.
         """
         logger.info(
-            "Reaping unresponsive client %s (no activity within "
-            "ping_interval + pong_timeout)",
+            "Reaping unresponsive client %s (no activity within ping_interval + pong_timeout)",
             getattr(client, "nick", None) or client.host,
         )
         try:
@@ -754,11 +888,13 @@ class IRCd:
 
         # C2S connection
         client = Client(reader, writer, self)
+        self._local_connections.add(client)
         try:
             await client.handle(initial_msg=initial_text)
         except (ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
+            self._local_connections.discard(client)
             await self._remove_client(client)
             writer.close()
             try:
@@ -794,7 +930,9 @@ class IRCd:
                 logger.exception("Failed to emit console.close for %s", nick)
 
     async def _remove_client(self, client: Client) -> None:
-        if client.nick and client.nick in self.clients:
+        # Identity check: an account session that reclaimed this nick
+        # (culture#506 t8) already owns the entry; don't delete it.
+        if client.nick and self.clients.get(client.nick) is client:
             del self.clients[client.nick]
         for channel in [*client.channels]:
             channel.remove(client)
