@@ -119,7 +119,8 @@ async def test_evicted_session_drops_buffered_lines(srv):
     await watcher.send("JOIN #pub")
     await watcher.recv_all(0.3)
     await holder.evict("Nick reclaimed by an authenticated session")
-    assert holder._registered is False and holder.account is None
+    assert holder._registered is False
+    assert holder.account is None
     # Lines that were already buffered when the eviction landed:
     await holder._dispatch(Message.parse("JOIN #pub"))
     await holder._dispatch(Message.parse("PRIVMSG #pub :as-evicted"))
@@ -230,7 +231,8 @@ async def test_revoke_not_blocked_by_a_non_reading_member(tmp_path):
         write_accounts(srv.config.data_dir, _accts()[1:])  # both res and two revoked
         _lines, closed_res = await _read_to_close(res, 5.0)
         _lines, closed_two = await _read_to_close(two, 5.0)
-        assert closed_res and closed_two
+        assert closed_res
+        assert closed_two
         assert time.monotonic() - t0 < 5.0
         await _close(res, two, stuck)
     finally:
@@ -282,7 +284,8 @@ async def test_untrusted_peer_refused_before_sending_a_secret(srv, untrusted_hos
         await c.send("AUTHENTICATE PLAIN")
         lines, closed = await _read_to_close(c, 2.0)
     assert not any(ln.startswith("AUTHENTICATE") for ln in lines), lines
-    assert _has_numeric(lines, "904") and closed
+    assert _has_numeric(lines, "904")
+    assert closed
     assert any("reason=untrusted_peer" in m for m in _auth_records(caplog))
     assert not srv.auth_limiter._events  # never counted
     await c.close()
@@ -299,7 +302,8 @@ async def test_trust_loopback_false_refuses_loopback(tmp_path):
         await c.recv_until(" ACK ")
         await c.send("AUTHENTICATE PLAIN")
         lines, closed = await _read_to_close(c, 2.0)
-        assert _has_numeric(lines, "904") and closed
+        assert _has_numeric(lines, "904")
+        assert closed
         await c.close()
     finally:
         await srv.stop()
@@ -374,7 +378,8 @@ async def test_wrong_mechanism_closes_and_is_not_counted(srv):
     srv.auth_limiter = AuthFailureLimiter(2, 60)
     for _ in range(3):
         lines, closed = await _sasl_attempt(srv, "testserv-res", mech="EXTERNAL")
-        assert _has_numeric(lines, "908") and _has_numeric(lines, "904")
+        assert _has_numeric(lines, "908")
+        assert _has_numeric(lines, "904")
         assert closed
     c = await _login(srv, "testserv-res", SECRET_RES)
     await c.close()
@@ -384,7 +389,8 @@ async def test_malformed_payloads_are_not_counted(srv):
     srv.auth_limiter = AuthFailureLimiter(2, 60)
     for _ in range(3):
         lines, closed = await _sasl_attempt(srv, "testserv-res", payload="!!!notbase64!!!")
-        assert closed and _has_numeric(lines, "904")
+        assert closed
+        assert _has_numeric(lines, "904")
     c = await _login(srv, "testserv-res", SECRET_RES)
     await c.close()
 
@@ -398,7 +404,8 @@ async def test_failures_on_one_account_do_not_lock_out_another(srv):
     await c.close()
     # The targeted account itself is still throttled, even with the right secret.
     lines, closed = await _sasl_attempt(srv, "testserv-guest", SECRET_GUEST)
-    assert closed and not _has_numeric(lines, "903")
+    assert closed
+    assert not _has_numeric(lines, "903")
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +428,9 @@ async def test_malformed_file_at_startup_reserves_named_nicks(tmp_path, caplog):
         await c.send("NICK testserv-res")
         await c.send("USER u 0 * :u")
         lines, closed = await _read_to_close(c, 1.5)
-        assert not _welcomed(lines) and _has_numeric(lines, "904") and closed
+        assert not _welcomed(lines)
+        assert _has_numeric(lines, "904")
+        assert closed
         # A nick the bad file does not name still registers.
         p = await _plain(srv, "testserv-zzz")
         # A registered client cannot NICK to it either.
@@ -442,7 +451,8 @@ async def test_unrecoverable_file_at_startup_refuses_all_local_registrations(tmp
         await c.send("NICK testserv-zzz")
         await c.send("USER u 0 * :u")
         lines, closed = await _read_to_close(c, 1.5)
-        assert not _welcomed(lines) and closed
+        assert not _welcomed(lines)
+        assert closed
         write_accounts(srv.config.data_dir, _accts())
         await asyncio.sleep(0.05)
         p = await _plain(srv, "testserv-zzz")
@@ -547,7 +557,8 @@ async def test_case_variant_of_account_nick_refused(srv, nick):
     await c.send(f"NICK {nick}")
     await c.send("USER u 0 * :u")
     lines = await c.recv_all(0.6)
-    assert _has_numeric(lines, "432") and not _welcomed(lines), lines
+    assert _has_numeric(lines, "432"), lines
+    assert not _welcomed(lines), lines
     p = await _plain(srv, "testserv-plain")
     await p.send(f"NICK {nick}")
     assert " 432 " in await p.recv_until(" 432 ")
@@ -559,7 +570,8 @@ async def test_non_ascii_nick_refused(srv):
     await c.send("NICK testserv-rеs")  # Cyrillic e
     await c.send("USER u 0 * :u")
     lines = await c.recv_all(0.6)
-    assert _has_numeric(lines, "432") and not _welcomed(lines), lines
+    assert _has_numeric(lines, "432"), lines
+    assert not _welcomed(lines), lines
     await c.close()
 
 
@@ -569,18 +581,18 @@ async def test_ascii_nicks_unchanged(srv):
 
 
 def test_account_nicks_must_be_ascii_and_case_unique():
+    non_ascii = {"version": 1, "accounts": [_account("testserv-rеs", SECRET_RES)]}
     with pytest.raises(AccountsFileError):
-        parse_accounts({"version": 1, "accounts": [_account("testserv-rеs", SECRET_RES)]})
+        parse_accounts(non_ascii)
+    case_variants = {
+        "version": 1,
+        "accounts": [
+            _account("testserv-gwen", SECRET_RES),
+            _account("testserv-Gwen", SECRET_ALICE),
+        ],
+    }
     with pytest.raises(AccountsFileError):
-        parse_accounts(
-            {
-                "version": 1,
-                "accounts": [
-                    _account("testserv-gwen", SECRET_RES),
-                    _account("testserv-Gwen", SECRET_ALICE),
-                ],
-            }
-        )
+        parse_accounts(case_variants)
 
 
 async def test_grants_match_channel_names_exactly(srv):
@@ -595,16 +607,14 @@ async def test_grants_match_channel_names_exactly(srv):
 
 
 def test_guest_sandbox_prefix_is_exact():
+    doc = {
+        "version": 1,
+        "accounts": [
+            _account("testserv-g", SECRET_GUEST, role="guest", grants={"#SBX-1": "speak"})
+        ],
+    }
     with pytest.raises(AccountsFileError):
-        parse_accounts(
-            {
-                "version": 1,
-                "accounts": [
-                    _account("testserv-g", SECRET_GUEST, role="guest", grants={"#SBX-1": "speak"})
-                ],
-            },
-            ["#sbx-"],
-        )
+        parse_accounts(doc, ["#sbx-"])
 
 
 def test_store_channel_access_exact(tmp_path):

@@ -815,16 +815,7 @@ class ThreadsSkill(Skill):
         """Gather local participants from the thread, auto-join them, and send JOIN messages."""
         from agentirc.remote_client import RemoteClient
 
-        participant_nicks = thread.participants
-        participants = []
-        for nick in participant_nicks:
-            c = self.server.clients.get(nick)
-            if c and not isinstance(c, RemoteClient):
-                # Never force-join an account session into a channel it has
-                # no grant on (culture#506 h1).
-                if not self._can(c, "can_read", breakout_name):
-                    continue
-                participants.append(c)
+        participants = self._local_breakout_participants(thread, breakout_name)
 
         # Auto-join participants to breakout
         for member in participants:
@@ -838,6 +829,22 @@ class ThreadsSkill(Skill):
             for other in [*breakout.members]:
                 if not isinstance(other, RemoteClient):
                     await other.send(join_msg)
+
+    def _local_breakout_participants(self, thread: Thread, breakout_name: str) -> list:
+        """Local thread participants allowed to read *breakout_name*, in thread order."""
+        from agentirc.remote_client import RemoteClient
+
+        participant_nicks = thread.participants
+        participants = []
+        for nick in participant_nicks:
+            c = self.server.clients.get(nick)
+            if c and not isinstance(c, RemoteClient):
+                # Never force-join an account session into a channel it has
+                # no grant on (culture#506 h1).
+                if not self._can(c, "can_read", breakout_name):
+                    continue
+                participants.append(c)
+        return participants
 
     async def _replay_thread_history(self, thread: Thread, breakout_name: str) -> None:
         """Replay all thread messages as NOTICE to breakout channel members."""

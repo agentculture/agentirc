@@ -253,7 +253,7 @@ def _load_root_mapping(p: Path) -> dict[str, Any]:
         return {}
     if not isinstance(loaded, dict):
         raise yaml.YAMLError(
-            f"agentirc config {str(p)!r}: root must be a mapping, " f"got {type(loaded).__name__}"
+            f"agentirc config {str(p)!r}: root must be a mapping, got {type(loaded).__name__}"
         )
     return loaded
 
@@ -274,6 +274,13 @@ def _yaml_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
     ):
         if key in raw:
             kwargs[key] = raw[key]
+    kwargs.update(_section_kwargs(raw))
+    return kwargs
+
+
+def _section_kwargs(raw: dict[str, Any]) -> dict[str, Any]:
+    """Build the nested-section kwargs (links, telemetry, presence, accounts, bots)."""
+    kwargs: dict[str, Any] = {}
     links_section = raw.get("links") or []
     if links_section:
         kwargs["links"] = [LinkConfig(**entry) for entry in links_section]

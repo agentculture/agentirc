@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import hmac
 import json
 import logging
@@ -95,6 +94,15 @@ if TYPE_CHECKING:
 
 # Local nicks are printable ASCII without spaces (culture#506 h2, M7).
 _NICK_ASCII_RE = re.compile(r"^[\x21-\x7e]+$")
+
+
+def _registration_failure_code(account: Account) -> str:
+    """Reason code for a registration refused on an inactive or re-keyed account."""
+    if account.state == "revoked":
+        return "revoked"
+    if not account.active:
+        return "suspended"
+    return "bad_secret"
 
 
 class Client:
@@ -427,21 +435,23 @@ class Client:
             elif handler:
                 await maybe_await(handler(msg))
             else:
-                skill = self.server.get_skill_for_command(msg.command)
-                if skill and self._registered:
-                    try:
-                        await skill.on_command(self, msg)
-                    except Exception:
-                        logging.getLogger(__name__).exception(
-                            "Skill %s failed on command %s", skill.name, msg.command
-                        )
-                else:
-                    await self.send_numeric(
-                        replies.ERR_UNKNOWNCOMMAND, msg.command, "Unknown command"
-                    )
+                await self._dispatch_to_skill(msg)
         self.server.metrics.client_command_duration.record(
             (time.perf_counter() - cmd_started) * 1000.0, {"verb": verb}
         )
+
+    async def _dispatch_to_skill(self, msg: Message) -> None:
+        """Route a verb with no ``_handle_*`` method to its skill, else 421."""
+        skill = self.server.get_skill_for_command(msg.command)
+        if skill and self._registered:
+            try:
+                await skill.on_command(self, msg)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Skill %s failed on command %s", skill.name, msg.command
+                )
+        else:
+            await self.send_numeric(replies.ERR_UNKNOWNCOMMAND, msg.command, "Unknown command")
 
     # Verbs dispatched before registration completes; everything else gets
     # 451 ERR_NOTREGISTERED (see ``_dispatch``). The four bot-extension verbs
@@ -498,30 +508,34 @@ class Client:
         if sub == "LS" and not self._registered:
             self._cap_negotiating = True
         if sub == "LS":
-            # CAP LS 302 clients get cap values (sasl=PLAIN); older ones the bare name.
-            v302 = len(msg.params) >= 2 and msg.params[1].isdigit() and int(msg.params[1]) >= 302
-            cap_list = " ".join(
-                f"{cap}={SASL_MECHANISMS}" if cap == SASL_CAP and v302 else cap
-                for cap in sorted(self._SUPPORTED_CAPS)
-            )
-            await self.send_raw(f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}")
+            await self._cap_ls(msg)
         elif sub == "REQ":
-            requested = msg.params[1].split() if len(msg.params) >= 2 else []
-            if all(cap in self._SUPPORTED_CAPS for cap in requested):
-                self.caps.update(requested)
-                await self.send_raw(
-                    f":{self.server.config.name} CAP {self.nick or '*'}"
-                    f" ACK :{' '.join(requested)}"
-                )
-            else:
-                await self.send_raw(
-                    f":{self.server.config.name} CAP {self.nick or '*'}"
-                    f" NAK :{' '.join(requested)}"
-                )
+            await self._cap_req(msg)
         elif sub == "END":
             # Negotiation over: complete any registration held since CAP LS/REQ.
             self._cap_negotiating = False
             await self._try_register()
+
+    async def _cap_ls(self, msg: Message) -> None:
+        # CAP LS 302 clients get cap values (sasl=PLAIN); older ones the bare name.
+        v302 = len(msg.params) >= 2 and msg.params[1].isdigit() and int(msg.params[1]) >= 302
+        cap_list = " ".join(
+            f"{cap}={SASL_MECHANISMS}" if cap == SASL_CAP and v302 else cap
+            for cap in sorted(self._SUPPORTED_CAPS)
+        )
+        await self.send_raw(f":{self.server.config.name} CAP {self.nick or '*'} LS :{cap_list}")
+
+    async def _cap_req(self, msg: Message) -> None:
+        requested = msg.params[1].split() if len(msg.params) >= 2 else []
+        if all(cap in self._SUPPORTED_CAPS for cap in requested):
+            self.caps.update(requested)
+            await self.send_raw(
+                f":{self.server.config.name} CAP {self.nick or '*'} ACK :{' '.join(requested)}"
+            )
+        else:
+            await self.send_raw(
+                f":{self.server.config.name} CAP {self.nick or '*'} NAK :{' '.join(requested)}"
+            )
 
     async def _handle_nick(self, msg: Message) -> None:
         if not msg.params:
@@ -530,43 +544,9 @@ class Client:
 
         nick = msg.params[0]
 
-        # Reject reserved system-* nick prefix
-        if nick.startswith(SYSTEM_USER_PREFIX):
-            await self.send_numeric(
-                replies.ERR_ERRONEUSNICKNAME,
-                nick,
-                "Nickname prefix 'system-' is reserved",
-            )
-            return
-
-        # Printable ASCII only (culture#506 h2, M7): a non-ASCII lookalike
-        # of an account nick (Cyrillic "е" for "e") cannot be told apart
-        # from the real one by humans, and no confusables table is needed
-        # when only ASCII is allowed.
-        if not _NICK_ASCII_RE.match(nick):
-            await self.send_numeric(
-                replies.ERR_ERRONEUSNICKNAME,
-                nick,
-                "Nickname must be printable ASCII",
-            )
-            return
-
-        # Enforce server name prefix
-        expected_prefix = f"{self.server.config.name}-"
-        if not nick.startswith(expected_prefix):
-            await self.send_numeric(
-                replies.ERR_ERRONEUSNICKNAME,
-                nick,
-                f"Nickname must start with {expected_prefix}",
-            )
-            return
-
-        if len(nick) <= len(expected_prefix):
-            await self.send_numeric(
-                replies.ERR_ERRONEUSNICKNAME,
-                nick,
-                f"Nickname must have an agent name after {expected_prefix}",
-            )
+        format_error = self._nick_format_error(nick)
+        if format_error is not None:
+            await self.send_numeric(replies.ERR_ERRONEUSNICKNAME, nick, format_error)
             return
 
         # Agent accounts (culture#506 t8). Exact match on the full nick, so
@@ -622,6 +602,28 @@ class Client:
         if self._session_span is not None:
             self._session_span.set_attribute(_ATTR_NICK, nick)
         await self._try_register()
+
+    def _nick_format_error(self, nick: str) -> str | None:
+        """Return the 432 text for a syntactically unacceptable *nick*, else None.
+
+        Checks run in a fixed order; the first failure wins.
+        """
+        # Reject reserved system-* nick prefix
+        if nick.startswith(SYSTEM_USER_PREFIX):
+            return "Nickname prefix 'system-' is reserved"
+        # Printable ASCII only (culture#506 h2, M7): a non-ASCII lookalike
+        # of an account nick (Cyrillic "е" for "e") cannot be told apart
+        # from the real one by humans, and no confusables table is needed
+        # when only ASCII is allowed.
+        if not _NICK_ASCII_RE.match(nick):
+            return "Nickname must be printable ASCII"
+        # Enforce server name prefix
+        expected_prefix = f"{self.server.config.name}-"
+        if not nick.startswith(expected_prefix):
+            return f"Nickname must start with {expected_prefix}"
+        if len(nick) <= len(expected_prefix):
+            return f"Nickname must have an agent name after {expected_prefix}"
+        return None
 
     def _release_nick(self) -> None:
         """Drop this connection's current nick from ``server.clients`` (if it owns it)."""
@@ -685,19 +687,19 @@ class Client:
         if not account.active or not hmac.compare_digest(
             account.secret_sha256, self.account.secret_sha256
         ):
-            self._record_auth_failure(
-                (
-                    "revoked"
-                    if account.state == "revoked"
-                    else "suspended" if not account.active else "bad_secret"
-                ),
-            )
+            self._record_auth_failure(_registration_failure_code(account))
             await self._refuse_and_close("SASL authentication failed")
             return False
         self.account = account  # pick up the freshest role/grants
-        # Re-check after every await (h2, M1): a concurrent login for the
-        # same nick may have taken it while we waited, and this session may
-        # itself have been evicted meanwhile. The latest credential wins.
+        return await self._reclaim_account_nick()
+
+    async def _reclaim_account_nick(self) -> bool:
+        """Take ``self.nick`` from any other local holder; True once it is ours.
+
+        Re-check after every await (h2, M1): a concurrent login for the
+        same nick may have taken it while we waited, and this session may
+        itself have been evicted meanwhile. The latest credential wins.
+        """
         for _ in range(8):
             holder = self.server.clients.get(self.nick)
             if holder is None or holder is self:
@@ -773,18 +775,8 @@ class Client:
         self._close_transport(f"ERROR :Closing Link: {self.host} ({reason})")
         channel_names = [ch.name for ch in self.channels]
         if BOT_CAP not in self.caps:
-            notified: set[Client] = set()
-            for channel in [*self.channels]:
-                for member in [*channel.members]:
-                    if member is not self and member not in notified:
-                        self._send_in_background(member, quit_msg)
-                        notified.add(member)
-        for channel in [*self.channels]:
-            channel.remove(self)
-            if not channel.members and not channel.persistent:
-                if self.server.channels.get(channel.name) is channel:
-                    del self.server.channels[channel.name]
-        self.channels.clear()
+            self._fan_out_quit(quit_msg)
+        self._leave_all_channels()
         self._release_nick()
         self.server.subscription_registry.remove_client(self)
         modes, self.modes = set(self.modes), set()
@@ -798,6 +790,24 @@ class Client:
                 )
             )
             await self.server._emit_disconnect_events(nick, modes)
+
+    def _fan_out_quit(self, quit_msg: Message) -> None:
+        """Queue *quit_msg* once to every channel peer, as background writes."""
+        notified: set[Client] = set()
+        for channel in [*self.channels]:
+            for member in [*channel.members]:
+                if member is not self and member not in notified:
+                    self._send_in_background(member, quit_msg)
+                    notified.add(member)
+
+    def _leave_all_channels(self) -> None:
+        """Part every channel; drop the ones left empty unless persistent."""
+        for channel in [*self.channels]:
+            channel.remove(self)
+            if not channel.members and not channel.persistent:
+                if self.server.channels.get(channel.name) is channel:
+                    del self.server.channels[channel.name]
+        self.channels.clear()
 
     def _close_transport(self, last_line: str) -> None:
         """Write *last_line* without waiting for it to drain, then close."""
@@ -875,37 +885,45 @@ class Client:
             await self.send_numeric(ERR_SASLABORTED, "SASL authentication aborted")
             return
         if self._sasl_mech is None:
-            accounts_cfg = self.server.config.accounts
-            if not is_trusted_peer(
-                self.host, accounts_cfg.trusted_cidrs, trust_loopback=accounts_cfg.trust_loopback
-            ):
-                # Refuse before the "AUTHENTICATE +" prompt, so an untrusted
-                # peer never sends its secret over the network (h2, M3).
-                await self._sasl_fail("untrusted_peer")
-                return
-            if arg.upper() != SASL_MECHANISMS:
-                await self.send_numeric(
-                    RPL_SASLMECHS, SASL_MECHANISMS, "are available SASL mechanisms"
-                )
-                # Closed, and not counted (no credential was guessed): one
-                # socket can no longer loop on wrong mechanisms (h2, M4).
-                await self._sasl_fail("wrong_mechanism")
-                return
-            self._sasl_mech = SASL_MECHANISMS
-            self._sasl_buf = ""
-            await self.send_raw("AUTHENTICATE +")
+            await self._sasl_start(arg)
             return
-        if arg != "+":
-            if len(arg) > self._SASL_CHUNK:
-                await self._sasl_fail("too_long", (ERR_SASLTOOLONG, "SASL message too long"))
-                return
-            self._sasl_buf += arg
-            if len(self._sasl_buf) > self._SASL_MAX_PAYLOAD:
-                await self._sasl_fail("too_long", (ERR_SASLTOOLONG, "SASL message too long"))
-                return
-            if len(arg) == self._SASL_CHUNK:
-                return  # more follows
+        if arg != "+" and not await self._sasl_take_chunk(arg):
+            return
         await self._sasl_plain_finish()
+
+    async def _sasl_start(self, arg: str) -> None:
+        """First AUTHENTICATE: vet the peer and mechanism, then prompt for the payload."""
+        accounts_cfg = self.server.config.accounts
+        if not is_trusted_peer(
+            self.host, accounts_cfg.trusted_cidrs, trust_loopback=accounts_cfg.trust_loopback
+        ):
+            # Refuse before the "AUTHENTICATE +" prompt, so an untrusted
+            # peer never sends its secret over the network (h2, M3).
+            await self._sasl_fail("untrusted_peer")
+            return
+        if arg.upper() != SASL_MECHANISMS:
+            await self.send_numeric(RPL_SASLMECHS, SASL_MECHANISMS, "are available SASL mechanisms")
+            # Closed, and not counted (no credential was guessed): one
+            # socket can no longer loop on wrong mechanisms (h2, M4).
+            await self._sasl_fail("wrong_mechanism")
+            return
+        self._sasl_mech = SASL_MECHANISMS
+        self._sasl_buf = ""
+        await self.send_raw("AUTHENTICATE +")
+
+    async def _sasl_take_chunk(self, arg: str) -> bool:
+        """Buffer one payload chunk. True when the payload is complete.
+
+        False when more chunks follow or the attempt was refused as too long.
+        """
+        if len(arg) > self._SASL_CHUNK:
+            await self._sasl_fail("too_long", (ERR_SASLTOOLONG, "SASL message too long"))
+            return False
+        self._sasl_buf += arg
+        if len(self._sasl_buf) > self._SASL_MAX_PAYLOAD:
+            await self._sasl_fail("too_long", (ERR_SASLTOOLONG, "SASL message too long"))
+            return False
+        return len(arg) != self._SASL_CHUNK  # a full-size chunk means more follows
 
     async def _sasl_plain_finish(self) -> None:
         payload = self._sasl_buf
@@ -913,7 +931,7 @@ class Client:
         try:
             decoded = base64.b64decode(payload, validate=True).decode("utf-8")
             authzid, authcid, secret = decoded.split("\0")
-        except (binascii.Error, ValueError):
+        except ValueError:  # includes binascii.Error and UnicodeDecodeError
             # Never log the payload: it carries the secret.
             await self._sasl_fail("malformed")
             return

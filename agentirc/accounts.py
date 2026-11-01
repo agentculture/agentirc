@@ -124,6 +124,20 @@ def _parse_account(index: int, raw: object, guest_channel_prefixes: Iterable[str
             f"accounts[{index}] ({nick}): state must be one of {sorted(STATES)}"
         )
     grants = raw.get("grants", {})
+    _check_grants(index, nick, role, grants, guest_channel_prefixes)
+    return Account(
+        nick=nick,
+        secret_sha256=secret_hash,
+        role=role,
+        grants=dict(grants),
+        state=state,
+    )
+
+
+def _check_grants(
+    index: int, nick: str, role: str, grants: object, guest_channel_prefixes: Iterable[str]
+) -> None:
+    """Validate one record's ``grants`` map (shape first, then the guest sandbox)."""
     if not isinstance(grants, dict) or not all(
         isinstance(ch, str) and ch and isinstance(lvl, str) and lvl in GRANT_LEVELS
         for ch, lvl in grants.items()
@@ -142,13 +156,6 @@ def _parse_account(index: int, raw: object, guest_channel_prefixes: Iterable[str
                     f"accounts[{index}] ({nick}): guest grant on {ch!r} is outside "
                     "the guest sandbox (accounts.guest_channel_prefixes)"
                 )
-    return Account(
-        nick=nick,
-        secret_sha256=secret_hash,
-        role=role,
-        grants=dict(grants),
-        state=state,
-    )
 
 
 def parse_accounts(data: object, guest_channel_prefixes: Iterable[str] = ()) -> dict[str, Account]:
@@ -224,12 +231,17 @@ class AccountStore:
     def _stat_signature(self) -> tuple | None:
         if self.path is None:
             return None
+        stat_error: str | None = None
         try:
             st = os.stat(self.path)
         except FileNotFoundError:
             return None
         except OSError as exc:
-            logger.error("accounts: cannot stat %s: %s", self.path, exc)
+            stat_error = str(exc)
+        if stat_error is not None:
+            # Logged after the ``except`` block on purpose: one line, no
+            # traceback (this runs on every lookup while the error persists).
+            logger.error("accounts: cannot stat %s: %s", self.path, stat_error)
             return self._signature  # keep whatever we have
         return (st.st_mtime_ns, st.st_size, st.st_ino)
 
@@ -250,6 +262,8 @@ class AccountStore:
             self._replace({}, None, missing=True)
             return True
         text: str | None = None
+        # (exception type name, structural detail) of a rejected file, else None.
+        rejection: tuple[str, str] | None = None
         try:
             with open(self.path, encoding="utf-8") as f:
                 text = f.read()
@@ -258,17 +272,25 @@ class AccountStore:
         except Exception as exc:  # noqa: BLE001 - a bad file must never crash the server
             # Anything goes: json.JSONDecodeError / AccountsFileError
             # (ValueErrors), OSError, RecursionError on deeply nested JSON, or
-            # a TypeError we did not foresee. The message carries only
-            # structural info (our own AccountsFileError text, else just the
-            # exception type) — never record contents. ``_signature`` is
-            # updated so the same bad file is not re-parsed on every lookup.
+            # a TypeError we did not foresee. Only structural info is kept
+            # (our own AccountsFileError text, else just the exception type)
+            # — never record contents, and never the exception itself: it is
+            # logged below, outside this block, with no traceback that could
+            # quote the file.
+            rejection = (
+                type(exc).__name__,
+                str(exc) if isinstance(exc, AccountsFileError) else "invalid file",
+            )
+        if rejection is not None:
             logger.error(
                 "accounts: rejected %s (%s: %s); keeping the last good table (%d accounts)",
                 self.path,
-                type(exc).__name__,
-                exc if isinstance(exc, AccountsFileError) else "invalid file",
+                rejection[0],
+                rejection[1],
                 len(self._table),
             )
+            # ``_signature`` is updated so the same bad file is not re-parsed
+            # on every lookup.
             self._signature = signature
             self._fail_closed(text)
             return False
@@ -466,7 +488,8 @@ class AuthFailureLimiter:
         if self.limit <= 0:
             return
         if len(self._events) > 4096:  # bound memory under address churn
-            for key in list(self._events):
+            # Snapshot the keys: ``_prune`` deletes emptied entries.
+            for key in self._events.copy():
                 self._prune(key)
         self._events.setdefault(addr, deque()).append(self._clock())
         q = self._events[addr]

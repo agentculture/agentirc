@@ -214,7 +214,8 @@ async def test_preregistration_allowed_verbs(srv):
     await c.send("USER u 0 * :u")
     await c.send("CAP END")
     lines = await c.recv_all(0.5)
-    assert _welcomed(lines) and not _has_numeric(lines, "451"), lines
+    assert _welcomed(lines), lines
+    assert not _has_numeric(lines, "451"), lines
     await c.close()
 
 
@@ -657,7 +658,8 @@ async def test_malformed_file_at_runtime_keeps_server_working(srv):
     await c2.send("NICK testserv-res")
     await c2.send("USER u 0 * :u")
     lines, closed = await _read_to_close(c2, 1.5)
-    assert not _welcomed(lines) and _has_numeric(lines, "904")
+    assert not _welcomed(lines)
+    assert _has_numeric(lines, "904")
     res = await _login(srv, "testserv-res", SECRET_RES)
     await _close(c, c2, res)
 
