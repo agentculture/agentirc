@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -93,11 +94,16 @@ class AccountsConfig:
     culture; see ``agentirc.accounts`` and docs/accounts.md). This block only
     carries server-side policy:
 
-    - ``trusted_cidrs``: peers allowed to attempt SASL in addition to loopback
-      (127.0.0.0/8 and ::1 are always trusted). SASL from any other peer
-      fails with 904. Each entry is validated with
+    - ``trusted_cidrs``: peers allowed to attempt SASL in addition to loopback.
+      SASL from any other peer fails with 904 at ``AUTHENTICATE PLAIN``,
+      before a secret is sent. Each entry is validated with
       ``ipaddress.ip_network(strict=False)`` — an invalid entry raises
-      ``ValueError``.
+      ``ValueError``; IPv4-mapped IPv6 entries (``::ffff:10.0.0.0/104``) are
+      normalised to IPv4 (``10.0.0.0/8``); a /0 entry logs a warning.
+    - ``trust_loopback``: loopback (127.0.0.0/8, ::1) is trusted without a
+      ``trusted_cidrs`` entry. Default ``True``. Set ``False`` when a local
+      forwarder (cloudflared, a websocket bridge, ``ssh -L``, ``tailscale
+      serve``) makes remote users connect from loopback.
     - ``guest_channel_prefixes``: the guest sandbox (see docs/accounts.md).
     - ``auth_failure_limit`` / ``auth_failure_window``: failed authentications
       allowed per peer address per window (seconds) before further
@@ -107,6 +113,8 @@ class AccountsConfig:
     """
 
     trusted_cidrs: list[str] = field(default_factory=list)
+    # culture#506 h2 (M3): loopback is trusted unless this is False.
+    trust_loopback: bool = True
     # Guest sandbox (t9): a ``guest`` account may only hold grants on channels
     # starting with one of these prefixes; empty = guests hold no grants.
     guest_channel_prefixes: list[str] = field(default_factory=list)
@@ -115,8 +123,6 @@ class AccountsConfig:
     auth_failure_window: float = 60
 
     def __post_init__(self) -> None:
-        import ipaddress
-
         if (
             isinstance(self.auth_failure_limit, bool)
             or not isinstance(self.auth_failure_limit, int)
@@ -144,14 +150,29 @@ class AccountsConfig:
                 f"starting with '#', got {self.guest_channel_prefixes!r}"
             )
 
+        if not isinstance(self.trust_loopback, bool):
+            raise ValueError(
+                f"accounts.trust_loopback must be true or false, got {self.trust_loopback!r}"
+            )
+
+        from agentirc.accounts import normalize_network
+
         if not isinstance(self.trusted_cidrs, list):
             raise ValueError(f"accounts.trusted_cidrs must be a list, got {self.trusted_cidrs!r}")
+        normalized = []
         for cidr in self.trusted_cidrs:
             try:
-                ipaddress.ip_network(str(cidr), strict=False)
+                net = normalize_network(str(cidr))
             except ValueError as exc:
                 raise ValueError(f"accounts.trusted_cidrs: invalid CIDR {cidr!r}: {exc}") from exc
-        self.trusted_cidrs = [str(c) for c in self.trusted_cidrs]
+            if net.prefixlen == 0:
+                logging.getLogger(__name__).warning(
+                    "accounts.trusted_cidrs: %s trusts every %s address to attempt SASL",
+                    cidr,
+                    f"IPv{net.version}",
+                )
+            normalized.append(str(net))
+        self.trusted_cidrs = normalized
 
 
 @dataclass

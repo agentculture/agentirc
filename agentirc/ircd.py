@@ -120,10 +120,25 @@ class IRCd:
         task.add_done_callback(self._enforce_tasks.discard)
 
     async def _enforce_accounts(self) -> None:
-        """Close local sessions whose account is missing, inactive or re-keyed."""
+        """Close local sessions the current account table no longer allows.
+
+        - an authenticated session whose account is missing, inactive or
+          re-keyed (t10);
+        - a registered session *without* an account whose nick is now an
+          account nick or a case variant of one — a nick squatted before its
+          account existed (culture#506 h2, M6).
+
+        Each eviction runs as its own task, so one slow session never delays
+        the rest of the walk (h2, M2).
+        """
         for client in [*self._local_connections]:
+            if client._closing:
+                continue
             account = client.account
             if account is None:
+                if client._registered and self.accounts.is_reserved(client.nick, reload=False):
+                    logger.info("Closing session of %s: nick is now an account nick", client.nick)
+                    self._spawn_eviction(client, "Nick reserved for an agent account")
                 continue
             current = self.accounts.current(account.nick)
             if (
@@ -133,10 +148,18 @@ class IRCd:
             ):
                 continue
             logger.info("Closing session of %s: account revoked or changed", account.nick)
+            self._spawn_eviction(client, "account revoked")
+
+    def _spawn_eviction(self, client: Client, reason: str) -> None:
+        async def _run() -> None:
             try:
-                await client.evict("account revoked")
-            except Exception:  # noqa: BLE001 - keep walking the rest
-                logger.exception("failed to close revoked session %s", account.nick)
+                await client.evict(reason)
+            except Exception:  # noqa: BLE001 - one failure never stops the others
+                logger.exception("failed to close session %s", client.nick)
+
+        task = asyncio.get_running_loop().create_task(_run())
+        self._enforce_tasks.add(task)
+        task.add_done_callback(self._enforce_tasks.discard)
 
     async def _accounts_watch_loop(self) -> None:
         while True:

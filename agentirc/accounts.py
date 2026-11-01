@@ -19,7 +19,9 @@ only reads it. The format is versioned and documented in
 
 The whole file is validated before it replaces the in-memory table: a
 malformed file (bad JSON, unknown version, a bad record, a duplicate nick)
-is rejected as a unit, the last good table is kept and an error is logged.
+is rejected as a unit, the last good table is kept and an error is logged;
+the nicks the rejected file names stay reserved until it is fixed (fail
+closed, culture#506 h2 — see ``AccountStore._fail_closed``).
 A missing file (or no ``data_dir``) means "no accounts" — every nick
 registers as before (no flag day, culture#506 c18).
 
@@ -42,7 +44,7 @@ import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Callable, Iterable
+from typing import Callable, Hashable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,24 @@ STATES = frozenset({"active", "suspended", "revoked"})
 GRANT_LEVELS = frozenset({"read", "speak"})
 
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+# Account nicks are printable ASCII without spaces (culture#506 h2, M7): the
+# server refuses non-ASCII nicks at NICK, so a non-ASCII account nick could
+# never log in, and ASCII-only is what makes the case-variant rule complete.
+_ACCOUNT_NICK_RE = re.compile(r"^[\x21-\x7e]+$")
+# Best-effort recovery of the nicks a rejected file names (M5 fail-closed).
+_RECOVER_NICK_RE = re.compile(r'"nick"\s*:\s*"([^"\\]+)"')
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def fold_nick(nick: str) -> str:
+    """ASCII-only case fold used to spot case variants of account nicks.
+
+    Only ``A-Z`` are folded (no Unicode case mapping), matching the server's
+    ASCII-only nick rule.
+    """
+    return nick.translate(_ASCII_LOWER)
+
+
 # Constant used when the account does not exist, so a miss costs the same
 # sha256 + compare_digest as a hit.
 _DUMMY_HASH = "0" * 64
@@ -84,6 +104,10 @@ def _parse_account(index: int, raw: object, guest_channel_prefixes: Iterable[str
     nick = raw.get("nick")
     if not isinstance(nick, str) or not nick or " " in nick:
         raise AccountsFileError(f"accounts[{index}].nick must be a non-empty string")
+    if not _ACCOUNT_NICK_RE.match(nick):
+        raise AccountsFileError(
+            f"accounts[{index}].nick must be printable ASCII without spaces (culture#506 M7)"
+        )
     secret_hash = raw.get("secret_sha256")
     if not isinstance(secret_hash, str) or not _HEX64_RE.match(secret_hash):
         raise AccountsFileError(
@@ -109,9 +133,11 @@ def _parse_account(index: int, raw: object, guest_channel_prefixes: Iterable[str
             f"{sorted(GRANT_LEVELS)}"
         )
     if role == "guest":
-        prefixes = tuple(p.casefold() for p in guest_channel_prefixes)
+        # Exact (case-sensitive) prefix match: channel names are
+        # case-sensitive server-wide, so "#SBX-1" is not inside "#sbx-".
+        prefixes = tuple(guest_channel_prefixes)
         for ch in grants:
-            if not prefixes or not ch.casefold().startswith(prefixes):
+            if not prefixes or not ch.startswith(prefixes):
                 raise AccountsFileError(
                     f"accounts[{index}] ({nick}): guest grant on {ch!r} is outside "
                     "the guest sandbox (accounts.guest_channel_prefixes)"
@@ -143,11 +169,18 @@ def parse_accounts(data: object, guest_channel_prefixes: Iterable[str] = ()) -> 
     if not isinstance(records, list):
         raise AccountsFileError("'accounts' must be a list")
     table: dict[str, Account] = {}
+    folded: set[str] = set()
     for index, raw in enumerate(records):
         account = _parse_account(index, raw, guest_channel_prefixes)
         if account.nick in table:
             raise AccountsFileError(f"duplicate nick {account.nick!r}")
+        if fold_nick(account.nick) in folded:
+            raise AccountsFileError(
+                f"accounts[{index}] ({account.nick}): nick differs from another account "
+                "nick only by letter case"
+            )
         table[account.nick] = account
+        folded.add(fold_nick(account.nick))
     return table
 
 
@@ -165,11 +198,27 @@ class AccountStore:
             os.path.join(os.path.expanduser(data_dir), ACCOUNTS_FILENAME) if data_dir else None
         )
         self._table: dict[str, Account] = {}
+        self._folded: dict[str, str] = {}  # fold_nick(nick) -> nick
         self._signature: tuple | None = None
+        # Fail-closed state (culture#506 h2, M5). ``_reserved_fallback``: the
+        # folded nicks a *rejected* file names — they register only once a
+        # valid file loads. ``_lockdown``: no table was ever loaded and no
+        # nick could be recovered from the rejected file — every local
+        # registration is refused until a valid file loads.
+        self._loaded = False
+        self._reserved_fallback: frozenset[str] = frozenset()
+        self._lockdown = False
         # Called (synchronously, no args) after every successful table
         # replacement from a *later* reload — the IRCd uses it to close live
         # sessions whose account was revoked (culture#506 t10).
         self.on_reload: Callable[[], None] | None = None
+        if self.path is not None and not os.path.isdir(os.path.dirname(self.path)):
+            logger.warning(
+                "accounts: data_dir %s does not exist (not mounted?); no accounts are "
+                "enforced until %s appears",
+                os.path.dirname(self.path),
+                ACCOUNTS_FILENAME,
+            )
         self.reload()
 
     def _stat_signature(self) -> tuple | None:
@@ -188,22 +237,23 @@ class AccountStore:
         """Re-read the file unconditionally. Returns True if the table was replaced.
 
         A missing file empties the table. A malformed or unreadable file keeps
-        the last good table and logs an error.
+        the last good table, logs an error and fails closed for the nicks it
+        names (see ``is_reserved``).
         """
         if self.path is None:
             self._table = {}
+            self._folded = {}
+            self._loaded = True
             return True
         signature = self._stat_signature()
         if signature is None:
-            if self._table:
-                logger.info("accounts: %s is gone; no accounts are enforced", self.path)
-            self._table = {}
-            self._signature = None
-            self._notify_reload()
+            self._replace({}, None, missing=True)
             return True
+        text: str | None = None
         try:
             with open(self.path, encoding="utf-8") as f:
-                data = json.load(f)
+                text = f.read()
+            data = json.loads(text)
             table = parse_accounts(data, self.guest_channel_prefixes)
         except Exception as exc:  # noqa: BLE001 - a bad file must never crash the server
             # Anything goes: json.JSONDecodeError / AccountsFileError
@@ -220,12 +270,59 @@ class AccountStore:
                 len(self._table),
             )
             self._signature = signature
+            self._fail_closed(text)
             return False
-        self._table = table
-        self._signature = signature
+        self._replace(table, signature)
         logger.info("accounts: loaded %d accounts from %s", len(table), self.path)
         self._notify_reload()
         return True
+
+    def _replace(self, table: dict[str, Account], signature, *, missing: bool = False) -> None:
+        before = len(self._table)
+        self._table = table
+        self._folded = {fold_nick(nick): nick for nick in table}
+        self._signature = signature
+        self._loaded = True
+        self._reserved_fallback = frozenset()
+        self._lockdown = False
+        if before and not table:
+            # A previously non-empty table becoming empty unreserves every
+            # account nick at once: say so loudly (culture#506 h2, M5).
+            logger.warning(
+                "accounts: %s; the table went from %d accounts to none, so no accounts are "
+                "enforced and every account nick can be registered without a secret",
+                f"{self.path} is gone" if missing else f"{self.path} lists no accounts",
+                before,
+            )
+        if missing:
+            self._notify_reload()
+
+    def _fail_closed(self, text: str | None) -> None:
+        """Reserve the nicks a rejected file names (culture#506 h2, M5).
+
+        A typo must not unreserve the very nicks the operator is protecting.
+        The nicks are recovered best-effort from the raw text; they stay
+        reserved (no secret can log in to them) until a valid file loads.
+        If no table was ever loaded and no nick can be recovered, every
+        local registration is refused instead.
+        """
+        recovered = {fold_nick(n) for n in _RECOVER_NICK_RE.findall(text or "")}
+        self._reserved_fallback = frozenset(recovered)
+        self._lockdown = not self._loaded and not recovered
+        if self._lockdown:
+            logger.error(
+                "accounts: failing closed: no valid accounts table was loaded and no nick "
+                "could be recovered from %s; every local registration is refused until the "
+                "file is fixed",
+                self.path,
+            )
+        elif recovered - set(self._folded):
+            logger.error(
+                "accounts: failing closed: %d nick(s) named in the rejected %s are reserved "
+                "and cannot register until the file is fixed",
+                len(recovered - set(self._folded)),
+                self.path,
+            )
 
     def _notify_reload(self) -> None:
         if self.on_reload is not None:
@@ -252,6 +349,30 @@ class AccountStore:
         """Lookup without the lazy reload check (for use inside reload hooks)."""
         return self._table.get(nick) if nick else None
 
+    def is_reserved(self, nick: str | None, *, reload: bool = True) -> bool:
+        """True if *nick* may only be held by an authenticated session.
+
+        Covers an account nick, any ASCII case variant of one (culture#506
+        h2, M7), the nicks a rejected file names, and — in lockdown — every
+        nick (M5). ``reload=False`` skips the lazy reload (reload hooks).
+        """
+        if not nick:
+            return False
+        if reload:
+            self.maybe_reload()
+        if self._lockdown:
+            return True
+        folded = fold_nick(nick)
+        return folded in self._folded or folded in self._reserved_fallback
+
+    def lookalike_of(self, nick: str | None) -> str | None:
+        """The account nick *nick* is a case variant of (not equal to), else None."""
+        if not nick:
+            return None
+        self.maybe_reload()
+        canonical = self._folded.get(fold_nick(nick))
+        return canonical if canonical is not None and canonical != nick else None
+
     def channel_access(self, nick: str | None, channel: str) -> str | None:
         """Live access level of account *nick* on *channel*.
 
@@ -265,12 +386,9 @@ class AccountStore:
             return None
         if account.role == "operator":
             return "speak"
-        want = channel.casefold()
-        level = None
-        for ch, lvl in account.grants.items():
-            if ch.casefold() == want and (level is None or lvl == "speak"):
-                level = lvl
-        return level
+        # Exact match (culture#506 h2, M7): channel names are case-sensitive
+        # server-wide, so a grant on #ops never covers #OPS or #Ops.
+        return account.grants.get(channel)
 
     def role_of(self, nick: str | None) -> str | None:
         """Live role of an active account, else ``None``."""
@@ -316,21 +434,23 @@ class AccountStore:
 
 
 class AuthFailureLimiter:
-    """Per-peer-address sliding-window limiter for failed authentications.
+    """Sliding-window limiter for failed authentications.
 
-    ``record(addr)`` notes a failure; ``blocked(addr)`` is True once *limit*
+    ``record(key)`` notes a failure; ``blocked(key)`` is True once *limit*
     failures happened within the last *window* seconds. ``limit <= 0``
-    disables it. Loopback is deliberately not exempt. State is in-memory and
-    pruned as windows expire.
+    disables it. The server keys it per ``(peer address, folded authcid)``
+    (culture#506 h2, M4), so failures against one account never lock out
+    another account from the same address. State is in-memory and pruned as
+    windows expire.
     """
 
     def __init__(self, limit: int, window: float, clock: Callable[[], float] = time.monotonic):
         self.limit = limit
         self.window = window
         self._clock = clock
-        self._events: dict[str, deque[float]] = {}
+        self._events: dict[Hashable, deque[float]] = {}
 
-    def _prune(self, addr: str) -> deque[float] | None:
+    def _prune(self, addr: Hashable) -> deque[float] | None:
         q = self._events.get(addr)
         if q is None:
             return None
@@ -342,7 +462,7 @@ class AuthFailureLimiter:
             return None
         return q
 
-    def record(self, addr: str) -> None:
+    def record(self, addr: Hashable) -> None:
         if self.limit <= 0:
             return
         if len(self._events) > 4096:  # bound memory under address churn
@@ -353,7 +473,7 @@ class AuthFailureLimiter:
         while len(q) > self.limit:
             q.popleft()
 
-    def blocked(self, addr: str) -> bool:
+    def blocked(self, addr: Hashable) -> bool:
         if self.limit <= 0:
             return False
         q = self._prune(addr)
@@ -369,22 +489,39 @@ def _parse_ip(host: str):
     return mapped if mapped is not None else ip
 
 
-def is_trusted_peer(host: str | None, trusted_cidrs: Iterable[str]) -> bool:
-    """True if *host* is loopback or inside one of *trusted_cidrs*.
+def normalize_network(cidr: str):
+    """Parse *cidr* (``strict=False``); an IPv4-mapped IPv6 network becomes IPv4.
 
-    Loopback (127.0.0.0/8, ::1, and their IPv4-mapped forms) is always
-    trusted. Anything that does not parse as an IP address is untrusted.
+    ``::ffff:10.0.0.0/104`` would otherwise never match: peer addresses are
+    unmapped before the check (culture#506 h2, M3).
+    """
+    net = ipaddress.ip_network(str(cidr), strict=False)
+    if net.version == 6 and net.prefixlen >= 96:
+        mapped = net.network_address.ipv4_mapped
+        if mapped is not None:
+            return ipaddress.ip_network(f"{mapped}/{net.prefixlen - 96}", strict=False)
+    return net
+
+
+def is_trusted_peer(
+    host: str | None, trusted_cidrs: Iterable[str], *, trust_loopback: bool = True
+) -> bool:
+    """True if *host* is loopback (when *trust_loopback*) or inside *trusted_cidrs*.
+
+    Loopback is 127.0.0.0/8, ::1 and their IPv4-mapped forms. IPv4-mapped
+    entries in *trusted_cidrs* are normalised to IPv4. Anything that does not
+    parse as an IP address is untrusted.
     """
     if not host:
         return False
     ip = _parse_ip(host)
     if ip is None:
         return False
-    if ip.is_loopback:
+    if trust_loopback and ip.is_loopback:
         return True
     for cidr in trusted_cidrs:
         try:
-            net = ipaddress.ip_network(cidr, strict=False)
+            net = normalize_network(cidr)
         except ValueError:
             continue
         if ip.version == net.version and ip in net:
