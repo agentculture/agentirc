@@ -42,7 +42,11 @@ class IRCd:
     """The culture IRC server."""
 
     def __init__(self, config: ServerConfig):
-        from agentirc._internal.telemetry import init_audit, init_metrics, init_telemetry
+        from agentirc._internal.telemetry import (
+            init_audit,
+            init_metrics,
+            init_telemetry,
+        )
 
         self.config = config
         self.tracer = init_telemetry(config)
@@ -57,7 +61,9 @@ class IRCd:
         self.remote_clients: dict[str, RemoteClient] = {}  # nick -> RemoteClient
         self._seq: int = 0
         self._event_log: deque[tuple[int, Event]] = deque(maxlen=10000)
-        self._peer_acked_seq: dict[str, int] = {}  # peer_name -> our _seq when link last dropped
+        self._peer_acked_seq: dict[str, int] = (
+            {}
+        )  # peer_name -> our _seq when link last dropped
         self._link_retry_state: dict[str, dict] = (
             {}
         )  # peer_name -> {"delay": float, "task": asyncio.Task}
@@ -90,7 +96,8 @@ class IRCd:
         from agentirc.accounts import AuthFailureLimiter
 
         self.auth_limiter = AuthFailureLimiter(
-            self.config.accounts.auth_failure_limit, self.config.accounts.auth_failure_window
+            self.config.accounts.auth_failure_limit,
+            self.config.accounts.auth_failure_window,
         )
         # Live revoke (t10): any reload of the table (lazy, SIGHUP or the
         # periodic check below) closes sessions whose account went away.
@@ -148,7 +155,10 @@ class IRCd:
             account = client.account
             if account is None:
                 if client._registered and self.accounts.is_reserved(client.nick):
-                    logger.info("Closing session of %s: nick is now an account nick", client.nick)
+                    logger.info(
+                        "Closing session of %s: nick is now an account nick",
+                        client.nick,
+                    )
                     self._spawn_eviction(client, "Nick reserved for an agent account")
                 continue
             current = self.accounts.current(account.nick)
@@ -158,7 +168,9 @@ class IRCd:
                 and current.secret_sha256 == account.secret_sha256
             ):
                 continue
-            logger.info("Closing session of %s: account revoked or changed", account.nick)
+            logger.info(
+                "Closing session of %s: account revoked or changed", account.nick
+            )
             self._spawn_eviction(client, "account revoked")
 
     def _spawn_eviction(self, client: Client, reason: str) -> None:
@@ -178,7 +190,9 @@ class IRCd:
             failure: str | None = None
             try:
                 self.accounts.maybe_reload()  # fires on_reload when the file changed
-            except Exception as exc:  # noqa: BLE001 - the watcher must outlive any bad tick
+            except (
+                Exception
+            ) as exc:  # noqa: BLE001 - the watcher must outlive any bad tick
                 # Never let one failure silently end live revoke. Keep the
                 # type only, logged outside this block: the traceback could
                 # quote file contents.
@@ -303,7 +317,9 @@ class IRCd:
         # event.type may be an EventType enum OR a plain string — federated
         # events forward unknown types verbatim (see _parse_event_type in
         # server_link.py).
-        event_type_str = event.type.value if hasattr(event.type, "value") else str(event.type)
+        event_type_str = (
+            event.type.value if hasattr(event.type, "value") else str(event.type)
+        )
         attrs: dict[str, str] = {
             _ATTR_EVENT_TYPE: event_type_str,
             "event.origin": "federated" if origin_tag else "local",
@@ -342,7 +358,9 @@ class IRCd:
         event_type_str = attrs[_ATTR_EVENT_TYPE]
         origin_str = "federated" if origin_tag else "local"
 
-        self.metrics.events_emitted.add(1, {_ATTR_EVENT_TYPE: event_type_str, "origin": origin_str})
+        self.metrics.events_emitted.add(
+            1, {_ATTR_EVENT_TYPE: event_type_str, "origin": origin_str}
+        )
         render_started = time.perf_counter()
 
         trace_id_hex = ""
@@ -372,7 +390,9 @@ class IRCd:
             await self._surface_event_privmsg(event)
 
         render_ms = (time.perf_counter() - render_started) * 1000.0
-        self.metrics.events_render_duration.record(render_ms, {_ATTR_EVENT_TYPE: event_type_str})
+        self.metrics.events_render_duration.record(
+            render_ms, {_ATTR_EVENT_TYPE: event_type_str}
+        )
 
         # Audit submit happens after the span exits so it doesn't sit inside
         # the irc.event.emit span (would skew render duration). The trace_id/
@@ -409,7 +429,9 @@ class IRCd:
         See ``docs/superpowers/specs/2026-05-01-bot-extension-api-design.md``
         § Decision A for the rationale and federation-interop story.
         """
-        type_wire = event.type.value if hasattr(event.type, "value") else str(event.type)
+        type_wire = (
+            event.type.value if hasattr(event.type, "value") else str(event.type)
+        )
         return {
             "type": type_wire,
             "channel": event.channel,
@@ -432,7 +454,9 @@ class IRCd:
         """
         try:
             return base64.b64encode(
-                json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode(
+                    "utf-8"
+                )
             ).decode("ascii")
         except (TypeError, ValueError) as exc:
             logger.warning(
@@ -442,13 +466,17 @@ class IRCd:
             )
             empty_envelope = {
                 "type": type_wire,
-                "channel": envelope.get("channel") if isinstance(envelope, dict) else None,
+                "channel": (
+                    envelope.get("channel") if isinstance(envelope, dict) else None
+                ),
                 "nick": envelope.get("nick", "") if isinstance(envelope, dict) else "",
                 "data": {},
                 "timestamp": time.time(),
             }
             return base64.b64encode(
-                json.dumps(empty_envelope, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                json.dumps(
+                    empty_envelope, separators=(",", ":"), sort_keys=True
+                ).encode("utf-8")
             ).decode("ascii")
 
     async def _deliver_to_members(self, channel, msg: Message, type_wire: str) -> None:
@@ -466,7 +494,9 @@ class IRCd:
                 await member.send_tagged(msg)
             except Exception:
                 logger.exception(
-                    "Failed to surface %s to %s", type_wire, getattr(member, "nick", "?")
+                    "Failed to surface %s to %s",
+                    type_wire,
+                    getattr(member, "nick", "?"),
                 )
 
     async def _surface_event_privmsg(self, event: Event) -> None:
@@ -490,7 +520,9 @@ class IRCd:
         _NO_SURFACE_TYPES are delivered via their own IRC verbs and not
         re-surfaced; HistorySkill should follow the same rule.
         """
-        type_wire = event.type.value if hasattr(event.type, "value") else str(event.type)
+        type_wire = (
+            event.type.value if hasattr(event.type, "value") else str(event.type)
+        )
         if type_wire in self._NO_SURFACE_TYPES:
             return
 
@@ -512,7 +544,9 @@ class IRCd:
             render_data.setdefault("nick", event.nick)
         if event.channel:
             render_data.setdefault("channel", event.channel)
-        body = event.data.get("_render") or render_event(type_wire, render_data, event.channel)
+        body = event.data.get("_render") or render_event(
+            type_wire, render_data, event.channel
+        )
 
         msg = Message(
             tags={EVENT_TAG_TYPE: type_wire, EVENT_TAG_DATA: encoded},
@@ -664,7 +698,23 @@ class IRCd:
         from agentirc.server_link import ServerLink
 
         reader, writer = await asyncio.open_connection(host, port)
-        link = ServerLink(reader, writer, self, password, initiator=True, trust=trust)
+        expected_peer = next(
+            (
+                lc.name
+                for lc in self.config.links
+                if lc.host == host and lc.port == port
+            ),
+            None,
+        )
+        link = ServerLink(
+            reader,
+            writer,
+            self,
+            password,
+            initiator=True,
+            trust=trust,
+            expected_peer=expected_peer,
+        )
         task = asyncio.create_task(link.handle())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -688,7 +738,9 @@ class IRCd:
             return
 
         state = {"delay": 5.0, "task": None}
-        state["task"] = asyncio.create_task(self._retry_link_loop(peer_name, link_config, state))
+        state["task"] = asyncio.create_task(
+            self._retry_link_loop(peer_name, link_config, state)
+        )
         self._link_retry_state[peer_name] = state
 
     async def _retry_link_loop(self, peer_name: str, link_config, state: dict) -> None:
@@ -709,7 +761,9 @@ class IRCd:
             # except needed for the cancel path.
             self._link_retry_state.pop(peer_name, None)
 
-    async def _attempt_single_reconnect(self, peer_name: str, link_config, logger) -> bool:
+    async def _attempt_single_reconnect(
+        self, peer_name: str, link_config, logger
+    ) -> bool:
         """Try one reconnection attempt. Return True if the peer is now linked."""
         try:
             link = await self.connect_to_peer(
@@ -775,7 +829,9 @@ class IRCd:
                 try:
                     await self._liveness_check_client(client, now, interval, timeout)
                 except Exception:
-                    logger.exception("Liveness sweep failed for %s", getattr(client, "nick", "?"))
+                    logger.exception(
+                        "Liveness sweep failed for %s", getattr(client, "nick", "?")
+                    )
 
     async def _liveness_check_client(
         self, client: "Client", now: float, interval: float, timeout: float
@@ -794,7 +850,8 @@ class IRCd:
             self._reap_client(client)
             return
         if idle > interval and (
-            client.last_ping_sent is None or client.last_ping_sent < client.last_activity
+            client.last_ping_sent is None
+            or client.last_ping_sent < client.last_activity
         ):
             await self._send_liveness_ping(client)
             client.last_ping_sent = now
@@ -804,7 +861,9 @@ class IRCd:
         try:
             await client.send_raw(f"PING :{client.server.config.name}")
         except Exception:
-            logger.debug("Failed to send liveness PING to %s", getattr(client, "nick", "?"))
+            logger.debug(
+                "Failed to send liveness PING to %s", getattr(client, "nick", "?")
+            )
 
     @staticmethod
     def _reap_client(client: "Client") -> None:
@@ -870,7 +929,9 @@ class IRCd:
                 pass
             return
 
-        link = ServerLink(reader, writer, self, password=None, initiator=False, trust="restricted")
+        link = ServerLink(
+            reader, writer, self, password=None, initiator=False, trust="restricted"
+        )
         try:
             await link.handle(initial_msg=initial_text)
         except (ConnectionError, asyncio.IncompleteReadError):
@@ -967,11 +1028,15 @@ class IRCd:
         """Notify local clients and remove all remote clients that came from *link*."""
         from agentirc._internal.protocol.message import Message
 
-        to_remove = [nick for nick, rc in self.remote_clients.items() if rc.link is link]
+        to_remove = [
+            nick for nick, rc in self.remote_clients.items() if rc.link is link
+        ]
 
         for nick in to_remove:
             rc = self.remote_clients[nick]
-            quit_msg = Message(prefix=rc.prefix, command="QUIT", params=["Server link closed"])
+            quit_msg = Message(
+                prefix=rc.prefix, command="QUIT", params=["Server link closed"]
+            )
             notified: set = set()
             self._notify_local_quit(rc, quit_msg, notified)
             del self.remote_clients[nick]

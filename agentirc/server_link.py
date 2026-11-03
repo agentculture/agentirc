@@ -19,7 +19,10 @@ from agentirc.virtual_client import VirtualClient
 from agentirc._internal.constants import SYSTEM_USER_PREFIX
 from agentirc._internal.protocol.message import Message
 from agentirc._internal.telemetry import context_from_traceparent, current_traceparent
-from agentirc._internal.telemetry.context import TRACEPARENT_TAG, extract_traceparent_from_tags
+from agentirc._internal.telemetry.context import (
+    TRACEPARENT_TAG,
+    extract_traceparent_from_tags,
+)
 
 # OTEL instrumentation name (must match `_CULTURE_TRACER_NAME` in
 # culture/telemetry/tracing.py so all spans go through one tracer instance).
@@ -101,6 +104,7 @@ class ServerLink:
         *,
         initiator: bool = False,
         trust: str = "full",
+        expected_peer: str | None = None,
     ):
         self.reader = reader
         self.writer = writer
@@ -109,6 +113,9 @@ class ServerLink:
         self.initiator = initiator
         self.trust = trust
         self.peer_name: str | None = None
+        # Who an outbound link is meant to reach: peer_name is unknown until the
+        # peer's SERVER line, so a failure before then needs this to retry by.
+        self.expected_peer = expected_peer
         self.peer_description: str = ""
         self._authenticated = False
         self._got_pass = False
@@ -137,7 +144,9 @@ class ServerLink:
             try:
                 line = _prepend_trace_tags(line, tp)
             except Exception:  # noqa: BLE001 - telemetry must never break the link
-                logger.debug("traceparent injection failed; sending untagged", exc_info=True)
+                logger.debug(
+                    "traceparent injection failed; sending untagged", exc_info=True
+                )
         try:
             wire = f"{line}\r\n".encode("utf-8")
             self.writer.write(wire)
@@ -163,7 +172,9 @@ class ServerLink:
                 if self.server is not None:
                     # +2 accounts for the \r\n that was stripped during line-split.
                     line_bytes = len(line.encode("utf-8")) + 2
-                    self.server.metrics.irc_bytes_received.add(line_bytes, {"direction": "s2s"})
+                    self.server.metrics.irc_bytes_received.add(
+                        line_bytes, {"direction": "s2s"}
+                    )
                     self.server.metrics.irc_message_size.record(
                         line_bytes, {"verb": msg.command, "direction": "s2s"}
                     )
@@ -198,7 +209,12 @@ class ServerLink:
                     buffer = await self._process_buffer(buffer)
             except (ConnectionError, asyncio.IncompleteReadError):
                 pass
+            except Exception:
+                # Nothing awaits this task, so an escaping error would be lost.
+                logger.exception("S2S link to %s failed", self._link_label())
             finally:
+                if self.initiator and not self._authenticated:
+                    self._on_outbound_handshake_failed()
                 if self._authenticated:
                     direction = "outbound" if self.initiator else "inbound"
                     self.server.metrics.s2s_links_active.add(
@@ -214,9 +230,31 @@ class ServerLink:
                 except ConnectionError:
                     pass
 
+    def _link_label(self) -> str:
+        return self.peer_name or self.expected_peer or "unknown peer"
+
+    def _on_outbound_handshake_failed(self) -> None:
+        """Log a link that ended before authenticating, and retry it.
+
+        ``_remove_link`` retries by ``peer_name``, which isn't known yet here.
+        """
+        peer = self.expected_peer or self.peer_name
+        logger.warning(
+            "Link to %s closed before the handshake completed", self._link_label()
+        )
+        if peer and peer not in self.server.links:
+            self.server.maybe_retry_link(peer)
+
+    def _handle_error(self, msg: Message) -> None:
+        """Log why the peer refused us: its ERROR is often the only explanation."""
+        reason = msg.params[-1] if msg.params else "no reason given"
+        logger.warning("Peer %s sent ERROR: %s", self._link_label(), reason)
+
     async def _send_handshake(self) -> None:
         await self.send_raw(f"PASS {self.password}")
-        await self.send_raw(f"SERVER {self.server.config.name} 1 :{self.server.config.name} IRC")
+        await self.send_raw(
+            f"SERVER {self.server.config.name} 1 :{self.server.config.name} IRC"
+        )
 
     async def _dispatch(self, msg: Message) -> None:
         verb = msg.command.upper()
@@ -227,7 +265,9 @@ class ServerLink:
             1, {"result": extracted.status, "peer": self.peer_name or ""}
         )
         if extracted.status == "valid":
-            parent_ctx: _OtelContext | None = context_from_traceparent(extracted.traceparent)
+            parent_ctx: _OtelContext | None = context_from_traceparent(
+                extracted.traceparent
+            )
         else:
             parent_ctx = _OtelContext()  # force root: detach from session span
 
@@ -333,11 +373,14 @@ class ServerLink:
         self.server.metrics.s2s_links_active.add(
             1, {"peer": self.peer_name, "direction": direction}
         )
-        self.server.metrics.s2s_link_events.add(1, {"peer": self.peer_name, "event": "connect"})
+        self.server.metrics.s2s_link_events.add(
+            1, {"peer": self.peer_name, "event": "connect"}
+        )
         if self._session_span is not None:
             self._session_span.set_attribute("s2s.peer", self.peer_name)
         self.server.links[self.peer_name] = self
         self.server.cancel_link_retry(self.peer_name)
+        logger.info("Linked to peer %s (%s)", self.peer_name, direction)
 
         # Restore last seen seq from previous link sessions
         self.last_seen_seq = self.server._peer_acked_seq.get(self.peer_name, 0)
@@ -365,8 +408,12 @@ class ServerLink:
         """Send channel topics for relayable channels."""
         for channel in channels:
             if channel.topic:
-                local_members = [m for m in channel.members if not isinstance(m, RemoteClient)]
-                setter = local_members[0].nick if local_members else self.server.config.name
+                local_members = [
+                    m for m in channel.members if not isinstance(m, RemoteClient)
+                ]
+                setter = (
+                    local_members[0].nick if local_members else self.server.config.name
+                )
                 await self.send_raw(f"STOPIC {channel.name} {setter} :{channel.topic}")
 
     async def _send_burst_metadata(self, channels: list) -> None:
@@ -403,11 +450,15 @@ class ServerLink:
             )
 
         # Collect relayable channels once
-        relayable = [ch for ch in self.server.channels.values() if self.should_relay(ch.name)]
+        relayable = [
+            ch for ch in self.server.channels.values() if self.should_relay(ch.name)
+        ]
 
         # Send channel membership
         for channel in relayable:
-            local_nicks = [m.nick for m in channel.members if not isinstance(m, RemoteClient)]
+            local_nicks = [
+                m.nick for m in channel.members if not isinstance(m, RemoteClient)
+            ]
             if local_nicks:
                 nicks_str = " ".join(local_nicks)
                 await self.send_raw(f"SJOIN {channel.name} {nicks_str}")
@@ -426,13 +477,17 @@ class ServerLink:
 
         # Reject reserved nick prefix
         if nick.startswith(SYSTEM_USER_PREFIX):
-            logger.warning("Rejecting reserved nick %r from peer %s", nick, self.peer_name)
+            logger.warning(
+                "Rejecting reserved nick %r from peer %s", nick, self.peer_name
+            )
             return
 
         # Validate nick conforms to <peer_name>-<agent> format
         expected_prefix = f"{self.peer_name}-"
         if not nick.startswith(expected_prefix):
-            logger.warning("Rejected remote nick %s: must start with %s", nick, expected_prefix)
+            logger.warning(
+                "Rejected remote nick %s: must start with %s", nick, expected_prefix
+            )
             return
 
         if nick in self.server.clients or nick in self.server.remote_clients:
@@ -454,7 +509,10 @@ class ServerLink:
         if existing:
             if existing.restricted:
                 return False
-            if self.trust == "restricted" and self.peer_name not in existing.shared_with:
+            if (
+                self.trust == "restricted"
+                and self.peer_name not in existing.shared_with
+            ):
                 return False
         else:
             if self.trust == "restricted":
@@ -706,7 +764,11 @@ class ServerLink:
         if existing and existing.restricted:
             return
         # For restricted trust, only accept if channel exists and is shared
-        if self.trust == "restricted" and existing and self.peer_name not in existing.shared_with:
+        if (
+            self.trust == "restricted"
+            and existing
+            and self.peer_name not in existing.shared_with
+        ):
             return
 
         try:
@@ -746,9 +808,13 @@ class ServerLink:
         if rc is None:
             return
 
-        rc.tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+        rc.tags = (
+            [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+        )
 
-    async def _part_local_members(self, channel, channel_name: str, reason: str) -> None:
+    async def _part_local_members(
+        self, channel, channel_name: str, reason: str
+    ) -> None:
         """Notify local members of an archive and part them from the channel."""
         notice = Message(
             prefix=self.server.config.name,
@@ -767,7 +833,9 @@ class ServerLink:
             if hasattr(member, "channels"):
                 member.channels.discard(channel)
 
-    def _rename_channel_to_archive(self, channel, channel_name: str, archive_name: str) -> None:
+    def _rename_channel_to_archive(
+        self, channel, channel_name: str, archive_name: str
+    ) -> None:
         """Clear membership and rename a channel to its archive name."""
         channel.members.clear()
         channel.operators.clear()
@@ -861,7 +929,11 @@ class ServerLink:
                 type=EventType.THREAD_CLOSE,
                 channel=channel_name,
                 nick=sender_nick,
-                data={"thread": thread_name, "summary": close_data, "_origin": self.peer_name},
+                data={
+                    "thread": thread_name,
+                    "summary": close_data,
+                    "_origin": self.peer_name,
+                },
             )
         )
 
@@ -899,9 +971,8 @@ class ServerLink:
         receiver tolerate either shape so federations can roll forward one
         peer at a time.
         """
-        return (
-            isinstance(decoded.get("type"), str)
-            and isinstance(decoded.get("data"), dict)
+        return isinstance(decoded.get("type"), str) and isinstance(
+            decoded.get("data"), dict
         )
 
     async def _handle_sevent(self, msg: Message) -> None:
@@ -1005,7 +1076,9 @@ class ServerLink:
             if self._should_replay_event(seq, event, effective_seq):
                 await self._replay_event(seq, event)
 
-        await self.send_raw(f":{self.server.config.name} BACKFILLEND {self.server._seq}")
+        await self.send_raw(
+            f":{self.server.config.name} BACKFILLEND {self.server._seq}"
+        )
         self.server.metrics.s2s_link_events.add(
             1, {"peer": self.peer_name or "", "event": "backfill_complete"}
         )
@@ -1018,13 +1091,19 @@ class ServerLink:
             except ValueError:
                 pass
 
-    async def _replay_event(self, seq: int, event: Event) -> None:  # noqa: ARG002  # NOSONAR S1172 — kept for upstream test signature compat
+    async def _replay_event(
+        self, seq: int, event: Event
+    ) -> (
+        None
+    ):  # noqa: ARG002  # NOSONAR S1172 — kept for upstream test signature compat
         """Replay a single event to the peer as S2S wire format."""
         origin = self.server.config.name
         # Federated events arrive with event.type as either an EventType enum
         # or a plain string (when _parse_event_type sees an unknown wire type).
         # Compare against the .value to handle both shapes — see #291.
-        event_type_str = event.type.value if hasattr(event.type, "value") else str(event.type)
+        event_type_str = (
+            event.type.value if hasattr(event.type, "value") else str(event.type)
+        )
         if event_type_str == EventType.MESSAGE.value:
             target = event.channel or event.data.get("target", "")
             text = event.data.get("text", "")
@@ -1040,7 +1119,9 @@ class ServerLink:
 
     async def relay_event(self, event: Event) -> None:
         """Relay a local event to the peer in S2S wire format."""
-        event_type_str = event.type.value if hasattr(event.type, "value") else str(event.type)
+        event_type_str = (
+            event.type.value if hasattr(event.type, "value") else str(event.type)
+        )
         attrs = {
             "event.type": event_type_str,
             "s2s.peer": self.peer_name or "",
@@ -1069,7 +1150,9 @@ class ServerLink:
                 target = event.channel or "*"
                 # Egress trust check: channel-scoped events respect should_relay; global events always relay
                 if event.channel is None or self.should_relay(event.channel):
-                    seq = self.server._seq  # current local seq; peer stores but doesn't re-sequence
+                    seq = (
+                        self.server._seq
+                    )  # current local seq; peer stores but doesn't re-sequence
                     await self.send_raw(
                         f":{origin} {protocol.SEVENT} {origin} {seq} {event_type_str} {target} :{encoded}"
                     )
@@ -1141,7 +1224,9 @@ class ServerLink:
             return
         thread_name = event.data.get("thread", "")
         text = event.data.get("text", "")  # This is the prefixed text
-        await self.send_raw(f":{origin} STHREAD {channel_name} {event.nick} {thread_name} :{text}")
+        await self.send_raw(
+            f":{origin} STHREAD {channel_name} {event.nick} {thread_name} :{text}"
+        )
 
     async def _relay_thread_close(self, event: Event, origin: str) -> None:
         channel_name = event.channel
@@ -1185,7 +1270,9 @@ class ServerLink:
         channel = self.server.channels.get(channel_name) if channel_name else None
         source = channel_name or "a direct message"
         for raw_nick in mentioned_nicks:
-            target_client = self._resolve_mention_target(raw_nick, sender_nick, seen, channel)
+            target_client = self._resolve_mention_target(
+                raw_nick, sender_nick, seen, channel
+            )
             if not target_client:
                 continue
             notice = Message(
