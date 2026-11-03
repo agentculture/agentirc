@@ -164,41 +164,7 @@ async def _cancel_retry(server: IRCd, peer: str) -> None:
         state["task"].cancel()
 
 
-@pytest.mark.asyncio
-async def test_rejected_handshake_logs_reason_and_retries(tmp_path, caplog):
-    """A peer refusing the password used to end the link silently, with no retry."""
-    from tests._helpers import boot_linked_pair
-
-    server_a, server_b = await boot_linked_pair(tmp_path)
-    server_a.config.links[0].port = server_b.config.port
-    server_b.config.links[0].password = "a-different-secret"
-
-    with caplog.at_level("INFO"):
-        await server_a.connect_to_peer(
-            "127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD, "full"
-        )
-        assert await _wait_for(lambda: "beta" in server_a._link_retry_state)
-
-    assert "beta" not in server_a.links
-    assert "Bad password" in caplog.text
-    assert "beta" in caplog.text
-    assert TEST_LINK_PASSWORD not in caplog.text
-    assert "a-different-secret" not in caplog.text
-
-    await _cancel_retry(server_a, "beta")
-    await server_a.stop()
-    await server_b.stop()
-
-
-@pytest.mark.asyncio
-async def test_peer_hanging_up_before_handshake_retries(caplog):
-    """A peer that accepts and closes leaves no name to retry by, unless we kept it."""
-
-    async def hang_up(_reader, writer):
-        writer.close()
-
-    peer = await asyncio.start_server(hang_up, "127.0.0.1", 0)
-    port = peer.sockets[0].getsockname()[1]
+async def _server_with_peer_at(port: int) -> IRCd:
     server = IRCd(
         ServerConfig(
             name="alpha",
@@ -208,6 +174,58 @@ async def test_peer_hanging_up_before_handshake_retries(caplog):
         )
     )
     await server.start()
+    return server
+
+
+async def _hang_up(_reader, writer):
+    writer.close()
+
+
+async def _mismatched_pair(tmp_path) -> tuple[IRCd, IRCd]:
+    """Two booted servers where beta refuses alpha's password."""
+    from tests._helpers import boot_linked_pair
+
+    server_a, server_b = await boot_linked_pair(tmp_path)
+    server_a.config.links[0].port = server_b.config.port
+    server_b.config.links[0].password = "a-different-secret"
+    return server_a, server_b
+
+
+async def _dial_beta(server_a: IRCd, server_b: IRCd) -> None:
+    await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD, "full")
+    assert await _wait_for(lambda: "beta" in server_a._link_retry_state)
+
+
+async def _stop_after_retry(server_a: IRCd, server_b: IRCd) -> None:
+    await _cancel_retry(server_a, "beta")
+    await server_a.stop()
+    await server_b.stop()
+
+
+@pytest.mark.asyncio
+async def test_rejected_handshake_logs_reason_and_retries(tmp_path, caplog):
+    """A peer refusing the password used to end the link silently, with no retry."""
+    server_a, server_b = await _mismatched_pair(tmp_path)
+
+    with caplog.at_level("INFO"):
+        await _dial_beta(server_a, server_b)
+
+    assert "beta" not in server_a.links
+    assert "Bad password" in caplog.text
+    assert "beta" in caplog.text
+    assert TEST_LINK_PASSWORD not in caplog.text
+    assert "a-different-secret" not in caplog.text
+
+    await _stop_after_retry(server_a, server_b)
+
+
+@pytest.mark.asyncio
+async def test_peer_hanging_up_before_handshake_retries(caplog):
+    """A peer that accepts and closes leaves no name to retry by, unless we kept it."""
+
+    peer = await asyncio.start_server(_hang_up, "127.0.0.1", 0)
+    port = peer.sockets[0].getsockname()[1]
+    server = await _server_with_peer_at(port)
 
     with caplog.at_level("WARNING"):
         await server.connect_to_peer("127.0.0.1", port, "x", "full")
@@ -224,16 +242,9 @@ async def test_peer_hanging_up_before_handshake_retries(caplog):
 @pytest.mark.asyncio
 async def test_retry_recovers_once_the_peer_accepts(tmp_path, caplog):
     """The retry loop finishes the job when the cause clears."""
-    from tests._helpers import boot_linked_pair
+    server_a, server_b = await _mismatched_pair(tmp_path)
 
-    server_a, server_b = await boot_linked_pair(tmp_path)
-    server_a.config.links[0].port = server_b.config.port
-    server_b.config.links[0].password = "a-different-secret"
-
-    await server_a.connect_to_peer(
-        "127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD, "full"
-    )
-    assert await _wait_for(lambda: "beta" in server_a._link_retry_state)
+    await _dial_beta(server_a, server_b)
 
     server_b.config.links[0].password = TEST_LINK_PASSWORD
     server_a._link_retry_state["beta"]["delay"] = 0.05
@@ -271,34 +282,18 @@ async def test_unexpected_link_error_is_logged_and_retried(
     monkeypatch.setattr(ServerLink, "_process_buffer", explode_on_alpha)
 
     with caplog.at_level("ERROR"):
-        await server_a.connect_to_peer(
-            "127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD, "full"
-        )
-        assert await _wait_for(lambda: "beta" in server_a._link_retry_state)
+        await _dial_beta(server_a, server_b)
 
     assert "boom in the link task" in caplog.text
 
-    await _cancel_retry(server_a, "beta")
-    await server_a.stop()
-    await server_b.stop()
+    await _stop_after_retry(server_a, server_b)
 
 
 @pytest.mark.asyncio
 async def test_stopping_server_does_not_retry_a_failed_handshake(caplog):
-    async def hang_up(_reader, writer):
-        writer.close()
-
-    peer = await asyncio.start_server(hang_up, "127.0.0.1", 0)
+    peer = await asyncio.start_server(_hang_up, "127.0.0.1", 0)
     port = peer.sockets[0].getsockname()[1]
-    server = IRCd(
-        ServerConfig(
-            name="alpha",
-            host="127.0.0.1",
-            port=0,
-            links=[LinkConfig(name="beta", host="127.0.0.1", port=port, password="x")],
-        )
-    )
-    await server.start()
+    server = await _server_with_peer_at(port)
     server._stopping = True
     await server.connect_to_peer("127.0.0.1", port, "x", "full")
     await asyncio.sleep(0.1)
@@ -322,15 +317,7 @@ async def test_silent_peer_times_out_and_retries(caplog, monkeypatch):
 
     peer = await asyncio.start_server(stay_silent, "127.0.0.1", 0)
     port = peer.sockets[0].getsockname()[1]
-    server = IRCd(
-        ServerConfig(
-            name="alpha",
-            host="127.0.0.1",
-            port=0,
-            links=[LinkConfig(name="beta", host="127.0.0.1", port=port, password="x")],
-        )
-    )
-    await server.start()
+    server = await _server_with_peer_at(port)
 
     with caplog.at_level("WARNING"):
         await server.connect_to_peer("127.0.0.1", port, "x", "full")
@@ -408,10 +395,7 @@ async def test_crashed_link_marks_its_span_as_failed(tmp_path, monkeypatch):
         return await real_process(self, buffer)
 
     monkeypatch.setattr(ServerLink, "_process_buffer", explode_on_alpha)
-    await server_a.connect_to_peer("127.0.0.1", server_b.config.port, TEST_LINK_PASSWORD, "full")
-    assert await _wait_for(lambda: "beta" in server_a._link_retry_state)
+    await _dial_beta(server_a, server_b)
     assert StatusCode.ERROR in statuses
 
-    await _cancel_retry(server_a, "beta")
-    await server_a.stop()
-    await server_b.stop()
+    await _stop_after_retry(server_a, server_b)
