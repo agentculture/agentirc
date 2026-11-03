@@ -213,22 +213,27 @@ class ServerLink:
                 # Nothing awaits this task, so an escaping error would be lost.
                 logger.exception("S2S link to %s failed", self._link_label())
             finally:
-                if self.initiator and not self._authenticated:
-                    self._on_outbound_handshake_failed()
-                if self._authenticated:
-                    direction = "outbound" if self.initiator else "inbound"
-                    self.server.metrics.s2s_links_active.add(
-                        -1, {"peer": self.peer_name or "", "direction": direction}
-                    )
-                    self.server.metrics.s2s_link_events.add(
-                        1, {"peer": self.peer_name or "", "event": "disconnect"}
-                    )
+                self._record_session_end()
                 await self.server._remove_link(self, squit=self._squit_received)
                 self.writer.close()
                 try:
                     await self.writer.wait_closed()
                 except ConnectionError:
                     pass
+
+    def _record_session_end(self) -> None:
+        """Count a completed link's disconnect, or handle one that never completed."""
+        if not self._authenticated:
+            if self.initiator:
+                self._on_outbound_handshake_failed()
+            return
+        direction = "outbound" if self.initiator else "inbound"
+        self.server.metrics.s2s_links_active.add(
+            -1, {"peer": self.peer_name or "", "direction": direction}
+        )
+        self.server.metrics.s2s_link_events.add(
+            1, {"peer": self.peer_name or "", "event": "disconnect"}
+        )
 
     def _link_label(self) -> str:
         return self.peer_name or self.expected_peer or "unknown peer"
@@ -1091,11 +1096,7 @@ class ServerLink:
             except ValueError:
                 pass
 
-    async def _replay_event(
-        self, seq: int, event: Event
-    ) -> (
-        None
-    ):  # noqa: ARG002  # NOSONAR S1172 — kept for upstream test signature compat
+    async def _replay_event(self, seq: int, event: Event) -> None:  # noqa: ARG002  # NOSONAR S1172 — kept for upstream test signature compat
         """Replay a single event to the peer as S2S wire format."""
         origin = self.server.config.name
         # Federated events arrive with event.type as either an EventType enum
