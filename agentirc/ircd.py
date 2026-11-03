@@ -985,7 +985,10 @@ class IRCd:
     async def _remove_link(self, link: ServerLink, *, squit: bool = False) -> None:
         """Remove a S2S link and all its remote clients."""
         peer_name = link.peer_name
-        if peer_name and peer_name in self.links:
+        # A refused connection can carry a linked peer's name: only the link that
+        # holds the entry may remove it, or schedule a reconnect for it.
+        registered = bool(peer_name) and self.links.get(peer_name) is link
+        if registered:
             # Remove peer FIRST so server.unlink relays only to remaining peers
             del self.links[peer_name]
             # Persist our current seq -- peer saw everything up to here via real-time relay
@@ -1008,7 +1011,7 @@ class IRCd:
         self._disconnect_remote_clients(link)
 
         # Schedule auto-reconnect if this was an unexpected drop (not SQUIT)
-        if peer_name and not squit:
+        if registered and not squit:
             self.maybe_retry_link(peer_name)
 
     def _restore_persistent_rooms(self) -> None:

@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How long a link may wait for the peer to finish the handshake. A peer that
+# accepts and stays silent would otherwise hold the link open with no retry.
+HANDSHAKE_TIMEOUT_S = 30.0
+
 
 def _prepend_trace_tags(line: str, tp: str) -> str:
     """Inject *tp* as the ``culture.dev/traceparent`` IRCv3 tag on *line*.
@@ -194,17 +198,19 @@ class ServerLink:
                     buffer = await self._process_buffer(buffer)
 
                 while True:
-                    data = await self.reader.read(4096)
+                    data = await self._read_chunk()
                     if not data:
                         break
                     buffer += data.decode("utf-8", errors="replace")
                     buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
                     buffer = await self._process_buffer(buffer)
-            except (ConnectionError, asyncio.IncompleteReadError):
+            except (ConnectionError, asyncio.IncompleteReadError, TimeoutError):
                 pass
-            except Exception:
+            except Exception as exc:
                 # Nothing awaits this task, so an escaping error would be lost.
                 logger.exception("S2S link to %s failed", self._link_label())
+                span.record_exception(exc)
+                span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(exc)))
             finally:
                 self._record_session_end()
                 await self.server._remove_link(self, squit=self._squit_received)
@@ -213,6 +219,12 @@ class ServerLink:
                     await self.writer.wait_closed()
                 except ConnectionError:
                     pass
+
+    async def _read_chunk(self) -> bytes:
+        """Read from the peer, with a deadline until the handshake completes."""
+        if self._authenticated:
+            return await self.reader.read(4096)
+        return await asyncio.wait_for(self.reader.read(4096), HANDSHAKE_TIMEOUT_S)
 
     def _record_session_end(self) -> None:
         """Count a completed link's disconnect, or handle one that never completed."""
