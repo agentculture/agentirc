@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import time
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 # How long a link may wait for the peer to finish the handshake. A peer that
 # accepts and stays silent would otherwise hold the link open with no retry.
 HANDSHAKE_TIMEOUT_S = 30.0
+ERROR_REASON_MAX_CHARS = 200
 
 
 def _prepend_trace_tags(line: str, tp: str) -> str:
@@ -117,6 +119,10 @@ class ServerLink:
         # Who an outbound link is meant to reach: peer_name is unknown until the
         # peer's SERVER line, so a failure before then needs this to retry by.
         self.expected_peer = expected_peer
+        # Set when a peer proves the password while its name is already linked: it
+        # came back, so the entry we hold is stale (see IRCd._remove_link).
+        self.evicts_stale_link = False
+        self._handshake_deadline: float | None = None
         self.peer_description: str = ""
         self._authenticated = False
         self._got_pass = False
@@ -204,7 +210,7 @@ class ServerLink:
                     buffer += data.decode("utf-8", errors="replace")
                     buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
                     buffer = await self._process_buffer(buffer)
-            except (ConnectionError, asyncio.IncompleteReadError, TimeoutError):
+            except (ConnectionError, asyncio.IncompleteReadError):
                 pass
             except Exception as exc:
                 # Nothing awaits this task, so an escaping error would be lost.
@@ -212,19 +218,30 @@ class ServerLink:
                 span.record_exception(exc)
                 span.set_status(otel_trace.Status(otel_trace.StatusCode.ERROR, str(exc)))
             finally:
-                self._record_session_end()
-                await self.server._remove_link(self, squit=self._squit_received)
-                self.writer.close()
-                try:
-                    await self.writer.wait_closed()
-                except ConnectionError:
-                    pass
+                await self._close_session()
 
     async def _read_chunk(self) -> bytes:
         """Read from the peer, with a deadline until the handshake completes."""
         if self._authenticated:
             return await self.reader.read(4096)
-        return await asyncio.wait_for(self.reader.read(4096), HANDSHAKE_TIMEOUT_S)
+        now = asyncio.get_running_loop().time()
+        if self._handshake_deadline is None:
+            self._handshake_deadline = now + HANDSHAKE_TIMEOUT_S
+        try:
+            return await asyncio.wait_for(self.reader.read(4096), self._handshake_deadline - now)
+        except TimeoutError:
+            logger.warning("Handshake with %s timed out", self._link_label())
+            return b""
+
+    async def _close_session(self) -> None:
+        """End the session: the socket closes even if the bookkeeping fails."""
+        try:
+            self._record_session_end()
+            await self.server._remove_link(self, squit=self._squit_received)
+        finally:
+            self.writer.close()
+            with contextlib.suppress(OSError):
+                await self.writer.wait_closed()
 
     def _record_session_end(self) -> None:
         """Count a completed link's disconnect, or handle one that never completed."""
@@ -254,8 +271,15 @@ class ServerLink:
             self.server.maybe_retry_link(peer)
 
     def _handle_error(self, msg: Message) -> None:
-        """Log why the peer refused us: its ERROR is often the only explanation."""
+        """Log why a peer refused us: its ERROR is often the only explanation.
+
+        Inbound, an unauthenticated client can say anything, so it isn't logged. The
+        text is untrusted either way: printable characters only, bounded length.
+        """
+        if not self.initiator and not self._authenticated:
+            return
         reason = msg.params[-1] if msg.params else "no reason given"
+        reason = "".join(ch for ch in reason if ch.isprintable())[:ERROR_REASON_MAX_CHARS]
         logger.warning("Peer %s sent ERROR: %s", self._link_label(), reason)
 
     async def _send_handshake(self) -> None:
@@ -348,6 +372,7 @@ class ServerLink:
         # Check for duplicate server name
         if self.peer_name in self.server.links:
             logger.warning("Duplicate server name %s", self.peer_name)
+            self.evicts_stale_link = True
             self.server.metrics.s2s_link_events.add(
                 1, {"peer": self.peer_name or "", "event": "auth_fail"}
             )
