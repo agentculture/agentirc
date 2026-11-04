@@ -664,7 +664,13 @@ class IRCd:
         from agentirc.server_link import ServerLink
 
         reader, writer = await asyncio.open_connection(host, port)
-        link = ServerLink(reader, writer, self, password, initiator=True, trust=trust)
+        expected_peer = next(
+            (lc.name for lc in self.config.links if lc.host == host and lc.port == port),
+            None,
+        )
+        link = ServerLink(
+            reader, writer, self, password, initiator=True, trust=trust, expected_peer=expected_peer
+        )
         task = asyncio.create_task(link.handle())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -979,7 +985,14 @@ class IRCd:
     async def _remove_link(self, link: ServerLink, *, squit: bool = False) -> None:
         """Remove a S2S link and all its remote clients."""
         peer_name = link.peer_name
-        if peer_name and peer_name in self.links:
+        # A refused connection can carry a linked peer's name: only the link holding
+        # the entry may remove it, or a peer that proved the password and so shows
+        # our entry is stale. Links have no keepalive, so nothing else would clear it.
+        held = self.links.get(peer_name) if peer_name else None
+        registered = held is not None and (held is link or link.evicts_stale_link)
+        if registered and held is not link:
+            held.writer.close()
+        if registered:
             # Remove peer FIRST so server.unlink relays only to remaining peers
             del self.links[peer_name]
             # Persist our current seq -- peer saw everything up to here via real-time relay
@@ -1002,7 +1015,7 @@ class IRCd:
         self._disconnect_remote_clients(link)
 
         # Schedule auto-reconnect if this was an unexpected drop (not SQUIT)
-        if peer_name and not squit:
+        if registered and not squit:
             self.maybe_retry_link(peer_name)
 
     def _restore_persistent_rooms(self) -> None:

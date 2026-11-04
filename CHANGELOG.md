@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [9.14.1] - 2026-11-04
+
+### Fixed
+
+- A server link that fails before its handshake completes is now logged and retried. It used to end silently with no retry, because retries go by peer name and the name is not known yet (culture#510, culture#519).
+- A peer's ERROR message and any unexpected link task exception are now logged, and a completed link logs its peer and direction.
+
 ## [9.14.0] - 2026-11-01
 
 ### Added
